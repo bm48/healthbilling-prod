@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Global dark background for all pages */
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: linear-gradient(to bottom right, #0f172a, #1e3a8a, #0f172a);
+  background-attachment: fixed;
+  min-height: 100vh;
+  color: #ffffff;
+}
+
+#root {
+  min-height: 100vh;
+  background: linear-gradient(to bottom right, #0f172a, #1e3a8a, #0f172a);
+  background-attachment: fixed;
+}
+
+/* Hide scrollbar for sidebar */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* Internet Explorer 10+ */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;  /* Safari and Chrome */
+}

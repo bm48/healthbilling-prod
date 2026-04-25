@@ -1,0 +1,19 @@
+{
+  "name": "health-billing",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": ["client", "server"],
+  "devDependencies": {
+    "tsx": "^4.19.3"
+  },
+  "scripts": {
+    "dev": "npm run dev -w client",
+    "start": "npm run dev -w client",
+    "build": "npm run build -w client && npm run build -w server",
+    "preview": "npm run preview -w client",
+    "lint": "npm run lint -w client",
+    "server:dev": "npm run dev -w server",
+    "server:build": "npm run build -w server",
+    "server:start": "npm run start -w server"
+  }
+}

@@ -1,0 +1,935 @@
+/* Centralized Table Stylesheet for Spreadsheet-like Tables */
+
+/* Base Table Styles */
+.table-spreadsheet {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background-color: #ffffff;
+}
+
+/* Table Header Styles */
+.table-spreadsheet thead {
+  background-color: #1e3a8a; /* Dark blue header */
+  color: #ffffff;
+}
+
+.table-spreadsheet thead th {
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  border: 1px solid #3b82f6;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  width: auto;
+}
+
+/* Table Body Styles */
+.table-spreadsheet tbody tr {
+  background-color: #ffffff;
+  transition: background-color 0.15s ease;
+}
+
+.table-spreadsheet tbody tr:nth-child(even) {
+  background-color: #f8f9fa; /* Light gray for alternating rows */
+}
+
+.table-spreadsheet tbody tr:hover {
+  background-color: #e9ecef; /* Slightly darker on hover */
+}
+
+.table-spreadsheet tbody tr.editing {
+  background-color: #fff3cd; /* Yellow highlight for editing row */
+}
+
+/* Table Cell Styles */
+.table-spreadsheet td {
+  padding: 4px 6px;
+  border: 1px solid #dee2e6;
+  vertical-align: middle;
+  min-height: 28px;
+  width: auto;
+  white-space: nowrap;
+}
+
+/* Allow textareas to wrap */
+.table-spreadsheet td:has(textarea) {
+  white-space: normal;
+}
+
+.table-spreadsheet td:focus-within {
+  outline: 2px solid #3b82f6;
+  outline-offset: -2px;
+  background-color: #ffffff;
+}
+
+/* Input Styles within Table Cells */
+.table-spreadsheet input,
+.table-spreadsheet select {
+  width: 100%;
+  min-width: 60px;
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #212529;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.table-spreadsheet textarea {
+  width: 100%;
+  min-width: 120px;
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #212529;
+  outline: none;
+  box-sizing: border-box;
+  resize: both;
+}
+
+.table-spreadsheet input:focus,
+.table-spreadsheet select:focus,
+.table-spreadsheet textarea:focus {
+  background-color: #ffffff;
+  border-radius: 2px;
+}
+
+.table-spreadsheet input[type="number"] {
+  text-align: right;
+}
+
+.table-spreadsheet input[type="date"],
+.table-spreadsheet input[type="time"] {
+  cursor: pointer;
+}
+
+/* Hide placeholder for empty date inputs */
+.table-spreadsheet input[type="date"].date-empty::-webkit-datetime-edit,
+.table-spreadsheet input[type="date"].date-empty::-webkit-inner-spin-button,
+.table-spreadsheet input[type="date"].date-empty::-webkit-calendar-picker-indicator {
+  opacity: 0;
+  color: transparent;
+}
+
+.table-spreadsheet input[type="date"].date-empty:focus::-webkit-datetime-edit,
+.table-spreadsheet input[type="date"].date-empty:focus::-webkit-calendar-picker-indicator {
+  opacity: 1;
+  color: #000000;
+}
+
+/* Select Dropdown Styles */
+.table-spreadsheet select {
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23333' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+  padding-right: 20px;
+  min-width: fit-content;
+}
+
+.table-spreadsheet select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: #f8f9fa;
+}
+
+/* Disabled/Locked Cell Styles */
+.table-spreadsheet td.locked,
+.table-spreadsheet td:has(input:disabled),
+.table-spreadsheet td:has(select:disabled) {
+  background-color: #f8f9fa;
+  color: #6c757d;
+  cursor: not-allowed;
+}
+
+/* But locked cells can still have styling applied */
+.table-spreadsheet td.locked.styled {
+  /* Allow background color to be set even when locked */
+}
+
+/* Status Badge/Tag Styles */
+.table-spreadsheet .status-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Currency/Number Display */
+.table-spreadsheet .currency {
+  text-align: right;
+  font-family: 'Courier New', monospace;
+  font-weight: 500;
+}
+
+/* Accounts Receivable Table Specific Styles */
+.table-ar {
+  /* Same base styles as table-spreadsheet */
+}
+
+.table-ar thead {
+  background-color: #1e3a8a;
+}
+
+/* Provider Payment Table Specific Styles */
+.table-provider-payment {
+  /* Same base styles as table-spreadsheet */
+}
+
+.table-provider-payment thead {
+  background-color: #1e3a8a;
+}
+
+/* Dark Theme Override (for existing dark tables) */
+.dark-theme .table-spreadsheet {
+  background-color: transparent;
+}
+
+.dark-theme .table-spreadsheet thead {
+  background-color: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(8px);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.dark-theme .table-spreadsheet thead th {
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.dark-theme .table-spreadsheet tbody tr {
+  background-color: transparent;
+}
+
+.dark-theme .table-spreadsheet tbody tr:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.dark-theme .table-spreadsheet tbody tr:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark-theme .table-spreadsheet tbody tr.editing {
+  background-color: rgba(255, 243, 205, 0.3);
+}
+
+.dark-theme .table-spreadsheet td {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.dark-theme .table-spreadsheet input,
+.dark-theme .table-spreadsheet textarea {
+  color: #ffffff ;
+  background-color: rgba(255, 255, 255, 0.15) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 4px;
+}
+
+/* Select elements - allow inline styles for dynamic colors */
+.dark-theme .table-spreadsheet select {
+  color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+
+/* Patient Database specific override - black text on white background */
+.dark-theme .table-spreadsheet input.patient-input-edit,
+.dark-theme .table-spreadsheet textarea.patient-input-edit {
+  color: #000000 !important;
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  border: 1px solid rgba(0, 0, 0, 0.2) !important;
+}
+
+/* Select elements - allow inline styles to override for dynamic colors */
+.dark-theme .table-spreadsheet select.patient-input-edit {
+  /* Don't use !important to allow inline style colors to work */
+  color: #000000;
+  background-color: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.dark-theme .table-spreadsheet select.patient-input-edit option {
+  color: #000000;
+  background-color: #ffffff;
+}
+
+.dark-theme .table-spreadsheet input::placeholder,
+.dark-theme .table-spreadsheet textarea::placeholder {
+  color: rgba(255, 255, 255, 0.5) ;
+}
+
+.dark-theme .table-spreadsheet input:focus,
+.dark-theme .table-spreadsheet textarea:focus {
+  background-color: rgba(255, 255, 255, 0.2) !important;
+  border-color: rgba(59, 130, 246, 0.5) !important;
+  outline: none;
+}
+
+/* Don't override select focus styles - let inline styles handle colors */
+.dark-theme .table-spreadsheet select:focus {
+  outline: none;
+}
+
+.dark-theme .table-spreadsheet input[type="date"],
+.dark-theme .table-spreadsheet input[type="time"] {
+  color: #000000 !important;
+}
+
+/* Handsontable Custom Styling */
+.handsontable-custom {
+  background-color: #d2dbe5;
+}
+
+.handsontable-custom .ht_clone_top,
+.handsontable-custom .ht_clone_left {
+  background-color: #1e3a8a;
+}
+
+/* Remove gap between row-number column and first data column; overlap border by 1px */
+.handsontable-custom .ht_clone_left {
+  margin-right: -1px;
+}
+
+.handsontable-custom .ht_clone_top th {
+  background-color: #1e3a8a !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  padding: 6px 8px !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+/* Colored headers support - can be overridden per column; min-height so all tabs have consistent header height */
+.handsontable-custom table.htCore thead th {
+  background-color: #1e3a8a !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  padding: 6px 8px !important;
+  text-align: center !important;
+  min-height: 32px !important;
+  box-sizing: border-box !important;
+}
+.handsontable-custom .ht_clone_top table.htCore thead th {
+  text-align: center !important;
+  min-height: 32px !important;
+}
+
+/* Support for custom header colors via data attributes or classes */
+.handsontable-custom table.htCore thead th[data-header-color] {
+  background-color: var(--header-bg-color, #1e3a8a) !important;
+  color: var(--header-text-color, #ffffff) !important;
+}
+
+/* Providers tab: lock icon pinned to the right of the header cell (label stays left/center block) */
+.providers-handsontable table.htCore thead th > div,
+.providers-handsontable .ht_clone_top table.htCore thead th > div {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  flex-wrap: wrap !important;
+  justify-content: flex-start !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  gap: 4px !important;
+}
+.providers-handsontable .providers-col-header-lock-wrap {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto !important;
+  margin-right: 0 !important;
+  flex-shrink: 0;
+}
+.providers-handsontable .providers-col-header-lock-img {
+  width: 18px;
+  height: 18px;
+  display: block;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+/* Accounts Receivable tab: same header lock layout as providers */
+.ar-handsontable table.htCore thead th > div,
+.ar-handsontable .ht_clone_top table.htCore thead th > div {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  flex-wrap: wrap !important;
+  justify-content: flex-start !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  gap: 4px !important;
+}
+.ar-handsontable .ar-col-header-lock-wrap {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto !important;
+  margin-right: 0 !important;
+  flex-shrink: 0;
+}
+.ar-handsontable .ar-col-header-lock-img {
+  width: 18px;
+  height: 18px;
+  display: block;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+/* Providers tab - custom header colors per column group */
+/* .providers-handsontable table.htCore thead th:nth-child(1), */
+.providers-handsontable table.htCore thead th:nth-child(2),
+.providers-handsontable table.htCore thead th:nth-child(3),
+.providers-handsontable table.htCore thead th:nth-child(4),
+.providers-handsontable table.htCore thead th:nth-child(5),
+.providers-handsontable table.htCore thead th:nth-child(6),
+.providers-handsontable table.htCore thead th:nth-child(7),
+.providers-handsontable table.htCore thead th:nth-child(8) {
+  background-color: #f5cbcc !important;
+  color: #000000 !important;
+}
+
+
+/* .providers-handsontable table.htCore thead th:nth-child(9) {
+  background-color: #fce5cd !important;
+  color: #000000 !important;
+} */
+
+
+.providers-handsontable table.htCore thead th:nth-child(9),
+.providers-handsontable table.htCore thead th:nth-child(10),
+.providers-handsontable table.htCore thead th:nth-child(11) {
+  background-color: #ead1dd !important;
+  color: #000000 !important;
+}
+
+
+.providers-handsontable table.htCore thead th:nth-child(12),
+.providers-handsontable table.htCore thead th:nth-child(13){
+  background-color: #d9d2e9 !important;
+  color: #000000 !important;
+}
+
+
+
+.providers-handsontable table.htCore thead th:nth-child(14),
+.providers-handsontable table.htCore thead th:nth-child(15),
+.providers-handsontable table.htCore thead th:nth-child(16){
+  background-color: #b191cd !important;
+  color: #000000 !important;
+}
+
+
+.providers-handsontable table.htCore thead th:nth-child(17),
+.providers-handsontable table.htCore thead th:nth-child(18),
+.providers-handsontable table.htCore thead th:nth-child(19) {
+  background-color: #fce5cd !important;
+  color: #000000 !important;
+}
+
+.providers-handsontable table.htCore thead th:nth-child(20) {
+  background-color: #5d9f5d !important;
+  color: #000000 !important;
+}
+
+.providers-handsontable .ht_clone_top th:nth-child(1),
+.providers-handsontable .ht_clone_top th:nth-child(2),
+.providers-handsontable .ht_clone_top th:nth-child(3),
+.providers-handsontable .ht_clone_top th:nth-child(4),
+.providers-handsontable .ht_clone_top th:nth-child(5),
+.providers-handsontable .ht_clone_top th:nth-child(6),
+.providers-handsontable .ht_clone_top th:nth-child(7) {
+  background-color: #f5cbcc !important;
+  color: #000000 !important;
+}
+
+.providers-handsontable .ht_clone_top th:nth-child(8),
+.providers-handsontable .ht_clone_top th:nth-child(9) {
+  background-color: #fce5cd !important;
+  color: #000000 !important;
+}
+
+.providers-handsontable .ht_clone_top th:nth-child(10),
+.providers-handsontable .ht_clone_top th:nth-child(11) {
+  background-color: #ead1dd !important;
+  color: #000000 !important;
+}
+
+.providers-handsontable .ht_clone_top th:nth-child(12),
+.providers-handsontable .ht_clone_top th:nth-child(13),
+.providers-handsontable .ht_clone_top th:nth-child(14),
+.providers-handsontable .ht_clone_top th:nth-child(18) {
+  background-color: #d9d2e9 !important;
+  color: #000000 !important;
+}
+
+.providers-handsontable .ht_clone_top th:nth-child(15),
+.providers-handsontable .ht_clone_top th:nth-child(16),
+.providers-handsontable .ht_clone_top th:nth-child(17) {
+  background-color: #b191cd !important;
+  color: #000000 !important;
+}
+
+.providers-handsontable .ht_clone_top th:nth-child(19) {
+  background-color: #5d9f5d !important;
+  color: #000000 !important;
+}
+
+/* Providers tab: wrap column header titles; header can grow when text wraps so row-number corner stays aligned */
+.providers-handsontable table.htCore thead th,
+.providers-handsontable .ht_clone_top table.htCore thead th {
+  white-space: normal !important;
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+  overflow: visible !important;
+  text-overflow: unset !important;
+  min-height: 36px !important;
+  height: auto !important;
+  line-height: 1.2 !important;
+  vertical-align: middle !important;
+  padding: 6px 8px !important;
+  box-sizing: border-box !important;
+}
+.providers-handsontable table.htCore thead th span.colHeader,
+.providers-handsontable .ht_clone_top table.htCore thead th span.colHeader {
+  white-space: normal !important;
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+  display: block !important;
+}
+.providers-handsontable table.htCore thead tr,
+.providers-handsontable .ht_clone_top table.htCore thead tr {
+  min-height: 36px !important;
+  height: auto !important;
+}
+
+.handsontable-custom .ht_clone_left th {
+  background-color: #1e3a8a;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 0px !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  height: auto !important;
+  line-height: normal !important;
+  vertical-align: middle !important;
+}
+
+.handsontable-custom .ht_master .wtHolder {
+  background-color: #d2dbe5;
+  overflow: auto !important;
+  /* Ensure scroll container doesn't cut off content */
+  box-sizing: border-box !important;
+}
+
+/* Push body content down so first row is not covered by fixed column headers */
+.handsontable-custom .ht_master .wtHider {
+  padding-top: 0px !important;
+  padding-bottom: 8px !important;
+  margin-top: 0 !important;
+}
+
+/* .handsontable-custom .ht_clone_left .wtHolder {
+  overflow: auto !important;
+  box-sizing: border-box !important;
+providers-handsontable} */
+
+/* Row-number column: small top offset in other tabs so row numbers align with data (column header can render slightly taller than corner). */
+.handsontable-custom .ht_clone_left .wtHider {
+  padding-top: 4px !important;
+  margin-top: 0 ;
+}
+/* Providers: no extra padding so corner cell sits at top and fills header space (avoids empty band above row numbers). */
+.providers-handsontable .ht_clone_left .wtHider {
+  padding-top: 0 !important;
+}
+/* Corner cell height matches column header so first row number aligns with first data row (JS sets inline with setProperty(..., 'important')). */
+.providers-handsontable .ht_clone_left table.htCore thead tr th,
+.providers-handsontable .ht_clone_left table.htCore tr:first-child th {
+  height: var(--ht-colheader-height, 36px);
+  min-height: var(--ht-colheader-height, 36px);
+  box-sizing: border-box !important;
+}
+.providers-handsontable .ht_clone_left table.htCore thead tr,
+.providers-handsontable .ht_clone_left table.htCore tr:first-child {
+  height: var(--ht-colheader-height, 36px);
+  min-height: var(--ht-colheader-height, 36px);
+}
+/* Corner: no line between header and first row */
+.providers-handsontable .ht_clone_left table.htCore thead tr th,
+.providers-handsontable .ht_clone_left table.htCore thead tr {
+  border-bottom: none !important;
+}
+.providers-handsontable .ht_clone_left table.htCore thead tr th {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  border-bottom: none !important;
+}
+/* Top-left corner cell (non-providers): fixed height so first row number lines up with first data row. */
+.handsontable-custom .ht_clone_left table.htCore thead tr th {
+  height: 32px !important;
+  min-height: 32px !important;
+  box-sizing: border-box !important;
+}
+
+/* Fix first row being cut off - ensure proper spacing */
+.handsontable-custom .ht_master .wtHider table.htCore {
+  margin-top: 0 !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+}
+
+/* Ensure the first row is fully visible - no border between header and first row */
+.handsontable-custom .ht_master .wtHider table.htCore tbody tr:first-child td {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  border-top: none !important;
+  /* Ensure first row cells are fully visible */
+  position: relative;
+  z-index: 0;
+}
+
+/* Make sure the header doesn't overlap the scrollable content */
+.handsontable-custom .ht_clone_top {
+  position: relative;
+  z-index: 10;
+}
+
+/* Stabilize column header position during scroll: promote to own layer to avoid subpixel shift */
+.handsontable-custom .ht_clone_top table.htCore thead tr th,
+.handsontable-custom .ht_clone_top .wtHider,
+.providers-handsontable .ht_clone_top table.htCore thead tr th,
+.providers-handsontable .ht_clone_top .wtHider {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+/* Keep header row in one piece so it stays aligned with body */
+.handsontable-custom .ht_clone_top table.htCore thead tr,
+.providers-handsontable .ht_clone_top table.htCore thead tr {
+  transform: translateZ(0);
+}
+
+.handsontable-custom .ht_master {
+  position: relative;
+  z-index: 1;
+}
+
+/* Ensure scroll container shows content from the very top */
+.handsontable-custom .ht_master .wtHolder::before {
+  content: '';
+  display: none;
+}
+
+/* Add borders to all Handsontable cells */
+.handsontable-custom table.htCore td,
+.handsontable-custom table.htCore th {
+  border: 1px solid #dee2e6 !important;
+}
+
+.handsontable-custom .ht_clone_top table.htCore th,
+.handsontable-custom .ht_clone_left table.htCore th {
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+.handsontable-custom td {
+  background-color: rgba(255, 255, 255, 0.9);
+  color: #000000;
+  padding: 0px;
+  border: 1px solid #dee2e6 !important;
+  min-height: 24px !important;
+  vertical-align: middle !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  text-align: center !important;
+}
+
+/* Providers tab: read-only cells use Handsontable .htDimmed (gray text). Keep readOnly but match editable cell text color. */
+.providers-handsontable td.htDimmed {
+  color: #000000 !important;
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  opacity: 1;
+}
+
+/* Row header column: min-height only so it can grow with row when select/dropdown increases height */
+.handsontable-custom .ht_clone_left table.htCore tbody tr th,
+.handsontable-custom .ht_clone_left table.htCore thead tr th {
+  min-height: 24px !important;
+  padding: 0px !important;
+  vertical-align: middle !important;
+  text-align: center !important;
+  box-sizing: border-box !important;
+}
+
+/* Allow tbody rows to grow when Handsontable sets larger height (e.g. dropdown/select); min-height only */
+.handsontable-custom table.htCore tbody tr {
+  min-height: 24px !important;
+}
+
+/* Add spacing between header and first row to prevent overlap */
+.handsontable-custom table.htCore {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+}
+
+.handsontable-custom table.htCore thead {
+  position: relative;
+  z-index: 1;
+}
+
+.handsontable-custom table.htCore tbody {
+  position: relative;
+  z-index: 0;
+}
+
+/* Add padding to first row cells to create space from header; no line between header and first row */
+.handsontable-custom table.htCore tbody tr:first-child td {
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+  min-height: 24px !important;
+  border-top: none !important;
+}
+
+.handsontable-custom .ht_clone_left table.htCore tbody tr:first-child th {
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+  min-height: 24px !important;
+  border-top: none !important;
+}
+
+/* No line between header and first row */
+.handsontable-custom table.htCore thead tr th {
+  border-bottom: none !important;
+  /* border-top: none !important; */
+  border-left: none !important;
+  border-right: none !important;
+}
+
+.handsontable-custom .ht_clone_top table.htCore thead tr th {
+  border-bottom: none !important;
+}
+
+/* Column sort icon: hidden (sorting disabled) except for billing todo which has sortable ID/Status columns */
+.handsontable-custom:not(.billing-todo-sortable) table.htCore thead th span.colHeader,
+.handsontable-custom:not(.billing-todo-sortable) .ht_clone_top table.htCore thead th span.colHeader,
+.providers-handsontable table.htCore thead th span.colHeader,
+.providers-handsontable .ht_clone_top table.htCore thead th span.colHeader {
+  position: relative !important;
+}
+.handsontable-custom:not(.billing-todo-sortable) table.htCore thead th span.colHeader::before,
+.handsontable-custom:not(.billing-todo-sortable) .ht_clone_top table.htCore thead th span.colHeader::before,
+.providers-handsontable table.htCore thead th span.colHeader::before,
+.providers-handsontable .ht_clone_top table.htCore thead th span.colHeader::before {
+  content: none !important;
+  display: none !important;
+}
+
+/* Billing todo: sort icons (Lucide arrow-up-wide-narrow / arrow-down-narrow-wide) – flex layout so icon and title don't overlap */
+.handsontable-custom.billing-todo-sortable table.htCore thead th .columnSorting.sortAction,
+.handsontable-custom.billing-todo-sortable .ht_clone_top table.htCore thead th .columnSorting.sortAction {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex-wrap: nowrap !important;
+}
+.handsontable-custom.billing-todo-sortable .columnSorting.sortAction::before {
+  content: "" !important;
+  display: block !important;
+  flex-shrink: 0 !important;
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+  -webkit-mask-size: contain !important;
+  mask-size: contain !important;
+  -webkit-mask-repeat: no-repeat !important;
+  mask-repeat: no-repeat !important;
+  -webkit-mask-position: center !important;
+  mask-position: center !important;
+  background-color: currentColor !important;
+}
+/* Lucide ArrowUpWideNarrow (ascending) */
+.handsontable-custom.billing-todo-sortable .columnSorting.sortAction.ascending::before {
+  -webkit-mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27m3 8 4-4 4 4%27/%3E%3Cpath d=%27M7 4v16%27/%3E%3Cpath d=%27M11 12h10%27/%3E%3Cpath d=%27M11 16h7%27/%3E%3Cpath d=%27M11 20h4%27/%3E%3C/svg%3E") !important;
+  mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27m3 8 4-4 4 4%27/%3E%3Cpath d=%27M7 4v16%27/%3E%3Cpath d=%27M11 12h10%27/%3E%3Cpath d=%27M11 16h7%27/%3E%3Cpath d=%27M11 20h4%27/%3E%3C/svg%3E") !important;
+}
+/* Lucide ArrowDownNarrowWide (descending) */
+.handsontable-custom.billing-todo-sortable .columnSorting.sortAction.descending::before {
+  -webkit-mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27m3 16 4 4 4-4%27/%3E%3Cpath d=%27M7 20V4%27/%3E%3Cpath d=%27M11 4h4%27/%3E%3Cpath d=%27M11 8h7%27/%3E%3Cpath d=%27M11 12h10%27/%3E%3C/svg%3E") !important;
+  mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27m3 16 4 4 4-4%27/%3E%3Cpath d=%27M7 20V4%27/%3E%3Cpath d=%27M11 4h4%27/%3E%3Cpath d=%27M11 8h7%27/%3E%3Cpath d=%27M11 12h10%27/%3E%3C/svg%3E") !important;
+}
+/* Lucide ArrowUpDown (unsorted / initial load) */
+.handsontable-custom.billing-todo-sortable .columnSorting.sortAction:not(.ascending):not(.descending)::before {
+  -webkit-mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27m21 16-4 4-4-4%27/%3E%3Cpath d=%27M17 20V4%27/%3E%3Cpath d=%27m3 8 4-4 4 4%27/%3E%3Cpath d=%27M7 4v16%27/%3E%3C/svg%3E") !important;
+  mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27m21 16-4 4-4-4%27/%3E%3Cpath d=%27M17 20V4%27/%3E%3Cpath d=%27m3 8 4-4 4 4%27/%3E%3Cpath d=%27M7 4v16%27/%3E%3C/svg%3E") !important;
+  opacity: 0.7;
+}
+
+/* Data cells: min-height so rows can grow when select/dropdown increases height; no max-height */
+.handsontable-custom table.htCore tbody tr td,
+.handsontable-custom table.htCore tbody tr th {
+  min-height: 24px !important;
+}
+
+/* Row number column cells: fill row height so they match data rows when row grows */
+.handsontable-custom .ht_clone_left table.htCore tbody tr th {
+  padding: 0px !important;
+  min-height: 24px !important;
+  height: 100% !important;
+  vertical-align: middle !important;
+  text-align: center !important;
+}
+
+/* Make sure all cells in a row have the same height */
+.handsontable-custom table.htCore tbody tr td,
+.handsontable-custom .ht_clone_left table.htCore tbody tr th {
+  box-sizing: border-box !important;
+}
+
+.handsontable-custom .currentRow,
+.handsontable-custom .currentCol {
+  background-color: rgba(59, 130, 246, 0.1) !important;
+}
+
+.handsontable-custom .area {
+  background-color: rgba(59, 130, 246, 0.2) !important;
+}
+
+.handsontable-custom .fill {
+  background-color: rgba(59, 130, 246, 0.3) !important;
+}
+
+.dark-theme .table-spreadsheet input[type="date"]::-webkit-calendar-picker-indicator,
+.dark-theme .table-spreadsheet input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  cursor: pointer;
+}
+
+.dark-theme .table-spreadsheet td.locked,
+.dark-theme .table-spreadsheet td:has(input:disabled),
+.dark-theme .table-spreadsheet td:has(select:disabled) {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Responsive Table Container */
+.table-container {
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+}
+
+.dark-theme .table-container {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Loading State */
+.table-spreadsheet tbody tr.loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Empty State */
+.table-spreadsheet tbody tr.empty-row td {
+  text-align: center;
+  padding: 24px;
+  color: #6c757d;
+  font-style: italic;
+}
+
+.dark-theme .table-spreadsheet tbody tr.empty-row td {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Lock icons in column headers: always visible */
+.handsontable-custom .billing-todo-lock-icon,
+.handsontable-custom .patient-lock-icon,
+.handsontable-custom .ar-lock-icon,
+.handsontable-custom .provider-pay-lock-icon,
+.providers-handsontable .provider-lock-icon {
+  opacity: 1 !important;
+}
+
+/* Bubble Select Styles for Handsontable */
+.handsontable-bubble-select {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
+.handsontable-bubble-select:hover {
+  opacity: 0.9;
+}
+
+/* Ensure cell padding for bubble selects */
+.handsontable-custom td:has(.handsontable-bubble-select) {
+  padding: 2px 4px !important;
+  text-align: left !important;
+  vertical-align: middle !important;
+}
+
+/* Checkbox cells: pointer cursor on hover */
+.handsontable-custom td .htCheckboxRendererInput,
+.handsontable-custom td:has(.htCheckboxRendererInput) {
+  cursor: pointer;
+}
+
+/* Cell highlight from context menu (Highlight) */
+.handsontable-custom td.cell-highlight-yellow {
+  background-color: #fef08a !important;
+}
+
+/* Cell has comment indicator (small icon in top-right corner) */
+.handsontable-custom td.cell-has-comment {
+  position: relative;
+}
+.handsontable-custom td.cell-has-comment::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  width: 10px;
+  height: 10px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%232563eb'%3E%3Cpath d='M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+
+/* Cell comment resolved: show tick mark (overrides or supplements comment icon) */
+.handsontable-custom td.cell-comment-resolved {
+  position: relative;
+}
+.handsontable-custom td.cell-comment-resolved::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2310b981' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6L9 17l-5-5'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
