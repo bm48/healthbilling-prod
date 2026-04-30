@@ -123,6 +123,10 @@ export default function ProviderPayTab({
   backupVersionKey = 0,
   onSelectedProviderIdChange,
 }: ProviderPayTabProps) {
+  const logProviderPay = useCallback((event: string, payload?: Record<string, unknown>) => {
+    if (payload) console.log(`[ProviderPayTab] ${event}`, payload)
+    else console.log(`[ProviderPayTab] ${event}`)
+  }, [])
   const containerRef = useRef<HTMLDivElement>(null)
   const [tableHeight, setTableHeight] = useState(600)
   const [payDate, setPayDate] = useState('')
@@ -132,6 +136,9 @@ export default function ProviderPayTab({
   const [providerPayDataVersion, setProviderPayDataVersion] = useState(0)
   const [sideNotes, setSideNotes] = useState('')
   const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(1)
+  // Tracks which month/provider/payroll the in-memory form data belongs to.
+  // Prevents autosave from writing stale data into a newly selected scope.
+  const [hydratedScopeKey, setHydratedScopeKey] = useState('')
 
   type CachedPay = { payDate: string; payPeriodFrom: string; payPeriodTo: string; sideNotes: string; tableData: string[][] }
   const [providerPayCache, setProviderPayCache] = useState<Record<string, CachedPay>>({})
@@ -146,6 +153,9 @@ export default function ProviderPayTab({
   )
   const [loading, setLoading] = useState(false)
   const hasLoadedOnceRef = useRef(false)
+  const restoredPendingKeyRef = useRef<string | null>(null)
+  const skipAutosaveOnceRef = useRef(false)
+  const previousScopeKeyRef = useRef<string | null>(null)
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savePayloadRef = useRef<{
     clinicId: string
@@ -170,6 +180,18 @@ export default function ProviderPayTab({
     () => providers.find((p) => p.id === effectiveProviderId)?.provider_cut_percent ?? DEFAULT_PROVIDER_CUT_PERCENT,
     [providers, effectiveProviderId]
   )
+  const payrollForCurrentScope = clinicPayroll === 2 ? selectedPayroll : 1
+  const pendingStorageKey = useMemo(
+    () =>
+      clinicId && effectiveProviderId
+        ? `provider_pay_pending_${clinicId}_${effectiveProviderId}_${year}-${month}-${payrollForCurrentScope}`
+        : '',
+    [clinicId, effectiveProviderId, year, month, payrollForCurrentScope]
+  )
+  const scopeKey = useMemo(
+    () => (clinicId && effectiveProviderId ? `${clinicId}_${effectiveProviderId}_${year}-${month}-${payrollForCurrentScope}` : ''),
+    [clinicId, effectiveProviderId, year, month, payrollForCurrentScope]
+  )
 
   // Sync selectedProviderId when providerIdProp or providers list changes (e.g. initial load or provider no longer in list)
   useEffect(() => {
@@ -188,6 +210,7 @@ export default function ProviderPayTab({
   // Fetch from DB when clinicId, effectiveProviderId, and selectedMonth are set. Use cache for instant display when switching month/provider.
   useEffect(() => {
     if (!clinicId || !effectiveProviderId) {
+      logProviderPay('fetch skipped missing scope', { clinicId, effectiveProviderId })
       setLoading(false)
       return
     }
@@ -198,14 +221,17 @@ export default function ProviderPayTab({
     }
     const payrollForFetch = clinicPayroll === 2 ? selectedPayroll : 1
     const cacheKey = `${year}-${month}-${effectiveProviderId}-${payrollForFetch}`
+    logProviderPay('fetch started', { clinicId, effectiveProviderId, year, month, payrollForFetch, cacheKey })
 
     const applyDataToState = (payDateVal: string, payPeriodFromVal: string, payPeriodToVal: string, notesVal: string, rows: string[][]) => {
+      skipAutosaveOnceRef.current = true
       setPayDate(payDateVal)
       setPayPeriodFrom(payPeriodFromVal)
       setPayPeriodTo(payPeriodToVal)
       setSideNotes(notesVal)
       setTableData(rows)
       setProviderPayDataVersion((v) => v + 1)
+      setHydratedScopeKey(scopeKey)
     }
 
     const processFetchResult = (data: { payDate: string; payPeriod: string; notes: string; rows: string[][] } | null): CachedPay => {
@@ -252,6 +278,13 @@ export default function ProviderPayTab({
 
     const cached = providerPayCache[cacheKey]
     if (cached) {
+      logProviderPay('cache hit apply', {
+        cacheKey,
+        rows: cached.tableData.length,
+        payDate: cached.payDate,
+        payPeriodFrom: cached.payPeriodFrom,
+        payPeriodTo: cached.payPeriodTo,
+      })
       applyDataToState(cached.payDate, cached.payPeriodFrom, cached.payPeriodTo, cached.sideNotes, cached.tableData.map((r) => [...r]))
       setLoading(false)
     } else {
@@ -261,16 +294,77 @@ export default function ProviderPayTab({
 
     fetchProviderPay(clinicId, effectiveProviderId, year, month, payrollForFetch)
       .then((data) => {
+        logProviderPay('fetch resolved', {
+          clinicId,
+          effectiveProviderId,
+          year,
+          month,
+          payrollForFetch,
+          hasData: Boolean(data),
+          rows: data?.rows?.length ?? 0,
+          payDate: data?.payDate ?? '',
+          payPeriod: data?.payPeriod ?? '',
+        })
         const entry = processFetchResult(data)
         applyDataToState(entry.payDate, entry.payPeriodFrom, entry.payPeriodTo, entry.sideNotes, entry.tableData.map((r) => [...r]))
         setProviderPayCache((prev) => ({ ...prev, [cacheKey]: entry }))
       })
       .catch((err) => console.error('[ProviderPayTab] fetchProviderPay error:', err))
       .finally(() => {
+        logProviderPay('fetch finished', { cacheKey })
         setLoading(false)
         hasLoadedOnceRef.current = true
       })
-  }, [clinicId, effectiveProviderId, year, month, providerCutPercent, clinicPayroll, selectedPayroll, isViewingBackup, overrideTableData])
+  }, [clinicId, effectiveProviderId, year, month, providerCutPercent, clinicPayroll, selectedPayroll, isViewingBackup, overrideTableData, logProviderPay])
+
+  // Restore unsaved local snapshot for the current provider/month/payroll after refresh.
+  useEffect(() => {
+    if (!pendingStorageKey || restoredPendingKeyRef.current === pendingStorageKey || isViewingBackup) return
+    restoredPendingKeyRef.current = pendingStorageKey
+    try {
+      const raw = localStorage.getItem(pendingStorageKey)
+      if (!raw) {
+        logProviderPay('pending snapshot restore miss', { pendingStorageKey })
+        return
+      }
+      const payload = JSON.parse(raw) as {
+        payDate?: string
+        payPeriodFrom?: string
+        payPeriodTo?: string
+        sideNotes?: string
+        tableData?: string[][]
+      }
+      if (!payload || !Array.isArray(payload.tableData)) return
+      const rows = payload.tableData.map((r) => [String(r?.[0] ?? ''), String(r?.[1] ?? ''), String(r?.[2] ?? '')])
+      logProviderPay('pending snapshot restored', {
+        pendingStorageKey,
+        rows: rows.length,
+        payDate: payload.payDate ?? '',
+        payPeriodFrom: payload.payPeriodFrom ?? '',
+        payPeriodTo: payload.payPeriodTo ?? '',
+      })
+      skipAutosaveOnceRef.current = true
+      setPayDate(payload.payDate ?? '')
+      setPayPeriodFrom(payload.payPeriodFrom ?? '')
+      setPayPeriodTo(payload.payPeriodTo ?? '')
+      setSideNotes(payload.sideNotes ?? '')
+      setTableData(rows)
+      setProviderPayDataVersion((v) => v + 1)
+      setHydratedScopeKey(scopeKey)
+    } catch {
+      logProviderPay('pending snapshot restore failed parse', { pendingStorageKey })
+      // Ignore malformed local pending snapshots.
+    }
+  }, [pendingStorageKey, isViewingBackup, logProviderPay, scopeKey])
+
+  // When switching scope, mark current form state as not yet hydrated for the new scope.
+  useEffect(() => {
+    if (!scopeKey) {
+      setHydratedScopeKey('')
+      return
+    }
+    if (hydratedScopeKey !== scopeKey) setHydratedScopeKey('')
+  }, [scopeKey, hydratedScopeKey])
 
   /** When viewing backup, use override so the grid shows the correct version on first render (same fix as AR and Patients tabs). */
   const displayTableData = useMemo(
@@ -285,8 +379,20 @@ export default function ProviderPayTab({
   // Update cache on success so fetch effect re-runs don't overwrite state with stale cache. Flush on unmount and beforeunload.
   const runSave = useCallback((p: NonNullable<typeof savePayloadRef.current>) => {
     const cacheKey = `${p.year}-${p.month}-${p.effectiveProviderId}-${p.payrollForSave}`
+    const pendingKey = `provider_pay_pending_${p.clinicId}_${p.effectiveProviderId}_${p.year}-${p.month}-${p.payrollForSave}`
+    logProviderPay('save started', {
+      clinicId: p.clinicId,
+      effectiveProviderId: p.effectiveProviderId,
+      year: p.year,
+      month: p.month,
+      payrollForSave: p.payrollForSave,
+      rows: p.tableData.length,
+      payDate: p.payDate,
+      payPeriod: p.payPeriod,
+    })
     saveProviderPay(p.clinicId, p.effectiveProviderId, p.year, p.month, p.payDate, p.payPeriod, p.tableData, p.sideNotes, p.payrollForSave)
       .then(() => {
+        logProviderPay('save success', { cacheKey, pendingKey, rows: p.tableData.length })
         setProviderPayCache((prev) => ({
           ...prev,
           [cacheKey]: {
@@ -297,12 +403,23 @@ export default function ProviderPayTab({
             tableData: p.tableData.map((r) => [...r]),
           },
         }))
+        try {
+          localStorage.removeItem(pendingKey)
+          logProviderPay('pending snapshot removed after save', { pendingKey })
+        } catch {
+          // Ignore storage failures.
+        }
       })
       .catch((err) => console.error('[ProviderPayTab] saveProviderPay error:', err))
-  }, [])
+  }, [logProviderPay])
 
   useEffect(() => {
     if (!clinicId || !effectiveProviderId || !canEdit || loading) return
+    if (!scopeKey || hydratedScopeKey !== scopeKey) return
+    if (skipAutosaveOnceRef.current) {
+      skipAutosaveOnceRef.current = false
+      return
+    }
     const payrollForSave = clinicPayroll === 2 ? selectedPayroll : 1
     savePayloadRef.current = {
       clinicId,
@@ -317,11 +434,41 @@ export default function ProviderPayTab({
       sideNotes,
       payrollForSave,
     }
+    try {
+      localStorage.setItem(
+        pendingStorageKey,
+        JSON.stringify({
+          payDate,
+          payPeriodFrom,
+          payPeriodTo,
+          sideNotes,
+          tableData,
+          savedAt: Date.now(),
+        })
+      )
+      logProviderPay('pending snapshot written', {
+        pendingStorageKey,
+        rows: tableData.length,
+        payDate,
+        payPeriodFrom,
+        payPeriodTo,
+      })
+    } catch {
+      // Ignore storage quota and JSON errors.
+    }
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = null
       const p = savePayloadRef.current
       if (p) {
+        logProviderPay('debounced save firing', {
+          clinicId: p.clinicId,
+          effectiveProviderId: p.effectiveProviderId,
+          year: p.year,
+          month: p.month,
+          payrollForSave: p.payrollForSave,
+          rows: p.tableData.length,
+        })
         savePayloadRef.current = null
         runSave(p)
       }
@@ -330,20 +477,77 @@ export default function ProviderPayTab({
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current)
         saveTimeoutRef.current = null
-        const p = savePayloadRef.current
-        if (p) {
-          savePayloadRef.current = null
-          runSave(p)
-        }
       }
     }
-  }, [clinicId, effectiveProviderId, year, month, canEdit, loading, payDate, payPeriod, payPeriodFrom, payPeriodTo, tableData, sideNotes, clinicPayroll, selectedPayroll, runSave])
+  }, [clinicId, effectiveProviderId, year, month, canEdit, loading, payDate, payPeriod, payPeriodFrom, payPeriodTo, tableData, sideNotes, clinicPayroll, selectedPayroll, runSave, pendingStorageKey, logProviderPay, scopeKey, hydratedScopeKey])
+
+  // Flush pending save when provider/month/payroll scope changes.
+  useEffect(() => {
+    if (!scopeKey) return
+    if (previousScopeKeyRef.current == null) {
+      previousScopeKeyRef.current = scopeKey
+      return
+    }
+    if (previousScopeKeyRef.current !== scopeKey) {
+      const p = savePayloadRef.current
+      if (p) {
+        logProviderPay('scope change flush save', {
+          fromScope: previousScopeKeyRef.current,
+          toScope: scopeKey,
+          clinicId: p.clinicId,
+          effectiveProviderId: p.effectiveProviderId,
+          year: p.year,
+          month: p.month,
+          payrollForSave: p.payrollForSave,
+          rows: p.tableData.length,
+        })
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current)
+          saveTimeoutRef.current = null
+        }
+        savePayloadRef.current = null
+        runSave(p)
+      }
+      previousScopeKeyRef.current = scopeKey
+    }
+  }, [scopeKey, runSave, logProviderPay])
+
+  // Flush pending save only on unmount.
+  useEffect(() => {
+    return () => {
+      const p = savePayloadRef.current
+      if (p) {
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current)
+          saveTimeoutRef.current = null
+        }
+        logProviderPay('unmount flush save', {
+          clinicId: p.clinicId,
+          effectiveProviderId: p.effectiveProviderId,
+          year: p.year,
+          month: p.month,
+          payrollForSave: p.payrollForSave,
+          rows: p.tableData.length,
+        })
+        savePayloadRef.current = null
+        runSave(p)
+      }
+    }
+  }, [runSave, logProviderPay])
 
   // Flush pending save when user refreshes or closes tab so data persists
   useEffect(() => {
     const onBeforeUnload = () => {
       const p = savePayloadRef.current
       if (saveTimeoutRef.current && p) {
+        logProviderPay('beforeunload flush save', {
+          clinicId: p.clinicId,
+          effectiveProviderId: p.effectiveProviderId,
+          year: p.year,
+          month: p.month,
+          payrollForSave: p.payrollForSave,
+          rows: p.tableData.length,
+        })
         clearTimeout(saveTimeoutRef.current)
         saveTimeoutRef.current = null
         savePayloadRef.current = null
@@ -352,7 +556,7 @@ export default function ProviderPayTab({
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [])
+  }, [logProviderPay])
 
   const getMonthColor = useCallback(
     (month: string): { color: string; textColor: string } | null => {
@@ -446,6 +650,10 @@ export default function ProviderPayTab({
   const afterChange = useCallback(
     (changes: Handsontable.CellChange[] | null, _source?: Handsontable.ChangeSource) => {
       if (!changes?.length || !canEdit) return
+      logProviderPay('table afterChange', {
+        changes: changes.length,
+        source: String(_source ?? ''),
+      })
       setTableData((prev) => {
         const next = prev.map((r) => [...r])
         for (const change of changes) {

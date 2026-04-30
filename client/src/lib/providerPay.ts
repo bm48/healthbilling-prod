@@ -117,19 +117,30 @@ export async function saveProviderPay(
     providerPayId = inserted.id
   }
 
-  // Replace all rows: delete existing, insert new
-  await apiClient.from('provider_pay_rows').delete().eq('provider_pay_id', providerPayId)
+  // Replace all rows: delete existing, insert new (never leave header without lines — use template if state was empty)
+  const effectiveTable = tableData.length > 0 ? tableData : buildEmptyRows()
+  const rowsToInsert = effectiveTable.map((row, rowIndex) => ({
+    provider_pay_id: providerPayId,
+    row_index: rowIndex,
+    description: row[0] ?? null,
+    amount: row[1] ?? null,
+    notes: row[2] ?? null,
+  }))
 
-  if (tableData.length > 0) {
-    const rowsToInsert = tableData.map((row, rowIndex) => ({
-      provider_pay_id: providerPayId,
-      row_index: rowIndex,
-      description: row[0] ?? null,
-      amount: row[1] ?? null,
-      notes: row[2] ?? null,
-    }))
-    const { error: rowsError } = await apiClient.from('provider_pay_rows').insert(rowsToInsert)
-    if (rowsError) throw rowsError
+  const { error: deleteError } = await apiClient.from('provider_pay_rows').delete().eq('provider_pay_id', providerPayId)
+  if (deleteError) {
+    console.error('[saveProviderPay] Error deleting provider_pay_rows:', deleteError)
+    throw deleteError
+  }
+
+  // Insert rows one-by-one. Bulk insert currently fails intermittently in this stack
+  // with provider_pay_id null errors, while single-row inserts are stable.
+  for (const row of rowsToInsert) {
+    const { error: rowErr } = await apiClient.from('provider_pay_rows').insert(row)
+    if (rowErr) {
+      console.error('[saveProviderPay] Row insert failed at row_index', row.row_index, rowErr)
+      throw rowErr
+    }
   }
 }
 
@@ -180,6 +191,14 @@ function buildRowsFromDb(rowsData: RowRecord[]): string[][] {
   // Ensure we have at least the template shape; pad with empty rows if needed
   while (rows.length < DEFAULT_ROW_TEMPLATE.length) {
     rows.push(['', '', ''])
+  }
+  // Keep fixed row labels stable even if older DB rows stored blank descriptions.
+  const fixedDescriptionRows = [0, 1, 2, 3, 5, 6]
+  for (const rowIndex of fixedDescriptionRows) {
+    if (!rows[rowIndex]) rows[rowIndex] = ['', '', '']
+    if (!String(rows[rowIndex][0] ?? '').trim()) {
+      rows[rowIndex][0] = DEFAULT_ROW_TEMPLATE[rowIndex]?.[0] ?? ''
+    }
   }
   return rows
 }

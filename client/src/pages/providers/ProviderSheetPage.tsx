@@ -35,6 +35,7 @@ export default function ProviderSheetPage() {
   const providerSheetRowsRef = useRef<Record<string, SheetRow[]>>({})
   const saveProviderSheetInProgressRef = useRef<Set<string>>(new Set())
   const pendingProviderSheetSaveRef = useRef<Record<string, SheetRow[]>>({})
+  const providerSheetFetchVersionRef = useRef(0)
   const [currentSheet, setCurrentSheet] = useState<ProviderSheet | null>(null)
   /** When provider level is 2: 'sheet' | 'accounts_receivable' | 'provider_pay' */
   const [providerViewTab, setProviderViewTab] = useState<'sheet' | 'accounts_receivable' | 'provider_pay'>('sheet')
@@ -160,7 +161,11 @@ export default function ProviderSheetPage() {
     const month = selectedMonth.getMonth() + 1
     const year = selectedMonth.getFullYear()
     const payroll = (clinic?.payroll ?? 1) as 1 | 2
+    const fetchVersion = ++providerSheetFetchVersionRef.current
 
+    // Always show rows for the currently selected month from DB, not stale rows from prior month.
+    setCurrentSheet(null)
+    setProviderSheetRows(prev => ({ ...prev, [providerId]: [] }))
     setLoading(true)
     try {
       let { data: sheetList, error: sheetsError } = await apiClient
@@ -183,6 +188,7 @@ export default function ProviderSheetPage() {
           .from('provider_sheets')
           .insert({
             clinic_id: clinicId,
+            provider_id: providerId,
             month,
             year,
             payroll,
@@ -213,6 +219,7 @@ export default function ProviderSheetPage() {
         if (!sheet) return
       }
 
+      if (providerSheetFetchVersionRef.current !== fetchVersion) return
       setCurrentSheet(sheet)
 
       let sheetRows = await fetchSheetRows(apiClient, sheet.id)
@@ -265,13 +272,18 @@ export default function ProviderSheetPage() {
       const emptyRows = Array.from({ length: emptyCount }, (_, i) => createEmptyRow(i))
       const allRows = [...sheetRows, ...emptyRows]
 
+      if (providerSheetFetchVersionRef.current !== fetchVersion) return
       setProviderSheetRows(prev => ({ ...prev, [providerId]: allRows }))
     } catch (e) {
-      console.error('Error fetching provider sheet:', e)
+      if (providerSheetFetchVersionRef.current === fetchVersion) {
+        console.error('Error fetching provider sheet:', e)
+      }
     } finally {
-      setLoading(false)
+      if (providerSheetFetchVersionRef.current === fetchVersion) {
+        setLoading(false)
+      }
     }
-  }, [provider, clinic, selectedMonth])
+  }, [provider, clinic, clinicId, selectedMonth])
 
   useEffect(() => {
     providerSheetRowsRef.current = providerSheetRows

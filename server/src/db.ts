@@ -5,7 +5,7 @@ import { Pool } from 'pg'
 import { env } from './config.js'
 
 export const pool = new Pool({ connectionString: env.DATABASE_URL })
-
+console.log('DATABASE_URL', env.DATABASE_URL)
 let schemaReady = false
 
 export async function ensureServerSchema(): Promise<void> {

@@ -273,14 +273,25 @@ export class PostgrestBuilder implements Promise<PostgrestResponse> {
       if (values == null) {
         return { data: null, error: { message: 'Missing insert payload' }, count: null }
       }
-      const row = Array.isArray(values) ? (values[0] as Record<string, unknown> | undefined) : (values as Record<string, unknown>)
-      if (!row) {
-        return { data: null, error: { message: 'Empty insert rows' }, count: null }
+      if (Array.isArray(values)) {
+        if (values.length === 0) {
+          return { data: null, error: { message: 'Empty insert rows' }, count: null }
+        }
+        // Send all rows (e.g. provider_pay_rows); previously only values[0] was sent, so payment amounts never persisted.
+        const body = {
+          table: this.table,
+          action: 'insert' as const,
+          rows: values as Record<string, unknown>[],
+          single: this.flagSingle,
+          maybeSingle: this.flagMaybeSingle,
+        }
+        const res = await fetch(`${base}/api/db/query`, { method: 'POST', headers, body: JSON.stringify(body) })
+        return parseWriteResponse(res)
       }
       const body = {
         table: this.table,
         action: 'insert' as const,
-        values: row,
+        values: values as Record<string, unknown>,
         single: this.flagSingle,
         maybeSingle: this.flagMaybeSingle,
       }

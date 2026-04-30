@@ -439,6 +439,59 @@ export default function ProvidersTab({
     return m
   }, [patients])
 
+  const isPatientAssignedToDifferentProvider = useCallback(
+    (patientId: string, currentProviderId: string): boolean => {
+      const key = String(patientId ?? '').trim().toLowerCase()
+      if (!key) return false
+      for (const [providerIdForRows, rows] of Object.entries(providerSheetRows)) {
+        if (providerIdForRows === currentProviderId) continue
+        const matchRow = (rows || []).find((row) => String(row.patient_id ?? '').trim().toLowerCase() === key)
+        if (matchRow) {
+          return true
+        }
+      }
+      return false
+    },
+    [providerSheetRows]
+  )
+
+  const isPatientAssignedToDifferentProviderDb = useCallback(
+    async (patientId: string, currentProviderId: string): Promise<boolean> => {
+      const key = String(patientId ?? '').trim()
+      if (!key || !clinicId) return false
+      const month = selectedMonth.getMonth() + 1
+      const year = selectedMonth.getFullYear()
+      const payroll = clinicPayroll === 2 ? (selectedPayroll ?? 1) : 1
+
+      const { data: otherSheets, error: otherSheetsError } = await apiClient
+        .from('provider_sheets')
+        .select('id, provider_id')
+        .eq('clinic_id', clinicId)
+        .eq('month', month)
+        .eq('year', year)
+        .eq('payroll', payroll)
+        .neq('provider_id', currentProviderId)
+
+      if (otherSheetsError) return isPatientAssignedToDifferentProvider(patientId, currentProviderId)
+
+      const otherSheetIds = (otherSheets || []).map((s: { id: string }) => s.id)
+      if (otherSheetIds.length === 0) return false
+
+      const { data: duplicateRows, error: duplicateRowsError } = await apiClient
+        .from('provider_sheet_rows')
+        .select('id, sheet_id, patient_id')
+        .in('sheet_id', otherSheetIds)
+        .eq('patient_id', key)
+        .limit(1)
+
+      if (duplicateRowsError) return isPatientAssignedToDifferentProvider(patientId, currentProviderId)
+
+      const hasDuplicate = Boolean(duplicateRows && duplicateRows.length > 0)
+      return hasDuplicate
+    },
+    [clinicId, selectedMonth, clinicPayroll, selectedPayroll, isPatientAssignedToDifferentProvider]
+  )
+
   useEffect(() => {
     // Clear drafts once DB catches up (or patient no longer exists), so source-of-truth returns to patients table.
     const drafts = coPatientDraftByIdKeyRef.current
@@ -1485,6 +1538,17 @@ export default function ProvidersTab({
                   for (const [row, { col, newVal }] of byRow) {
                     const key = newVal.trim().toLowerCase()
                     const rec = byKey.get(key)
+                    const duplicateInOtherProvider = await isPatientAssignedToDifferentProviderDb(newVal, ap.id)
+                    if (duplicateInOtherProvider) {
+                      pendingPatientMergeByRowRef.current.set(row, null)
+                      try {
+                        hot.setDataAtCell(row, col as number, null, 'revertInvalidPatientId')
+                        window.alert('This patient is already assigned to another provider')
+                      } catch (e) {
+                        console.error('[ProvidersTab] setDataAtCell after patient assignment validation failed', e)
+                      }
+                      continue
+                    }
                     pendingPatientMergeByRowRef.current.set(row, rec ?? null)
                     try {
                       hot.setDataAtCell(row, col as number, newVal, 'patientIdDbValidated')
@@ -1519,7 +1583,7 @@ export default function ProvidersTab({
     badChanges.forEach((change) => {
       ;(change as unknown[])[3] = valueToApply
     })
-  }, [showVisitTypeColumn, isViewingBackup])
+  }, [showVisitTypeColumn, isViewingBackup, isPatientAssignedToDifferentProviderDb])
 
   const handleProviderRowsHandsontableChange = useCallback((changes: Handsontable.CellChange[] | null, source: Handsontable.ChangeSource) => {
     if (!changes || source === 'loadData' || !activeProvider) return
@@ -1743,6 +1807,16 @@ export default function ProvidersTab({
                 const { data, error } = await apiClient.from('patients').select('*').eq('clinic_id', clinic)
                 if (error) {
                   console.error('[ProvidersTab] patient ID validation (edit) failed', error)
+                  return
+                }
+                const duplicateInOtherProvider = await isPatientAssignedToDifferentProviderDb(pidRaw, ap.id)
+                if (duplicateInOtherProvider) {
+                  try {
+                    hotInstanceRef.current?.setDataAtCell(row, 0, null, 'revertInvalidPatientId')
+                  } catch (e) {
+                    console.error('[ProvidersTab] failed to revert duplicate patient id after DB check', e)
+                  }
+                  window.alert('This patient is already assigned to another provider')
                   return
                 }
                 const rec =
@@ -2008,7 +2082,7 @@ export default function ProvidersTab({
     if (hadPatientIdMerge || hadPatientIdClear || hadDateColumnEdit || hadTotalAutoUpdate || uniqueDeleteIds.length > 0) {
       setStructureVersion((v) => v + 1)
     }
-  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRow, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id])
+  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRow, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, isPatientAssignedToDifferentProviderDb])
 
   const createEmptySheetRowForSync = useCallback(
     (providerId: string, emptySuffix: number): SheetRow => ({

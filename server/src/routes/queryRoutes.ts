@@ -181,13 +181,39 @@ queryRoutes.post('/query', async (req, res) => {
     }
 
     if (input.action === 'insert') {
-      const payload = input.values ?? {}
-      const keys = Object.keys(payload)
+      const rows =
+        input.rows && input.rows.length > 0
+          ? input.rows
+          : input.values != null && typeof input.values === 'object' && !Array.isArray(input.values)
+            ? [input.values as Record<string, unknown>]
+            : []
+      if (rows.length === 0) {
+        res.status(400).json({ data: null, error: { message: 'Missing insert values or rows' } })
+        return
+      }
+      // Union all keys so every row supplies the same columns (JSON may omit nulls on some rows)
+      const keySet = new Set<string>()
+      for (const row of rows) {
+        if (row && typeof row === 'object' && !Array.isArray(row)) {
+          for (const k of Object.keys(row as Record<string, unknown>)) keySet.add(k)
+        }
+      }
+      const keys = [...keySet].sort()
+      if (keys.length === 0) {
+        res.status(400).json({ data: null, error: { message: 'Insert row has no columns' } })
+        return
+      }
+      const flatValues: unknown[] = []
+      const tuples = rows.map((row, rowIdx) => {
+        const placeholders = keys.map((k, colIdx) => {
+          flatValues.push((row as Record<string, unknown>)[k] ?? null)
+          return `$${rowIdx * keys.length + colIdx + 1}`
+        })
+        return `(${placeholders.join(', ')})`
+      })
       const cols = keys.map(quoteIdent).join(', ')
-      const placeholders = keys.map((_, idx) => `$${idx + 1}`).join(', ')
-      const values = keys.map((k) => payload[k])
-      const sql = `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) RETURNING *`
-      const result = await pool.query(sql, values)
+      const sql = `INSERT INTO ${table} (${cols}) VALUES ${tuples.join(', ')} RETURNING *`
+      const result = await pool.query(sql, flatValues)
       res.json({
         data: input.single || input.maybeSingle ? (result.rows[0] ?? null) : result.rows,
         error: null,
