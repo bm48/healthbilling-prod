@@ -12,7 +12,7 @@ import {
   generateLaborReport,
   getDateRange,
 } from '@/lib/reports'
-import { ProviderSheet, Timecard, User, Clinic } from '@/types'
+import { ProviderSheet, Timecard, User, Clinic, Provider } from '@/types'
 
 export default function Reports() {
   const { userProfile } = useAuth()
@@ -65,11 +65,16 @@ export default function Reports() {
       let sheets: ProviderSheet[] = []
       let timecards: Timecard[] = []
       let users: User[] = []
+      let providers: Provider[] = []
       let clinicsData: Clinic[] = []
 
       // Fetch users (active only so inactive users do not appear in reports)
       const { data: usersData } = await apiClient.from('users').select('*').eq('active', true)
       users = usersData || []
+
+      // Fetch providers for provider/clinic report labels (provider_sheets.provider_id references providers.id).
+      const { data: providersData } = await apiClient.from('providers').select('*').eq('active', true)
+      providers = providersData || []
 
       // Fetch clinics
       const { data: clinicsDataResult } = await apiClient.from('clinics').select('*')
@@ -131,10 +136,10 @@ export default function Reports() {
 
       switch (reportType) {
         case 'provider':
-          pdf = await generateProviderReport(sheets, users, { startDate, endDate, clinicId: selectedClinic }, rowsBySheetId)
+          pdf = await generateProviderReport(sheets, providers, { startDate, endDate, clinicId: selectedClinic }, rowsBySheetId)
           break
         case 'clinic':
-          pdf = await generateClinicReport(sheets, users, clinicsData, { startDate, endDate }, rowsBySheetId)
+          pdf = await generateClinicReport(sheets, providers, clinicsData, { startDate, endDate }, rowsBySheetId)
           break
         case 'claim':
           pdf = await generateClaimReport(sheets, { startDate, endDate, clinicId: selectedClinic }, rowsBySheetId)

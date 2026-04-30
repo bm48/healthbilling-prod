@@ -1,7 +1,7 @@
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { formatCurrency, formatDate } from './utils'
-import { ProviderSheet, SheetRow, Timecard, User, Clinic } from '@/types'
+import { ProviderSheet, SheetRow, Timecard, User, Clinic, Provider } from '@/types'
 
 export interface ReportData {
   startDate: Date
@@ -12,7 +12,7 @@ export interface ReportData {
 
 export async function generateProviderReport(
   sheets: ProviderSheet[],
-  users: User[],
+  providers: Provider[],
   reportData: ReportData,
   rowsBySheetId: Record<string, SheetRow[]>
 ): Promise<jsPDF> {
@@ -26,7 +26,7 @@ export async function generateProviderReport(
   const tableData: any[] = []
   
   sheets.forEach(sheet => {
-    const provider = users.find(u => u.id === sheet.provider_id)
+    const provider = providers.find(p => p.id === sheet.provider_id)
     const rows = rowsBySheetId[sheet.id] || []
     
     let totalInsurance = 0
@@ -40,7 +40,7 @@ export async function generateProviderReport(
     })
 
     tableData.push([
-      provider?.full_name || provider?.email || 'Unknown',
+      `${provider?.first_name ?? ''} ${provider?.last_name ?? ''}`.trim() || provider?.email || 'Unknown',
       formatCurrency(totalInsurance),
       formatCurrency(totalPatient),
       formatCurrency(totalAR),
@@ -59,7 +59,7 @@ export async function generateProviderReport(
 
 export async function generateClinicReport(
   sheets: ProviderSheet[],
-  users: User[],
+  providers: Provider[],
   clinics: Clinic[],
   reportData: ReportData,
   rowsBySheetId: Record<string, SheetRow[]>
@@ -88,8 +88,8 @@ export async function generateClinicReport(
     }
 
     const data = clinicData.get(clinicName)!
-    const provider = users.find(u => u.id === sheet.provider_id)
-    const providerName = provider?.full_name || provider?.email || 'Unknown'
+    const provider = providers.find(p => p.id === sheet.provider_id)
+    const providerName = `${provider?.first_name ?? ''} ${provider?.last_name ?? ''}`.trim() || provider?.email || 'Unknown'
     const rows = rowsBySheetId[sheet.id] || []
     
     let insurance = 0
