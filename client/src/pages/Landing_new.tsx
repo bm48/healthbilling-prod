@@ -33,7 +33,6 @@ export default function Landing() {
         phone: contactPhone || undefined,
         content: contactContent,
       }
-      console.log('body: ', body)
       const res = await fetch('/api/send-contact', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
