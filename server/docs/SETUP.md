@@ -27,6 +27,9 @@ Copy `.env.example` to **`.env` in the repository root** (shared by Vite and the
 
 Optional: `GMAIL_USER` / `GMAIL_APP_PASSWORD` for contact form and invite emails. See `.env.example`.
 
+**Contact form fails with `ETIMEDOUT` to a private IP (e.g. `10.x.x.x:465`)**  
+Your network/DNS is routing `smtp.gmail.com` to an internal relay or blocking outbound SMTP. Fix outside the app: use another network/VPN, open firewall port **465** (default) or **587**, or set **`SMTP_HOST`** / **`SMTP_PORT`** / **`SMTP_SECURE`** in `server/.env` to an SMTP endpoint your IT allows (org relay, SendGrid, etc.).
+
 Vite loads env from the **repo root** so one `.env` file is enough for local dev.
 
 ### 3. Database schema
@@ -59,6 +62,11 @@ npm run dev
 
 - API: `http://localhost:4000` (default)
 - App: `http://localhost:5173` — Vite proxies `/api` to the API
+
+**Important:** In `server/`, `npm start` runs **`node dev.mjs`** (TypeScript via `tsx watch`), same as `npm run dev`, so you always run the latest `src/` code and see `console.log` output.  
+For production, build first then run **`npm run start:prod`** (or from repo root: **`npm run server:start`** after `npm run server:build`).
+
+If you run **`node dist/index.js`** without rebuilding after editing `src/`, you will get **stale behavior** (missing logs, old bugs).
 
 ### 6. Production build
 

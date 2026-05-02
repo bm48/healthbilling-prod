@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node dev.mjs",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dev.mjs",
+    "start:prod": "node dist/index.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

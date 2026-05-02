@@ -19,16 +19,62 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
-function createMailTransport() {
+function createMailTransport(context: string) {
   const user = env.GMAIL_USER
   const pass = env.GMAIL_APP_PASSWORD
-  if (!user || !pass) return null
+  if (!user || !pass) {
+    // eslint-disable-next-line no-console
+    console.error(`[mail:${context}] createMailTransport: missing credentials`, {
+      hasGmailUser: Boolean(user),
+      gmailUserLength: user?.length ?? 0,
+      hasAppPassword: Boolean(pass),
+      appPasswordLength: pass?.length ?? 0,
+    })
+    return null
+  }
+  const host = env.SMTP_HOST?.trim() || 'smtp.gmail.com'
+  const port = env.SMTP_PORT
+  const secure = env.SMTP_SECURE || port === 465
+  // eslint-disable-next-line no-console
+  console.log(`[mail:${context}] createMailTransport: ok`, {
+    smtp: `${host}:${port}`,
+    secure,
+    gmailUser: user,
+    appPasswordChars: pass.length,
+    contactTo: env.CONTACT_TO_EMAIL,
+  })
   return nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,
+    host,
+    port,
+    secure,
     auth: { user, pass },
   })
+}
+
+function nodemailerErrorDetails(err: unknown): Record<string, unknown> {
+  if (!(err instanceof Error)) return { raw: String(err) }
+  const e = err as Error & {
+    code?: string
+    command?: string
+    response?: string
+    responseCode?: number
+    errno?: number
+    syscall?: string
+    address?: string
+    port?: number
+  }
+  return {
+    name: e.name,
+    message: e.message,
+    code: e.code,
+    command: e.command,
+    responseCode: e.responseCode,
+    response: e.response,
+    errno: e.errno,
+    syscall: e.syscall,
+    address: e.address,
+    port: e.port,
+  }
 }
 
 /** selectedMonthKey: "2025-3" or "2025-3-2" -> { year, month, payroll } */
@@ -113,16 +159,28 @@ function rowHasData(row: Record<string, unknown>): boolean {
 }
 
 serviceRoutes.post('/send-contact', async (req, res) => {
+  console.log('req.body: ', req.body)
   const name = String(req.body?.name ?? '').trim()
   const email = String(req.body?.email ?? '').trim()
   const content = String(req.body?.content ?? '').trim()
   const phone = String(req.body?.phone ?? '').trim()
+  // eslint-disable-next-line no-console
+  console.log('[send-contact] request', {
+    name,
+    email,
+    hasPhone: Boolean(phone),
+    contentLength: content.length,
+  })
   if (!name || !email || !content) {
+    // eslint-disable-next-line no-console
+    console.warn('[send-contact] validation failed: missing name, email, or content')
     res.status(400).json({ error: 'Missing required fields: name, email, content' })
     return
   }
-  const transport = createMailTransport()
+  const transport = createMailTransport('send-contact')
   if (!transport) {
+    // eslint-disable-next-line no-console
+    console.error('[send-contact] abort: no mail transport (set GMAIL_USER + GMAIL_APP_PASSWORD in server/.env)')
     res.status(500).json({ error: 'Server email not configured' })
     return
   }
@@ -136,8 +194,10 @@ serviceRoutes.post('/send-contact', async (req, res) => {
     '<p><strong>Message:</strong></p>',
     `<p>${escapeHtml(content).replace(/\n/g, '<br>')}</p>`,
   ].join('')
+  // eslint-disable-next-line no-console
+  console.log('[send-contact] sending', { from, to: env.CONTACT_TO_EMAIL, replyTo: email, subject })
   try {
-    await transport.sendMail({
+    const info = await transport.sendMail({
       from: `"Contact Form" <${from}>`,
       to: env.CONTACT_TO_EMAIL,
       replyTo: email,
@@ -145,7 +205,11 @@ serviceRoutes.post('/send-contact', async (req, res) => {
       text,
       html,
     })
-  } catch {
+    // eslint-disable-next-line no-console
+    console.log('[send-contact] sendMail ok', { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[send-contact] sendMail failed', nodemailerErrorDetails(err), err)
     res.status(500).json({ error: 'Failed to send message' })
     return
   }
@@ -160,8 +224,10 @@ serviceRoutes.post('/send-invite-email', async (req, res) => {
     res.status(400).json({ error: 'Missing email, tempPassword, or appOrigin' })
     return
   }
-  const transport = createMailTransport()
+  const transport = createMailTransport('send-invite-email')
   if (!transport) {
+    // eslint-disable-next-line no-console
+    console.error('[send-invite-email] abort: no mail transport')
     res.status(500).json({ error: 'Email not configured' })
     return
   }

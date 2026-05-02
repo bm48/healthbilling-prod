@@ -20,6 +20,19 @@ const envSchema = z.object({
   /** Gmail (or other SMTP) — optional; required for contact form and invite emails. */
   GMAIL_USER: z.string().optional(),
   GMAIL_APP_PASSWORD: z.string().optional(),
+  /** Override SMTP host (default `smtp.gmail.com`). Use your org relay if outbound SMTP is blocked or DNS returns a private relay. */
+  SMTP_HOST: z.string().optional(),
+  /** Default 465 (implicit TLS) for Gmail; use 587 + `SMTP_SECURE=false` for STARTTLS if your relay requires it. */
+  SMTP_PORT: z.coerce.number().int().positive().default(465),
+  /** Use `true` for implicit TLS (typical on port 465). */
+  SMTP_SECURE: z
+    .union([z.boolean(), z.string()])
+    .optional()
+    .transform((v): boolean => {
+      if (v === undefined) return false
+      if (typeof v === 'boolean') return v
+      return ['true', '1', 'yes'].includes(String(v).toLowerCase())
+    }),
 })
 
 export const env = envSchema.parse(process.env)
