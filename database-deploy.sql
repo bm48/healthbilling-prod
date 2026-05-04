@@ -911,6 +911,47 @@ INSERT INTO "public"."clinics" VALUES ('39ac8ddc-6d40-43ec-8872-20a2482456a1', '
 INSERT INTO "public"."clinics" VALUES ('dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f', 'Summerland Mental Health', '702-608-6403', '2026-02-20 22:53:18.798367-08', '2026-02-25 11:07:07.237151-08', '702-608-9046', '1336980937', '99-2859307', 1, 0.0750);
 
 -- ----------------------------
+-- Table structure for providers (placed early: referenced by provider_id across the dump)
+-- ----------------------------
+DROP TABLE IF EXISTS "public"."providers" CASCADE;
+CREATE TABLE "public"."providers" (
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "first_name" text COLLATE "pg_catalog"."default" NOT NULL,
+  "last_name" text COLLATE "pg_catalog"."default" NOT NULL,
+  "specialty" text COLLATE "pg_catalog"."default",
+  "npi" text COLLATE "pg_catalog"."default",
+  "email" text COLLATE "pg_catalog"."default",
+  "phone" text COLLATE "pg_catalog"."default",
+  "active" bool NOT NULL DEFAULT true,
+  "created_at" timestamptz(6) DEFAULT now(),
+  "updated_at" timestamptz(6) DEFAULT now(),
+  "clinic_ids" uuid[] NOT NULL DEFAULT '{}'::uuid[],
+  "level" int2 NOT NULL DEFAULT 1,
+  "provider_cut_percent" numeric DEFAULT 0.7,
+  "show_visit_type_column" bool NOT NULL DEFAULT false
+)
+;
+COMMENT ON COLUMN "public"."providers"."level" IS 'Provider access level: 1 or 2 (default 1). Set by super admin in User Management.';
+COMMENT ON COLUMN "public"."providers"."provider_cut_percent" IS 'Provider cut percent 0–1 (default 0.7). Provider Cut = Total Payments × this. Set in Super Admin Settings.';
+COMMENT ON COLUMN "public"."providers"."show_visit_type_column" IS 'When true, provider sheet shows Visit Type column (In-person / Telehealth). Toggled in User Management.';
+
+-- ----------------------------
+-- Records of providers
+-- ----------------------------
+INSERT INTO "public"."providers" VALUES ('43fb9668-20b7-4eac-8859-e2f9607c1ede', 'Spencer', 'Winchester', NULL, '1407578313', 'spencer@transcendmbw.com', NULL, 't', '2026-04-07 14:24:51.179116-07', '2026-04-07 14:25:12.733144-07', '{39ac8ddc-6d40-43ec-8872-20a2482456a1}', 2, 0.6, 'f');
+INSERT INTO "public"."providers" VALUES ('39ddc9e6-5349-41d3-9d09-3a4904bc343f', 'Kadesha', 'Evans', NULL, '1770303547', 'kadesha@transcendcf.com', NULL, 't', '2026-03-02 20:19:23.006688-08', '2026-03-02 20:19:44.882516-08', '{3f0b4f2a-54fd-4b27-bb9f-4263c317288a}', 2, 0.7, 'f');
+INSERT INTO "public"."providers" VALUES ('17144ea6-4e8f-4aac-8687-2e608bc21be6', 'Morgan', 'Huls', NULL, '1972023919', 'morgan@transcendmbw.com', NULL, 't', '2026-02-26 14:01:04.273258-08', '2026-02-26 14:01:19.857941-08', '{3f0b4f2a-54fd-4b27-bb9f-4263c317288a,39ac8ddc-6d40-43ec-8872-20a2482456a1}', 2, 0.7, 'f');
+INSERT INTO "public"."providers" VALUES ('8fac7d99-cbc0-4ef9-b632-b427d45bce46', 'Nicole', 'Entenza', NULL, '1477819860', 'nicole.entenza@summerlandmentalhealth.com', NULL, 't', '2026-03-11 10:03:36.205736-07', '2026-04-10 12:36:35.353699-07', '{dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f}', 2, 0.7, 't');
+INSERT INTO "public"."providers" VALUES ('ca48789f-2886-4f70-b36f-c066fe1a3ddf', 'Jon-Raymond', 'Valdez', NULL, '1881434025', 'jon@summerlandmentalhealth', NULL, 't', '2026-02-21 07:58:50.601558-08', '2026-02-28 09:27:23.019683-08', '{dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f}', 2, 0.6, 'f');
+INSERT INTO "public"."providers" VALUES ('8d81a168-5ca7-4cff-ac41-7a1a190c3438', 'Jonathan', 'Murphy', NULL, '1821441965', 'jmurphy@myfocuspath.com', NULL, 't', '2026-03-01 10:02:35.62953-08', '2026-03-01 10:07:23.667413-08', '{8cf4f148-1724-41f6-86a0-0da21a775b59}', 2, 1, 'f');
+INSERT INTO "public"."providers" VALUES ('7895cfb9-9f81-45f1-85bc-4beab00b79f0', 'Nicole', 'Entenza', NULL, '1477819860', 'nicole.entenza@silvercrestmentalhealth.com', NULL, 't', '2026-03-11 10:03:40.055776-07', '2026-04-10 12:33:23.984526-07', '{31debb33-9b78-4304-9109-c042b0ff1579}', 2, 0.7, 'f');
+INSERT INTO "public"."providers" VALUES ('c2cd8bc1-7810-4c5e-a784-c800cb76af14', 'Dana', 'Schmitz', NULL, '1740727718', 'dana@transcendcf.com', NULL, 't', '2026-03-01 16:02:07.784413-08', '2026-04-27 16:29:49.422019-07', '{3f0b4f2a-54fd-4b27-bb9f-4263c317288a,39ac8ddc-6d40-43ec-8872-20a2482456a1}', 2, 0.6, 't');
+INSERT INTO "public"."providers" VALUES ('121106f8-2346-4271-89ee-080e15a11571', 'Andrene', 'Benjamin', NULL, '1164074456', 'andrene@transcendmbw.com', NULL, 't', '2026-03-12 18:59:40.857638-07', '2026-03-12 19:00:02.641347-07', '{39ac8ddc-6d40-43ec-8872-20a2482456a1}', 1, 0, 'f');
+INSERT INTO "public"."providers" VALUES ('fb64609b-ea69-4c49-ab6b-0bc02d359cd9', 'provider', 'test', NULL, '45325235', 'providertest@gmail.com', NULL, 't', '2026-03-19 11:49:44.03612-07', '2026-03-19 12:17:08.607765-07', '{9c542bda-d9b7-4903-9bcb-37eecca7720d}', 1, 0.7, 'f');
+INSERT INTO "public"."providers" VALUES ('cfd1165a-b58b-47ee-bd88-62f6f384c804', 'eric', 'lindstorm', NULL, '4324324324', 'orurozil266@gmail.com', NULL, 't', '2026-03-02 12:24:00.97212-08', '2026-03-02 12:24:02.448331-08', '{}', 1, 0.7, 'f');
+INSERT INTO "public"."providers" VALUES ('0a5eff08-1b54-4987-8956-a46d6296bff5', 'bert', 'mulders', NULL, '3434243243', 'muldersbert48@gmail.com', NULL, 't', '2026-03-03 11:57:11.170442-08', '2026-04-28 02:11:45.902077-07', '{9c542bda-d9b7-4903-9bcb-37eecca7720d}', 1, 0.9, 't');
+
+-- ----------------------------
 -- Table structure for column_locks
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."column_locks";
@@ -7636,47 +7677,6 @@ INSERT INTO "public"."provider_sheets" VALUES ('2eca7740-96b6-4bec-9076-d5590de2
 INSERT INTO "public"."provider_sheets" VALUES ('ae0fd898-05e3-4964-945b-13533bbfe590', '9c542bda-d9b7-4903-9bcb-37eecca7720d', '0a5eff08-1b54-4987-8956-a46d6296bff5', 11, 2025, 'f', '{}', '2026-04-28 00:43:24.63398-07', '2026-04-28 00:43:24.63398-07', 1);
 
 -- ----------------------------
--- Table structure for providers
--- ----------------------------
-DROP TABLE IF EXISTS "public"."providers";
-CREATE TABLE "public"."providers" (
-  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
-  "first_name" text COLLATE "pg_catalog"."default" NOT NULL,
-  "last_name" text COLLATE "pg_catalog"."default" NOT NULL,
-  "specialty" text COLLATE "pg_catalog"."default",
-  "npi" text COLLATE "pg_catalog"."default",
-  "email" text COLLATE "pg_catalog"."default",
-  "phone" text COLLATE "pg_catalog"."default",
-  "active" bool NOT NULL DEFAULT true,
-  "created_at" timestamptz(6) DEFAULT now(),
-  "updated_at" timestamptz(6) DEFAULT now(),
-  "clinic_ids" uuid[] NOT NULL DEFAULT '{}'::uuid[],
-  "level" int2 NOT NULL DEFAULT 1,
-  "provider_cut_percent" numeric DEFAULT 0.7,
-  "show_visit_type_column" bool NOT NULL DEFAULT false
-)
-;
-COMMENT ON COLUMN "public"."providers"."level" IS 'Provider access level: 1 or 2 (default 1). Set by super admin in User Management.';
-COMMENT ON COLUMN "public"."providers"."provider_cut_percent" IS 'Provider cut percent 0–1 (default 0.7). Provider Cut = Total Payments × this. Set in Super Admin Settings.';
-COMMENT ON COLUMN "public"."providers"."show_visit_type_column" IS 'When true, provider sheet shows Visit Type column (In-person / Telehealth). Toggled in User Management.';
-
--- ----------------------------
--- Records of providers
--- ----------------------------
-INSERT INTO "public"."providers" VALUES ('43fb9668-20b7-4eac-8859-e2f9607c1ede', 'Spencer', 'Winchester', NULL, '1407578313', 'spencer@transcendmbw.com', NULL, 't', '2026-04-07 14:24:51.179116-07', '2026-04-07 14:25:12.733144-07', '{39ac8ddc-6d40-43ec-8872-20a2482456a1}', 2, 0.6, 'f');
-INSERT INTO "public"."providers" VALUES ('39ddc9e6-5349-41d3-9d09-3a4904bc343f', 'Kadesha', 'Evans', NULL, '1770303547', 'kadesha@transcendcf.com', NULL, 't', '2026-03-02 20:19:23.006688-08', '2026-03-02 20:19:44.882516-08', '{3f0b4f2a-54fd-4b27-bb9f-4263c317288a}', 2, 0.7, 'f');
-INSERT INTO "public"."providers" VALUES ('17144ea6-4e8f-4aac-8687-2e608bc21be6', 'Morgan', 'Huls', NULL, '1972023919', 'morgan@transcendmbw.com', NULL, 't', '2026-02-26 14:01:04.273258-08', '2026-02-26 14:01:19.857941-08', '{3f0b4f2a-54fd-4b27-bb9f-4263c317288a,39ac8ddc-6d40-43ec-8872-20a2482456a1}', 2, 0.7, 'f');
-INSERT INTO "public"."providers" VALUES ('8fac7d99-cbc0-4ef9-b632-b427d45bce46', 'Nicole', 'Entenza', NULL, '1477819860', 'nicole.entenza@summerlandmentalhealth.com', NULL, 't', '2026-03-11 10:03:36.205736-07', '2026-04-10 12:36:35.353699-07', '{dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f}', 2, 0.7, 't');
-INSERT INTO "public"."providers" VALUES ('ca48789f-2886-4f70-b36f-c066fe1a3ddf', 'Jon-Raymond', 'Valdez', NULL, '1881434025', 'jon@summerlandmentalhealth', NULL, 't', '2026-02-21 07:58:50.601558-08', '2026-02-28 09:27:23.019683-08', '{dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f}', 2, 0.6, 'f');
-INSERT INTO "public"."providers" VALUES ('8d81a168-5ca7-4cff-ac41-7a1a190c3438', 'Jonathan', 'Murphy', NULL, '1821441965', 'jmurphy@myfocuspath.com', NULL, 't', '2026-03-01 10:02:35.62953-08', '2026-03-01 10:07:23.667413-08', '{8cf4f148-1724-41f6-86a0-0da21a775b59}', 2, 1, 'f');
-INSERT INTO "public"."providers" VALUES ('7895cfb9-9f81-45f1-85bc-4beab00b79f0', 'Nicole', 'Entenza', NULL, '1477819860', 'nicole.entenza@silvercrestmentalhealth.com', NULL, 't', '2026-03-11 10:03:40.055776-07', '2026-04-10 12:33:23.984526-07', '{31debb33-9b78-4304-9109-c042b0ff1579}', 2, 0.7, 'f');
-INSERT INTO "public"."providers" VALUES ('c2cd8bc1-7810-4c5e-a784-c800cb76af14', 'Dana', 'Schmitz', NULL, '1740727718', 'dana@transcendcf.com', NULL, 't', '2026-03-01 16:02:07.784413-08', '2026-04-27 16:29:49.422019-07', '{3f0b4f2a-54fd-4b27-bb9f-4263c317288a,39ac8ddc-6d40-43ec-8872-20a2482456a1}', 2, 0.6, 't');
-INSERT INTO "public"."providers" VALUES ('121106f8-2346-4271-89ee-080e15a11571', 'Andrene', 'Benjamin', NULL, '1164074456', 'andrene@transcendmbw.com', NULL, 't', '2026-03-12 18:59:40.857638-07', '2026-03-12 19:00:02.641347-07', '{39ac8ddc-6d40-43ec-8872-20a2482456a1}', 1, 0, 'f');
-INSERT INTO "public"."providers" VALUES ('fb64609b-ea69-4c49-ab6b-0bc02d359cd9', 'provider', 'test', NULL, '45325235', 'providertest@gmail.com', NULL, 't', '2026-03-19 11:49:44.03612-07', '2026-03-19 12:17:08.607765-07', '{9c542bda-d9b7-4903-9bcb-37eecca7720d}', 1, 0.7, 'f');
-INSERT INTO "public"."providers" VALUES ('cfd1165a-b58b-47ee-bd88-62f6f384c804', 'eric', 'lindstorm', NULL, '4324324324', 'orurozil266@gmail.com', NULL, 't', '2026-03-02 12:24:00.97212-08', '2026-03-02 12:24:02.448331-08', '{}', 1, 0.7, 'f');
-INSERT INTO "public"."providers" VALUES ('0a5eff08-1b54-4987-8956-a46d6296bff5', 'bert', 'mulders', NULL, '3434243243', 'muldersbert48@gmail.com', NULL, 't', '2026-03-03 11:57:11.170442-08', '2026-04-28 02:11:45.902077-07', '{9c542bda-d9b7-4903-9bcb-37eecca7720d}', 1, 0.9, 't');
-
--- ----------------------------
 -- Table structure for server_refresh_tokens
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."server_refresh_tokens";
@@ -8257,7 +8257,7 @@ $BODY$
 -- ----------------------------
 -- Function structure for update_updated_at_column
 -- ----------------------------
-DROP FUNCTION IF EXISTS "public"."update_updated_at_column"();
+DROP FUNCTION IF EXISTS "public"."update_updated_at_column"() CASCADE;
 CREATE FUNCTION "public"."update_updated_at_column"()
   RETURNS "pg_catalog"."trigger" AS $BODY$
 BEGIN
@@ -8356,6 +8356,28 @@ CREATE INDEX "idx_audit_logs_user_id" ON "public"."audit_logs" USING btree (
 -- Primary Key structure for table audit_logs
 -- ----------------------------
 ALTER TABLE "public"."audit_logs" ADD CONSTRAINT "audit_logs_pkey" PRIMARY KEY ("id");
+
+-- ----------------------------
+-- Drop triggers if re-applying after a partial deploy (safe no-ops on fresh DB)
+-- ----------------------------
+DROP TRIGGER IF EXISTS "update_billing_codes_updated_at" ON "public"."billing_codes";
+DROP TRIGGER IF EXISTS "trigger_cell_comments_updated_at" ON "public"."cell_comments";
+DROP TRIGGER IF EXISTS "update_clinics_updated_at" ON "public"."clinics";
+DROP TRIGGER IF EXISTS "trigger_column_locks_updated_at" ON "public"."column_locks";
+DROP TRIGGER IF EXISTS "trigger_is_lock_accounts_receivable_updated_at" ON "public"."is_lock_accounts_receivable";
+DROP TRIGGER IF EXISTS "trigger_is_lock_billing_todo_updated_at" ON "public"."is_lock_billing_todo";
+DROP TRIGGER IF EXISTS "trigger_is_lock_patients_updated_at" ON "public"."is_lock_patients";
+DROP TRIGGER IF EXISTS "trigger_is_lock_providers_updated_at" ON "public"."is_lock_providers";
+DROP TRIGGER IF EXISTS "update_patients_updated_at" ON "public"."patients";
+DROP TRIGGER IF EXISTS "trigger_private_patient_claims_updated_at" ON "public"."private_patient_claims";
+DROP TRIGGER IF EXISTS "provider_schedules_updated_at" ON "public"."provider_schedules";
+DROP TRIGGER IF EXISTS "update_provider_sheet_rows_updated_at" ON "public"."provider_sheet_rows";
+DROP TRIGGER IF EXISTS "update_provider_sheets_updated_at" ON "public"."provider_sheets";
+DROP TRIGGER IF EXISTS "update_providers_updated_at" ON "public"."providers";
+DROP TRIGGER IF EXISTS "update_timecards_updated_at" ON "public"."timecards";
+DROP TRIGGER IF EXISTS "update_todo_lists_updated_at" ON "public"."todo_lists";
+DROP TRIGGER IF EXISTS "on_user_provider_ensure_level" ON "public"."users";
+DROP TRIGGER IF EXISTS "update_users_updated_at" ON "public"."users";
 
 -- ----------------------------
 -- Triggers structure for table billing_codes
@@ -8729,6 +8751,8 @@ ALTER TABLE "public"."provider_logins" ADD CONSTRAINT "provider_logins_pkey" PRI
 -- ----------------------------
 -- Indexes structure for table provider_pay
 -- ----------------------------
+DROP INDEX IF EXISTS "public"."idx_provider_pay_clinic_provider_year_month";
+DROP INDEX IF EXISTS "public"."idx_provider_pay_payroll";
 CREATE INDEX "idx_provider_pay_clinic_provider_year_month" ON "public"."provider_pay" USING btree (
   "clinic_id" "pg_catalog"."uuid_ops" ASC NULLS LAST,
   "provider_id" "pg_catalog"."uuid_ops" ASC NULLS LAST,
@@ -8746,17 +8770,21 @@ CREATE INDEX "idx_provider_pay_payroll" ON "public"."provider_pay" USING btree (
 -- ----------------------------
 -- Uniques structure for table provider_pay
 -- ----------------------------
+ALTER TABLE "public"."provider_pay" DROP CONSTRAINT IF EXISTS "provider_pay_clinic_provider_year_month_payroll_key";
 ALTER TABLE "public"."provider_pay" ADD CONSTRAINT "provider_pay_clinic_provider_year_month_payroll_key" UNIQUE ("clinic_id", "provider_id", "year", "month", "payroll");
 
 -- ----------------------------
 -- Checks structure for table provider_pay
 -- ----------------------------
+ALTER TABLE "public"."provider_pay" DROP CONSTRAINT IF EXISTS "provider_pay_month_check";
+ALTER TABLE "public"."provider_pay" DROP CONSTRAINT IF EXISTS "provider_pay_payroll_check";
 ALTER TABLE "public"."provider_pay" ADD CONSTRAINT "provider_pay_month_check" CHECK (month >= 1 AND month <= 12);
 ALTER TABLE "public"."provider_pay" ADD CONSTRAINT "provider_pay_payroll_check" CHECK (payroll = ANY (ARRAY[1, 2]));
 
 -- ----------------------------
 -- Primary Key structure for table provider_pay
 -- ----------------------------
+ALTER TABLE "public"."provider_pay" DROP CONSTRAINT IF EXISTS "provider_pay_pkey";
 ALTER TABLE "public"."provider_pay" ADD CONSTRAINT "provider_pay_pkey" PRIMARY KEY ("id");
 
 -- ----------------------------
@@ -8910,6 +8938,8 @@ ALTER TABLE "public"."provider_sheets" ADD CONSTRAINT "provider_sheets_pkey" PRI
 -- ----------------------------
 -- Indexes structure for table providers
 -- ----------------------------
+DROP INDEX IF EXISTS "public"."idx_providers_active";
+DROP INDEX IF EXISTS "public"."idx_providers_clinic_ids";
 CREATE INDEX "idx_providers_active" ON "public"."providers" USING btree (
   "active" "pg_catalog"."bool_ops" ASC NULLS LAST
 );
@@ -8927,11 +8957,13 @@ EXECUTE PROCEDURE "public"."update_updated_at_column"();
 -- ----------------------------
 -- Checks structure for table providers
 -- ----------------------------
+ALTER TABLE "public"."providers" DROP CONSTRAINT IF EXISTS "providers_level_check";
 ALTER TABLE "public"."providers" ADD CONSTRAINT "providers_level_check" CHECK (level = ANY (ARRAY[1, 2]));
 
 -- ----------------------------
 -- Primary Key structure for table providers
 -- ----------------------------
+ALTER TABLE "public"."providers" DROP CONSTRAINT IF EXISTS "providers_pkey";
 ALTER TABLE "public"."providers" ADD CONSTRAINT "providers_pkey" PRIMARY KEY ("id");
 
 -- ----------------------------
@@ -9058,43 +9090,55 @@ ALTER TABLE "public"."users" ADD CONSTRAINT "users_pkey" PRIMARY KEY ("id");
 -- ----------------------------
 -- Foreign Keys structure for table accounts_receivables
 -- ----------------------------
+ALTER TABLE "public"."accounts_receivables" DROP CONSTRAINT IF EXISTS "accounts_receivables_clinic_id_fkey";
 ALTER TABLE "public"."accounts_receivables" ADD CONSTRAINT "accounts_receivables_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table ar_backups
 -- ----------------------------
+ALTER TABLE "public"."ar_backups" DROP CONSTRAINT IF EXISTS "ar_backups_clinic_id_fkey";
 ALTER TABLE "public"."ar_backups" ADD CONSTRAINT "ar_backups_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table audit_logs
 -- ----------------------------
+ALTER TABLE "public"."audit_logs" DROP CONSTRAINT IF EXISTS "audit_logs_clinic_id_fkey";
+ALTER TABLE "public"."audit_logs" DROP CONSTRAINT IF EXISTS "audit_logs_user_id_fkey";
 ALTER TABLE "public"."audit_logs" ADD CONSTRAINT "audit_logs_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE SET NULL ON UPDATE NO ACTION;
 ALTER TABLE "public"."audit_logs" ADD CONSTRAINT "audit_logs_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table cell_comments
 -- ----------------------------
+ALTER TABLE "public"."cell_comments" DROP CONSTRAINT IF EXISTS "cell_comments_clinic_id_fkey";
 ALTER TABLE "public"."cell_comments" ADD CONSTRAINT "cell_comments_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table cell_highlights
 -- ----------------------------
+ALTER TABLE "public"."cell_highlights" DROP CONSTRAINT IF EXISTS "cell_highlights_clinic_id_fkey";
+ALTER TABLE "public"."cell_highlights" DROP CONSTRAINT IF EXISTS "cell_highlights_user_id_fkey";
 ALTER TABLE "public"."cell_highlights" ADD CONSTRAINT "cell_highlights_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "public"."cell_highlights" ADD CONSTRAINT "cell_highlights_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id") ON DELETE SET NULL ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table clinic_addresses
 -- ----------------------------
+ALTER TABLE "public"."clinic_addresses" DROP CONSTRAINT IF EXISTS "clinic_addresses_clinic_id_fkey";
 ALTER TABLE "public"."clinic_addresses" ADD CONSTRAINT "clinic_addresses_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table clinic_invoice_notes
 -- ----------------------------
+ALTER TABLE "public"."clinic_invoice_notes" DROP CONSTRAINT IF EXISTS "clinic_invoice_notes_clinic_id_fkey";
 ALTER TABLE "public"."clinic_invoice_notes" ADD CONSTRAINT "clinic_invoice_notes_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table column_locks
 -- ----------------------------
+ALTER TABLE "public"."column_locks" DROP CONSTRAINT IF EXISTS "column_locks_clinic_id_fkey";
+ALTER TABLE "public"."column_locks" DROP CONSTRAINT IF EXISTS "column_locks_locked_by_fkey";
+ALTER TABLE "public"."column_locks" DROP CONSTRAINT IF EXISTS "column_locks_provider_id_fkey";
 ALTER TABLE "public"."column_locks" ADD CONSTRAINT "column_locks_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "public"."column_locks" ADD CONSTRAINT "column_locks_locked_by_fkey" FOREIGN KEY ("locked_by") REFERENCES "public"."users" ("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
 ALTER TABLE "public"."column_locks" ADD CONSTRAINT "column_locks_provider_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "public"."providers" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
@@ -9102,21 +9146,25 @@ ALTER TABLE "public"."column_locks" ADD CONSTRAINT "column_locks_provider_id_fke
 -- ----------------------------
 -- Foreign Keys structure for table is_lock_accounts_receivable
 -- ----------------------------
+ALTER TABLE "public"."is_lock_accounts_receivable" DROP CONSTRAINT IF EXISTS "is_lock_accounts_receivable_clinic_id_fkey";
 ALTER TABLE "public"."is_lock_accounts_receivable" ADD CONSTRAINT "is_lock_accounts_receivable_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table is_lock_billing_todo
 -- ----------------------------
+ALTER TABLE "public"."is_lock_billing_todo" DROP CONSTRAINT IF EXISTS "is_lock_billing_todo_clinic_id_fkey";
 ALTER TABLE "public"."is_lock_billing_todo" ADD CONSTRAINT "is_lock_billing_todo_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table is_lock_patients
 -- ----------------------------
+ALTER TABLE "public"."is_lock_patients" DROP CONSTRAINT IF EXISTS "is_lock_patients_clinic_id_fkey";
 ALTER TABLE "public"."is_lock_patients" ADD CONSTRAINT "is_lock_patients_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table is_lock_providers
 -- ----------------------------
+ALTER TABLE "public"."is_lock_providers" DROP CONSTRAINT IF EXISTS "is_lock_providers_clinic_id_fkey";
 ALTER TABLE "public"."is_lock_providers" ADD CONSTRAINT "is_lock_providers_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
@@ -9128,76 +9176,96 @@ ALTER TABLE "public"."notifications" ADD CONSTRAINT "notifications_user_id_fkey"
 -- ----------------------------
 -- Foreign Keys structure for table patients
 -- ----------------------------
+ALTER TABLE "public"."patients" DROP CONSTRAINT IF EXISTS "patients_clinic_id_fkey";
 ALTER TABLE "public"."patients" ADD CONSTRAINT "patients_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table patients_backups
 -- ----------------------------
+ALTER TABLE "public"."patients_backups" DROP CONSTRAINT IF EXISTS "patients_backups_clinic_id_fkey";
 ALTER TABLE "public"."patients_backups" ADD CONSTRAINT "patients_backups_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table private_patient_claims
 -- ----------------------------
+ALTER TABLE "public"."private_patient_claims" DROP CONSTRAINT IF EXISTS "private_patient_claims_clinic_id_fkey";
+ALTER TABLE "public"."private_patient_claims" DROP CONSTRAINT IF EXISTS "private_patient_claims_provider_id_fkey";
 ALTER TABLE "public"."private_patient_claims" ADD CONSTRAINT "private_patient_claims_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "public"."private_patient_claims" ADD CONSTRAINT "private_patient_claims_provider_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "public"."providers" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table provider_logins
 -- ----------------------------
+ALTER TABLE "public"."provider_logins" DROP CONSTRAINT IF EXISTS "provider_logins_provider_id_fkey";
 ALTER TABLE "public"."provider_logins" ADD CONSTRAINT "provider_logins_provider_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "public"."providers" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table provider_pay
 -- ----------------------------
+ALTER TABLE "public"."provider_pay" DROP CONSTRAINT IF EXISTS "provider_pay_clinic_id_fkey";
+ALTER TABLE "public"."provider_pay" DROP CONSTRAINT IF EXISTS "provider_pay_provider_id_fkey";
 ALTER TABLE "public"."provider_pay" ADD CONSTRAINT "provider_pay_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "public"."provider_pay" ADD CONSTRAINT "provider_pay_provider_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "public"."providers" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table provider_pay_backups
 -- ----------------------------
+ALTER TABLE "public"."provider_pay_backups" DROP CONSTRAINT IF EXISTS "provider_pay_backups_clinic_id_fkey";
 ALTER TABLE "public"."provider_pay_backups" ADD CONSTRAINT "provider_pay_backups_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table provider_pay_rows
 -- ----------------------------
+ALTER TABLE "public"."provider_pay_rows" DROP CONSTRAINT IF EXISTS "provider_pay_rows_provider_pay_id_fkey";
 ALTER TABLE "public"."provider_pay_rows" ADD CONSTRAINT "provider_pay_rows_provider_pay_id_fkey" FOREIGN KEY ("provider_pay_id") REFERENCES "public"."provider_pay" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table provider_schedules
 -- ----------------------------
+ALTER TABLE "public"."provider_schedules" DROP CONSTRAINT IF EXISTS "provider_schedules_clinic_id_fkey";
+ALTER TABLE "public"."provider_schedules" DROP CONSTRAINT IF EXISTS "provider_schedules_provider_id_fkey";
 ALTER TABLE "public"."provider_schedules" ADD CONSTRAINT "provider_schedules_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "public"."provider_schedules" ADD CONSTRAINT "provider_schedules_provider_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "public"."providers" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table provider_sheet_backups
 -- ----------------------------
+ALTER TABLE "public"."provider_sheet_backups" DROP CONSTRAINT IF EXISTS "provider_sheet_backups_sheet_id_fkey";
 ALTER TABLE "public"."provider_sheet_backups" ADD CONSTRAINT "provider_sheet_backups_sheet_id_fkey" FOREIGN KEY ("sheet_id") REFERENCES "public"."provider_sheets" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table provider_sheet_rows
 -- ----------------------------
+ALTER TABLE "public"."provider_sheet_rows" DROP CONSTRAINT IF EXISTS "provider_sheet_rows_sheet_id_fkey";
 ALTER TABLE "public"."provider_sheet_rows" ADD CONSTRAINT "provider_sheet_rows_sheet_id_fkey" FOREIGN KEY ("sheet_id") REFERENCES "public"."provider_sheets" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table provider_sheets
 -- ----------------------------
+ALTER TABLE "public"."provider_sheets" DROP CONSTRAINT IF EXISTS "provider_sheets_clinic_id_fkey";
+ALTER TABLE "public"."provider_sheets" DROP CONSTRAINT IF EXISTS "provider_sheets_provider_id_fkey";
 ALTER TABLE "public"."provider_sheets" ADD CONSTRAINT "provider_sheets_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "public"."provider_sheets" ADD CONSTRAINT "provider_sheets_provider_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "public"."providers" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table server_refresh_tokens
 -- ----------------------------
+ALTER TABLE "public"."server_refresh_tokens" DROP CONSTRAINT IF EXISTS "server_refresh_tokens_user_id_fkey";
 ALTER TABLE "public"."server_refresh_tokens" ADD CONSTRAINT "server_refresh_tokens_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table timecards
 -- ----------------------------
+ALTER TABLE "public"."timecards" DROP CONSTRAINT IF EXISTS "timecards_clinic_id_fkey";
+ALTER TABLE "public"."timecards" DROP CONSTRAINT IF EXISTS "timecards_user_id_fkey";
 ALTER TABLE "public"."timecards" ADD CONSTRAINT "timecards_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE SET NULL ON UPDATE NO ACTION;
 ALTER TABLE "public"."timecards" ADD CONSTRAINT "timecards_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table todo_lists
 -- ----------------------------
+ALTER TABLE "public"."todo_lists" DROP CONSTRAINT IF EXISTS "todo_lists_clinic_id_fkey";
+ALTER TABLE "public"."todo_lists" DROP CONSTRAINT IF EXISTS "todo_lists_created_by_fkey";
 ALTER TABLE "public"."todo_lists" ADD CONSTRAINT "todo_lists_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "public"."todo_lists" ADD CONSTRAINT "todo_lists_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."users" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
