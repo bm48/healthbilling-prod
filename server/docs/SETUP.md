@@ -2,24 +2,26 @@
 
 ## Quick start
 
-This repo is an **npm workspaces** monorepo:
+The repo has two **independent** Node packages (each with its own `package.json` and `package-lock.json`):
 
 - **`client/`** — React + Vite + TypeScript (browser app)
 - **`server/`** — Express + PostgreSQL API
 
 ### 1. Install dependencies
 
-From the repository root:
+Install in **both** folders (two commands):
 
 ```bash
-npm install
+cd client && npm install
 ```
 
-This installs hoisted dependencies for both workspaces.
+```bash
+cd server && npm install
+```
 
 ### 2. Configure environment variables
 
-Copy `.env.example` to **`.env` in the repository root** (shared by Vite and the API server). Set at minimum:
+Copy `.env.example` to **`.env` in the repository root** (one level above `client/` and `server/`). Vite and the API both load that file, plus `client/.env` and `server/.env` if you add them. Set at minimum:
 
 - `DATABASE_URL` — PostgreSQL connection string
 - `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` — long random strings (24+ characters)
@@ -50,13 +52,19 @@ Insert a row into `public.users` with `role = 'super_admin'` and a **bcrypt** ha
 
 ### 5. Run in development
 
-Two terminals from the **repository root**:
+Use **two terminals**:
+
+**Terminal 1 — API** (from `server/`):
 
 ```bash
-npm run server:dev
+cd server
+npm run dev
 ```
 
+**Terminal 2 — web app** (from `client/`):
+
 ```bash
+cd client
 npm run dev
 ```
 
@@ -64,37 +72,42 @@ npm run dev
 - App: `http://localhost:5173` — Vite proxies `/api` to the API
 
 **Important:** In `server/`, `npm start` runs **`node dev.mjs`** (TypeScript via `tsx watch`), same as `npm run dev`, so you always run the latest `src/` code and see `console.log` output.  
-For production, build first then run **`npm run start:prod`** (or from repo root: **`npm run server:start`** after `npm run server:build`).
+For production, from **`server/`**: run **`npm run build`** then **`npm run start:prod`**.
 
 If you run **`node dist/index.js`** without rebuilding after editing `src/`, you will get **stale behavior** (missing logs, old bugs).
 
 ### 6. Production build
 
 ```bash
-npm run build
+cd client && npm run build
 ```
 
-Builds **`client/dist`** and **`server/dist`**.
+```bash
+cd server && npm run build
+```
+
+Produces **`client/dist`** and **`server/dist`**.
 
 ## Project structure
 
 ```
 HealthBilling/
-├── client/                 # Vite React app (workspace: health-billing-client)
+├── client/                 # Vite React app (npm package: health-billing-client)
 │   ├── src/
 │   ├── index.html
 │   ├── vite.config.ts
 │   ├── package.json
+│   ├── package-lock.json
 │   └── tsconfig.json
-├── server/                 # Express API (workspace: health-billing-server)
+├── server/                 # Express API (npm package: health-billing-server)
 │   ├── src/
 │   ├── sql/
 │   ├── database/           # Schema dumps
 │   ├── supabase/           # Incremental SQL migrations
 │   ├── vercel-api/         # Optional Vercel serverless proxies
 │   ├── docs/               # This guide and other notes
-│   └── package.json
-├── package.json            # workspaces root
+│   ├── package.json
+│   └── package-lock.json
 └── .env.example
 ```
 
@@ -152,7 +165,7 @@ The following features have placeholder implementations and need full developmen
 ### API / database connection
 
 - Verify root `.env` has a valid `DATABASE_URL` and JWT secrets
-- Ensure the API is running (`npm run server:dev`) when using the Vite dev proxy
+- Ensure the API is running (`cd server && npm run dev`) when using the Vite dev proxy
 - Check `FRONTEND_ORIGIN` matches the URL you open in the browser (CORS)
 
 ### Database errors
@@ -162,6 +175,6 @@ The following features have placeholder implementations and need full developmen
 
 ### Build Errors
 
-- Run `npm install` to ensure all dependencies are installed
+- Run `npm install` in **`client/`** and **`server/`** so both lockfiles are satisfied
 - Check Node.js version (requires 18+)
 - Clear node_modules and reinstall if needed

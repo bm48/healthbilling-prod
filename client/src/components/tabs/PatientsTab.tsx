@@ -67,6 +67,21 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
   const hotRef = useRef<Handsontable | null>(null)
   /** Stable temporary patient_id per row id so multiple cell edits on a new row upsert one record, not one per edit */
   const pendingPatientIdByRowIdRef = useRef<Map<string, string>>(new Map())
+  /** Stable UUID for INSERT upserts per placeholder row (DBs without id default still work). */
+  const pendingInsertUuidByPlaceholderIdRef = useRef<Map<string, string>>(new Map())
+
+  /** Handsontable row index in hooks is visual when column sorting is on; patients[] is physical order. */
+  const physicalRowFromHot = useCallback((visualRow: number) => {
+    const hot = hotRef.current
+    if (!hot || (hot as { isDestroyed?: boolean }).isDestroyed) return visualRow
+    try {
+      const p = hot.toPhysicalRow(visualRow)
+      if (typeof p === 'number' && !Number.isNaN(p) && p >= 0) return p
+    } catch {
+      /* ignore */
+    }
+    return visualRow
+  }, [])
   const savePatientsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveInProgressRef = useRef(false)
   const savePendingRef = useRef(false)
@@ -279,7 +294,7 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         }
 
         // Prepare patient data (never send string "null" to DB)
-        const patientData: any = {
+        const patientData: Record<string, unknown> = {
           clinic_id: clinicId,
           patient_id: finalPatientId,
           first_name: (patient.first_name && patient.first_name !== 'null') ? patient.first_name : null,
@@ -289,7 +304,6 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
           coinsurance: patient.coinsurance != null ? patient.coinsurance : null,
           updated_at: new Date().toISOString(),
         }
-
 
         let savedPatient: Patient | null = null
 
@@ -317,10 +331,26 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
             if (savedPatient.patient_id != null && String(savedPatient.patient_id).trim() !== '') updatedPatientsToSend.push(savedPatient)
             continue // Update successful, move to next patient
           }
-          // If update failed (e.g., patient not found), fall through to upsert
+          if (updateError) {
+            console.error('[PatientData] update failed:', updateError)
+            throw new Error(updateError.message || 'Failed to update patient')
+          }
+          // Update matched 0 rows (wrong id, clinic scope, etc.). Do not upsert — that would INSERT without id on DBs missing a default, or create duplicates.
+          throw new Error(
+            'Could not save patient: row not found or not allowed for your clinics. Refresh the page and try again.',
+          )
         }
 
-        // Use upsert for new patients (new- or empty- IDs) or when update by ID fails
+        // Upsert only for new placeholder rows (new- / empty- ids)
+        if (oldId.startsWith('empty-') || oldId.startsWith('new-')) {
+          let insertId = pendingInsertUuidByPlaceholderIdRef.current.get(oldId)
+          if (!insertId) {
+            insertId = crypto.randomUUID()
+            pendingInsertUuidByPlaceholderIdRef.current.set(oldId, insertId)
+          }
+          patientData.id = insertId
+        }
+
         const { error: upsertError, data: upsertData } = await apiClient
           .from('patients')
           .upsert(patientData, {
@@ -336,6 +366,7 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         
         if (upsertData && upsertData.length > 0) {
           savedPatient = upsertData[0] as Patient
+          pendingInsertUuidByPlaceholderIdRef.current.delete(oldId)
           savedPatientsMap.set(oldId, savedPatient) // Map old ID to new patient data
           if (!flushTriggered && (oldId.startsWith('empty-') || oldId.startsWith('new-'))) {
             lastNewPatientIdFromDebounceRef.current = savedPatient.id
@@ -570,11 +601,16 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
     try {
       const grid = hot.getData() as (string | number | null | undefined)[][]
       const prev = patientsRef.current
-      const next: Patient[] = []
-      for (let i = 0; i < grid.length; i++) {
-        const row = grid[i]
-        const p = prev[i] ?? createEmptyPatient(nextEmptyNumericIdSuffix(next))
-        next.push(mergePatientFromGridRow(p, row))
+      const next = [...prev]
+      for (let v = 0; v < grid.length; v++) {
+        const phys = physicalRowFromHot(v)
+        if (phys < 0) continue
+        while (next.length <= phys) {
+          next.push(createEmptyPatient(nextEmptyNumericIdSuffix(next)))
+        }
+        const row = grid[v]
+        const p = next[phys] ?? createEmptyPatient(nextEmptyNumericIdSuffix(next))
+        next[phys] = mergePatientFromGridRow(p, row)
       }
       const padded = padPatientsTo200(next)
       patientsRef.current = padded
@@ -583,18 +619,19 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
     } catch (e) {
       console.error('syncPatientsFromHotAfterUndoRedo', e)
     }
-  }, [canEdit, createEmptyPatient, padPatientsTo200, savePatients])
+  }, [canEdit, createEmptyPatient, padPatientsTo200, physicalRowFromHot, savePatients])
 
   const handleAfterCreateRow = useCallback(
     (index: number, amount: number, source?: string) => {
       if (!canEdit) return
       if (source === 'loadData' || source === 'updateData') return
       if (isHandsontableUndoRedoSource(source)) return
+      const physIndex = physicalRowFromHot(index)
       setPatients((prev) => {
         const next = [...prev]
         const base = nextEmptyNumericIdSuffix(next)
         for (let i = 0; i < amount; i++) {
-          next.splice(index + i, 0, createEmptyPatient(base + i))
+          next.splice(physIndex + i, 0, createEmptyPatient(base + i))
         }
         const padded = padPatientsTo200(next)
         patientsRef.current = padded
@@ -605,7 +642,7 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         savePatients(patientsRef.current).catch((err) => console.error('savePatients after HOT create row', err))
       })
     },
-    [canEdit, createEmptyPatient, padPatientsTo200, savePatients]
+    [canEdit, createEmptyPatient, padPatientsTo200, physicalRowFromHot, savePatients]
   )
 
   const handleAfterRemoveRow = useCallback(
@@ -680,28 +717,28 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
 
   const patientsCellsCallback = useCallback(
     (row: number, col: number) => {
-      const patient = displayPatients[row]
+      const patient = displayPatients[physicalRowFromHot(row)]
       const colKey = columnFields[col]
       if (!colKey) return {}
       const key = `${patient?.id ?? `row-${row}`}:${colKey}`
       return highlightedCells.has(key) ? { className: 'cell-highlight-yellow' } : {}
     },
-    [displayPatients, columnFields, highlightedCells]
+    [displayPatients, columnFields, highlightedCells, physicalRowFromHot]
   )
 
   const getCellIsHighlighted = useCallback(
     (row: number, col: number) => {
-      const patient = displayPatients[row]
+      const patient = displayPatients[physicalRowFromHot(row)]
       const colKey = columnFields[col]
       if (!colKey) return false
       const key = `${patient?.id ?? `row-${row}`}:${colKey}`
       return highlightedCells.has(key)
     },
-    [displayPatients, columnFields, highlightedCells]
+    [displayPatients, columnFields, highlightedCells, physicalRowFromHot]
   )
 
   const handleCellHighlight = useCallback((row: number, col: number) => {
-    const patient = displayPatients[row]
+    const patient = displayPatients[physicalRowFromHot(row)]
     const colKey = columnFields[col]
     if (!colKey) return
     const key = `${patient?.id ?? `row-${row}`}:${colKey}`
@@ -711,7 +748,7 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
       else next.add(key)
       return next
     })
-  }, [displayPatients, columnFields])
+  }, [displayPatients, columnFields, physicalRowFromHot])
 
   // Right-click on column headers to lock/unlock (no lock icon in header)
   useEffect(() => {
@@ -844,26 +881,27 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
     const fields: Array<keyof Patient> = ['patient_id', 'first_name', 'last_name', 'insurance', 'copay', 'coinsurance']
 
     // Detect row leave (user edited a different row) — we'll flush save after applying changes so onPatientCreated gets full row data
-    const rowsInChange = [...new Set(changes.map(([r]) => r))]
+    const rowsInChange = [...new Set(changes.map(([r]) => physicalRowFromHot(typeof r === 'number' ? r : 0)))]
     const primaryRow = rowsInChange[0] ?? null
     const prevRow = lastEditedRowRef.current
     const didLeaveRow = prevRow !== null && primaryRow !== null && !rowsInChange.includes(prevRow)
 
     changes.forEach(([row, col, , newValue]) => {
-      while (updatedPatients.length <= row) {
+      const phys = physicalRowFromHot(typeof row === 'number' ? row : 0)
+      while (updatedPatients.length <= phys) {
         const existingEmptyCount = updatedPatients.filter(p => p.id.startsWith('empty-')).length
         updatedPatients.push(createEmptyPatient(existingEmptyCount))
       }
-      const patient = updatedPatients[row]
+      const patient = updatedPatients[phys]
       if (patient) {
         const field = fields[col as number]
         if (field === 'copay' || field === 'coinsurance') {
           const strValue = (newValue === '' || newValue === null || newValue === 'null' || newValue === undefined) ? null : String(newValue)
-          updatedPatients[row] = { ...patient, [field]: strValue, updated_at: new Date().toISOString() } as Patient
+          updatedPatients[phys] = { ...patient, [field]: strValue, updated_at: new Date().toISOString() } as Patient
         } else if (field === 'insurance') {
-          updatedPatients[row] = { ...patient, [field]: toStoredString(String(newValue ?? '')), updated_at: new Date().toISOString() } as Patient
+          updatedPatients[phys] = { ...patient, [field]: toStoredString(String(newValue ?? '')), updated_at: new Date().toISOString() } as Patient
         } else if (field) {
-          updatedPatients[row] = { ...patient, [field]: toStoredString(String(newValue ?? '')) ?? '', updated_at: new Date().toISOString() } as Patient
+          updatedPatients[phys] = { ...patient, [field]: toStoredString(String(newValue ?? '')) ?? '', updated_at: new Date().toISOString() } as Patient
         }
       }
     })
@@ -921,11 +959,12 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         console.error('[handlePatientsHandsontableChange] Error in savePatients:', err)
       })
     }, 500)
-  }, [patients, savePatients, createEmptyPatient])
+  }, [patients, savePatients, createEmptyPatient, physicalRowFromHot])
 
   const handleAfterSelection = useCallback((r: number, _c: number, _r2: number, _c2: number) => {
+    const physR = physicalRowFromHot(r)
     const prev = lastSelectedRowRef.current
-    if (prev !== null && r !== prev && !saveInProgressRef.current) {
+    if (prev !== null && physR !== prev && !saveInProgressRef.current) {
       // Set flag so handlePatientsHandsontableChange will run row-leave save after any pending afterChange (captures last cell)
       pendingRowLeaveSaveRef.current = true
       if (pendingRowLeaveSaveTimeoutRef.current) clearTimeout(pendingRowLeaveSaveTimeoutRef.current)
@@ -943,8 +982,8 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         savePatients(patientsRef.current).catch(err => console.error('[PatientInfo→Providers] Error flushing save on selection change (fallback):', err))
       }, FALLBACK_MS)
     }
-    lastSelectedRowRef.current = r
-  }, [savePatients])
+    lastSelectedRowRef.current = physR
+  }, [physicalRowFromHot, savePatients])
 
   const handleAfterDeselect = useCallback(() => {
     if (saveInProgressRef.current) return

@@ -36,7 +36,21 @@ app.use('/api/storage', storageRoutes)
 async function main() {
   await ensureServerSchema()
   await ensureStorageRoot()
-  app.listen(env.PORT, () => {
+  const server = app.listen(env.PORT)
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[server] Port ${env.PORT} is already in use. Stop the other process or set PORT in server/.env to a free port (e.g. 4001).`,
+      )
+      process.exit(1)
+      return
+    }
+    // eslint-disable-next-line no-console
+    console.error(err)
+    process.exit(1)
+  })
+  server.once('listening', () => {
     // eslint-disable-next-line no-console
     console.log(
       `[server] listening pid=${process.pid} port=${env.PORT} env=${env.NODE_ENV} — health: http://localhost:${env.PORT}/health`,
@@ -44,7 +58,7 @@ async function main() {
     if (env.NODE_ENV !== 'production') {
       // eslint-disable-next-line no-console
       console.log(
-        '[server] tip: run API in this terminal (e.g. npm run server:dev). Root npm run dev starts Vite only; contact logs appear here, not in the browser console.',
+        '[server] tip: run the API from the server/ folder (npm run dev). Run the Vite app separately in client/ (npm run dev); contact-form logs appear here, not in the browser console.',
       )
     }
   })

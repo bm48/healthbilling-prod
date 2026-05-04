@@ -21,7 +21,7 @@
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."accounts_receivables";
 CREATE TABLE "public"."accounts_receivables" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid,
   "ar_id" text COLLATE "pg_catalog"."default",
   "name" text COLLATE "pg_catalog"."default",
@@ -665,7 +665,7 @@ INSERT INTO "public"."ar_backups" VALUES ('2f633448-f415-43a3-8314-8d28ebca1f57'
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."audit_logs";
 CREATE TABLE "public"."audit_logs" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "user_id" uuid NOT NULL,
   "clinic_id" uuid,
   "action" text COLLATE "pg_catalog"."default" NOT NULL,
@@ -686,7 +686,7 @@ CREATE TABLE "public"."audit_logs" (
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."billing_codes";
 CREATE TABLE "public"."billing_codes" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "code" text COLLATE "pg_catalog"."default" NOT NULL,
   "description" text COLLATE "pg_catalog"."default",
   "color" text COLLATE "pg_catalog"."default" NOT NULL DEFAULT '#3b82f6'::text,
@@ -717,7 +717,7 @@ INSERT INTO "public"."billing_codes" VALUES ('c8f1ec87-c3f3-496b-883c-20a18eb4cf
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."cell_comments";
 CREATE TABLE "public"."cell_comments" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "sheet_type" text COLLATE "pg_catalog"."default" NOT NULL,
   "row_id" text COLLATE "pg_catalog"."default" NOT NULL,
@@ -740,7 +740,7 @@ INSERT INTO "public"."cell_comments" VALUES ('039ce2d2-8ba1-4b26-a190-b8ff3f0e68
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."cell_highlights";
 CREATE TABLE "public"."cell_highlights" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "sheet_type" text COLLATE "pg_catalog"."default" NOT NULL,
   "row_id" text COLLATE "pg_catalog"."default" NOT NULL,
@@ -805,7 +805,7 @@ INSERT INTO "public"."cell_highlights" VALUES ('fd37c101-269b-4dc8-87b2-091fd474
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."clinic_addresses";
 CREATE TABLE "public"."clinic_addresses" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "line_index" int4 NOT NULL,
   "address" text COLLATE "pg_catalog"."default",
@@ -883,7 +883,7 @@ INSERT INTO "public"."clinic_invoice_notes" VALUES ('80c04e1f-f4a8-4301-b3a3-a22
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."clinics";
 CREATE TABLE "public"."clinics" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "name" text COLLATE "pg_catalog"."default" NOT NULL,
   "phone" text COLLATE "pg_catalog"."default",
   "created_at" timestamptz(6) DEFAULT now(),
@@ -915,7 +915,7 @@ INSERT INTO "public"."clinics" VALUES ('dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f', '
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."column_locks";
 CREATE TABLE "public"."column_locks" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid,
   "provider_id" uuid,
   "column_name" text COLLATE "pg_catalog"."default" NOT NULL,
@@ -984,7 +984,7 @@ INSERT INTO "public"."invite_tokens" VALUES ('a4e7ae03-115f-4575-a580-c2cf486193
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."is_lock_accounts_receivable";
 CREATE TABLE "public"."is_lock_accounts_receivable" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "ar_id" bool NOT NULL DEFAULT false,
   "name" bool NOT NULL DEFAULT false,
@@ -1036,7 +1036,7 @@ INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('aee76c3e-3e69-450c-8
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."is_lock_billing_todo";
 CREATE TABLE "public"."is_lock_billing_todo" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "id_column" bool NOT NULL DEFAULT false,
   "status" bool NOT NULL DEFAULT false,
@@ -1068,7 +1068,7 @@ INSERT INTO "public"."is_lock_billing_todo" VALUES ('9e0f7de4-e9d1-43c0-b991-176
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."is_lock_patients";
 CREATE TABLE "public"."is_lock_patients" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "patient_id" bool NOT NULL DEFAULT false,
   "first_name" bool NOT NULL DEFAULT false,
@@ -1102,7 +1102,7 @@ INSERT INTO "public"."is_lock_patients" VALUES ('2f20e238-8bc5-475a-bedf-5666a8b
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."is_lock_providers";
 CREATE TABLE "public"."is_lock_providers" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "patient_id" bool NOT NULL DEFAULT false,
   "first_name" bool NOT NULL DEFAULT false,
@@ -1183,7 +1183,7 @@ INSERT INTO "public"."is_lock_providers" VALUES ('e74796d4-c04b-4fbd-838c-8d4b99
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."notifications";
 CREATE TABLE "public"."notifications" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "user_id" uuid NOT NULL,
   "title" text COLLATE "pg_catalog"."default" NOT NULL,
   "message" text COLLATE "pg_catalog"."default" NOT NULL,
@@ -1205,7 +1205,7 @@ CREATE TABLE "public"."notifications" (
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."patients";
 CREATE TABLE "public"."patients" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "patient_id" text COLLATE "pg_catalog"."default" NOT NULL,
   "first_name" text COLLATE "pg_catalog"."default",
@@ -2108,7 +2108,7 @@ INSERT INTO "public"."patients_backups" VALUES ('913bf396-55b1-48e4-b5ff-6a2160c
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."private_patient_claims";
 CREATE TABLE "public"."private_patient_claims" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "patient_id" text COLLATE "pg_catalog"."default" NOT NULL,
   "patient_id_key" text COLLATE "pg_catalog"."default" GENERATED ALWAYS AS (
@@ -2234,7 +2234,7 @@ INSERT INTO "public"."private_patient_claims" ("id", "clinic_id", "patient_id", 
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."provider_logins";
 CREATE TABLE "public"."provider_logins" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "provider_id" uuid NOT NULL,
   "logged_at" timestamptz(6) NOT NULL DEFAULT now()
 )
@@ -2523,7 +2523,7 @@ INSERT INTO "public"."provider_logins" VALUES ('bf83af26-fd7b-427d-93b6-88824a47
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."provider_pay";
 CREATE TABLE "public"."provider_pay" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "provider_id" uuid NOT NULL,
   "year" int2 NOT NULL,
@@ -3110,7 +3110,7 @@ INSERT INTO "public"."provider_pay_backups" VALUES ('ac63ebe5-fcd9-4560-a11d-1cb
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."provider_pay_rows";
 CREATE TABLE "public"."provider_pay_rows" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "provider_pay_id" uuid NOT NULL,
   "row_index" int2 NOT NULL,
   "description" text COLLATE "pg_catalog"."default",
@@ -3147,7 +3147,7 @@ INSERT INTO "public"."provider_pay_rows" VALUES ('930a029b-2ebe-4b88-8f62-71f3c8
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."provider_schedules";
 CREATE TABLE "public"."provider_schedules" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "provider_id" uuid NOT NULL,
   "patient_id" text COLLATE "pg_catalog"."default",
@@ -7562,7 +7562,7 @@ INSERT INTO "public"."provider_sheet_rows" VALUES ('e39d7323-517d-4e15-acd1-4b09
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."provider_sheets";
 CREATE TABLE "public"."provider_sheets" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "provider_id" uuid NOT NULL,
   "month" int4 NOT NULL,
@@ -7640,7 +7640,7 @@ INSERT INTO "public"."provider_sheets" VALUES ('ae0fd898-05e3-4964-945b-13533bbf
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."providers";
 CREATE TABLE "public"."providers" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "first_name" text COLLATE "pg_catalog"."default" NOT NULL,
   "last_name" text COLLATE "pg_catalog"."default" NOT NULL,
   "specialty" text COLLATE "pg_catalog"."default",
@@ -7748,7 +7748,7 @@ INSERT INTO "public"."server_refresh_tokens" VALUES ('2019c331-23cc-4099-b8ac-eb
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."status_colors";
 CREATE TABLE "public"."status_colors" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "status" text COLLATE "pg_catalog"."default" NOT NULL,
   "color" text COLLATE "pg_catalog"."default" NOT NULL,
   "type" text COLLATE "pg_catalog"."default" NOT NULL,
@@ -7806,7 +7806,7 @@ INSERT INTO "public"."status_colors" VALUES ('610c1043-99a8-47fd-8417-cd21071b78
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."timecards";
 CREATE TABLE "public"."timecards" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "user_id" uuid NOT NULL,
   "clinic_id" uuid,
   "clock_in" timestamptz(6) NOT NULL,
@@ -7838,7 +7838,7 @@ INSERT INTO "public"."timecards" VALUES ('80303de8-a838-4545-beb8-9e57dd4db058',
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."todo_lists";
 CREATE TABLE "public"."todo_lists" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
   "issue" text COLLATE "pg_catalog"."default",
   "status" text COLLATE "pg_catalog"."default" NOT NULL DEFAULT 'Open'::text,
@@ -7867,7 +7867,7 @@ INSERT INTO "public"."todo_lists" VALUES ('614069e3-dcd0-49f9-ae73-6f9b4726fb23'
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."users";
 CREATE TABLE "public"."users" (
-  "id" uuid NOT NULL,
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "email" text COLLATE "pg_catalog"."default" NOT NULL,
   "full_name" text COLLATE "pg_catalog"."default",
   "role" text COLLATE "pg_catalog"."default" NOT NULL,
@@ -7904,15 +7904,26 @@ INSERT INTO "public"."users" VALUES ('25697489-bd5c-44de-bae5-057815974fa1', 'ad
 INSERT INTO "public"."users" VALUES ('0e6a8774-ae11-431a-90e3-434635d16a99', 'muldersbert48@gmail.com', 'bert mulders', 'provider', '{9c542bda-d9b7-4903-9bcb-37eecca7720d}', '#eab308', '2026-03-05 10:34:34.431228-08', '2026-04-28 02:11:45.874816-07', 33.00, 't', '$2a$10$/Z9hcnIkqhKqMj1LDdg9s.4IPO2dbSXBFS9m5DtRKZznu59WBPUva');
 
 -- ----------------------------
+-- Function: app_current_user_id (optional session GUC app.current_user_id)
+-- ----------------------------
+DROP FUNCTION IF EXISTS "public"."app_current_user_id"();
+CREATE FUNCTION "public"."app_current_user_id"()
+  RETURNS uuid
+  LANGUAGE sql
+  STABLE
+AS $BODY$
+  SELECT NULLIF(BTRIM(COALESCE(current_setting('app.current_user_id', true), '')), '')::uuid;
+$BODY$;
+
+-- ----------------------------
 -- Function structure for auto_confirm_user_email
 -- ----------------------------
 DROP FUNCTION IF EXISTS "public"."auto_confirm_user_email"("user_id" uuid);
 CREATE FUNCTION "public"."auto_confirm_user_email"("user_id" uuid)
   RETURNS "pg_catalog"."void" AS $BODY$
 BEGIN
-  UPDATE auth.users
-  SET email_confirmed_at = COALESCE(email_confirmed_at, NOW())
-  WHERE id = user_id AND email_confirmed_at IS NULL;
+  -- No external identity catalog: confirmation is application-managed.
+  NULL;
 END;
 $BODY$
   LANGUAGE plpgsql VOLATILE SECURITY DEFINER
@@ -7926,7 +7937,12 @@ CREATE FUNCTION "public"."create_audit_log"()
   RETURNS "pg_catalog"."trigger" AS $BODY$
 DECLARE
   audit_clinic_id UUID;
+  actor_id UUID;
 BEGIN
+  actor_id := COALESCE(
+    public.app_current_user_id(),
+    (SELECT id FROM public.users WHERE role = 'super_admin' ORDER BY created_at LIMIT 1)
+  );
   IF TG_TABLE_NAME = 'providers' THEN
     IF TG_OP = 'INSERT' THEN audit_clinic_id := (NEW.clinic_ids)[1];
     ELSIF TG_OP = 'UPDATE' THEN audit_clinic_id := (NEW.clinic_ids)[1];
@@ -7941,15 +7957,15 @@ BEGIN
 
   IF TG_OP = 'INSERT' THEN
     INSERT INTO audit_logs (user_id, clinic_id, action, table_name, record_id, new_values)
-    VALUES (auth.uid(), audit_clinic_id, 'INSERT', TG_TABLE_NAME, NEW.id, to_jsonb(NEW));
+    VALUES (actor_id, audit_clinic_id, 'INSERT', TG_TABLE_NAME, NEW.id, to_jsonb(NEW));
     RETURN NEW;
   ELSIF TG_OP = 'UPDATE' THEN
     INSERT INTO audit_logs (user_id, clinic_id, action, table_name, record_id, old_values, new_values)
-    VALUES (auth.uid(), audit_clinic_id, 'UPDATE', TG_TABLE_NAME, NEW.id, to_jsonb(OLD), to_jsonb(NEW));
+    VALUES (actor_id, audit_clinic_id, 'UPDATE', TG_TABLE_NAME, NEW.id, to_jsonb(OLD), to_jsonb(NEW));
     RETURN NEW;
   ELSIF TG_OP = 'DELETE' THEN
     INSERT INTO audit_logs (user_id, clinic_id, action, table_name, record_id, old_values)
-    VALUES (auth.uid(), audit_clinic_id, 'DELETE', TG_TABLE_NAME, OLD.id, to_jsonb(OLD));
+    VALUES (actor_id, audit_clinic_id, 'DELETE', TG_TABLE_NAME, OLD.id, to_jsonb(OLD));
     RETURN OLD;
   END IF;
 END;
@@ -7988,7 +8004,7 @@ $BODY$
 DROP FUNCTION IF EXISTS "public"."current_user_clinic_ids"();
 CREATE FUNCTION "public"."current_user_clinic_ids"()
   RETURNS "pg_catalog"."_uuid" AS $BODY$
-  SELECT COALESCE(clinic_ids, '{}') FROM users WHERE id = auth.uid() LIMIT 1;
+  SELECT COALESCE(clinic_ids, '{}') FROM users WHERE id = public.app_current_user_id() LIMIT 1;
 $BODY$
   LANGUAGE sql STABLE SECURITY DEFINER
   COST 100;
@@ -8000,7 +8016,7 @@ DROP FUNCTION IF EXISTS "public"."current_user_is_admin_or_super"();
 CREATE FUNCTION "public"."current_user_is_admin_or_super"()
   RETURNS "pg_catalog"."bool" AS $BODY$
   SELECT EXISTS (
-    SELECT 1 FROM users WHERE id = auth.uid() AND role IN ('admin', 'super_admin')
+    SELECT 1 FROM users WHERE id = public.app_current_user_id() AND role IN ('admin', 'super_admin')
   );
 $BODY$
   LANGUAGE sql STABLE SECURITY DEFINER
@@ -8013,14 +8029,14 @@ DROP FUNCTION IF EXISTS "public"."current_user_provider_id"();
 CREATE FUNCTION "public"."current_user_provider_id"()
   RETURNS "pg_catalog"."uuid" AS $BODY$
   SELECT p.id FROM public.providers p
-  JOIN auth.users u ON u.email = p.email
-  WHERE u.id = auth.uid()
+  INNER JOIN public.users u ON lower(trim(u.email)) = lower(trim(p.email))
+  WHERE u.id = public.app_current_user_id()
   LIMIT 1
 $BODY$
   LANGUAGE sql STABLE SECURITY DEFINER
   COST 100
   SET "search_path"="public";
-COMMENT ON FUNCTION "public"."current_user_provider_id"() IS 'Returns the provider id for the current auth user (by email). Used by provider_schedules RLS so policies do not read public.users.';
+COMMENT ON FUNCTION "public"."current_user_provider_id"() IS 'Returns provider id for the signed-in public.users row (app.current_user_id), matched to providers by email.';
 
 -- ----------------------------
 -- Function structure for ensure_provider_for_provider_user
@@ -8061,31 +8077,8 @@ $BODY$
 DROP FUNCTION IF EXISTS "public"."handle_new_user"();
 CREATE FUNCTION "public"."handle_new_user"()
   RETURNS "pg_catalog"."trigger" AS $BODY$
-DECLARE
-  user_role TEXT;
-  user_full_name TEXT;
 BEGIN
-  -- Get role and full_name from user metadata (raw_user_meta_data)
-  user_role := COALESCE(NEW.raw_user_meta_data->>'role', 'provider');
-  user_full_name := COALESCE(NEW.raw_user_meta_data->>'full_name', '');
-  
-  -- Auto-confirm email (using SECURITY DEFINER to bypass RLS)
-  PERFORM public.auto_confirm_user_email(NEW.id);
-  
-  -- Create user profile in public.users
-  INSERT INTO public.users (id, email, full_name, role, clinic_ids)
-  VALUES (
-    NEW.id,
-    NEW.email,
-    user_full_name,
-    user_role,
-    ARRAY[]::UUID[]
-  )
-  ON CONFLICT (id) DO UPDATE SET
-    email = NEW.email,
-    full_name = COALESCE(user_full_name, users.full_name),
-    role = COALESCE(user_role, users.role);
-  
+  -- User rows are created by the application (Express). Retain trigger signature for compatibility.
   RETURN NEW;
 END;
 $BODY$
@@ -8105,7 +8098,7 @@ BEGIN
   -- We query the users table directly without RLS restrictions
   SELECT role INTO user_role
   FROM users
-  WHERE id = auth.uid()
+  WHERE id = public.app_current_user_id()
   LIMIT 1;
   
   RETURN COALESCE(user_role = 'super_admin', false);
@@ -8133,7 +8126,7 @@ $BODY$
   LANGUAGE plpgsql VOLATILE SECURITY DEFINER
   COST 100
   SET "search_path"="public";
-COMMENT ON FUNCTION "public"."record_provider_login"() IS 'Inserts one row into provider_logins for the current auth user if they are linked to a provider (by email). Call on sign-in.';
+COMMENT ON FUNCTION "public"."record_provider_login"() IS 'Inserts one row into provider_logins for the signed-in user when linked to a provider by email. Call on sign-in if you use this RPC.';
 
 -- ----------------------------
 -- Function structure for update_cell_comments_updated_at
@@ -9129,7 +9122,8 @@ ALTER TABLE "public"."is_lock_providers" ADD CONSTRAINT "is_lock_providers_clini
 -- ----------------------------
 -- Foreign Keys structure for table notifications
 -- ----------------------------
-ALTER TABLE "public"."notifications" ADD CONSTRAINT "notifications_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+ALTER TABLE IF EXISTS "public"."notifications" DROP CONSTRAINT IF EXISTS "notifications_user_id_fkey";
+ALTER TABLE "public"."notifications" ADD CONSTRAINT "notifications_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
 -- Foreign Keys structure for table patients
@@ -9210,4 +9204,41 @@ ALTER TABLE "public"."todo_lists" ADD CONSTRAINT "todo_lists_created_by_fkey" FO
 -- ----------------------------
 -- Foreign Keys structure for table users
 -- ----------------------------
-ALTER TABLE "public"."users" ADD CONSTRAINT "users_id_fkey" FOREIGN KEY ("id") REFERENCES "auth"."users" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+-- public.users.id is the sole application user identity (no FK to an external user catalog).
+
+-- ----------------------------
+-- public.*.id: align existing databases with app inserts that omit id (Postgres 13+ gen_random_uuid)
+-- ----------------------------
+ALTER TABLE IF EXISTS "public"."users" DROP CONSTRAINT IF EXISTS "users_id_fkey";
+ALTER TABLE IF EXISTS "public"."accounts_receivables" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."ar_backups" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."audit_logs" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."billing_codes" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."cell_comments" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."cell_highlights" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."clinic_addresses" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."clinic_invoice_notes" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."clinics" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."column_locks" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."is_lock_accounts_receivable" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."is_lock_billing_todo" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."is_lock_patients" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."is_lock_providers" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."notifications" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."patients" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."patients_backups" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."private_patient_claims" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."provider_logins" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."provider_pay" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."provider_pay_backups" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."provider_pay_rows" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."provider_schedules" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."provider_sheet_backups" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."provider_sheet_rows" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."provider_sheets" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."providers" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."server_refresh_tokens" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."status_colors" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."timecards" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."todo_lists" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."users" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();

@@ -1,6 +1,6 @@
 /**
- * Resolve `tsx` from server/node_modules or hoisted repo root node_modules (npm workspaces).
- * Use: node dev.mjs   (same args as: tsx watch src/index.ts)
+ * Resolve `tsx` from server/node_modules (or parent node_modules if present).
+ * Use: node dev.mjs   (same as: tsx watch src/index.ts)
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -15,7 +15,7 @@ const candidates = [
 
 const cli = candidates.find((p) => existsSync(p))
 if (!cli) {
-  console.error('tsx not found. From the repo root run: npm install')
+  console.error('tsx not found. From the server/ folder run: npm install')
   process.exit(1)
 }
 

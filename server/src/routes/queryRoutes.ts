@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import { z } from 'zod'
 import { pool } from '../db.js'
@@ -39,6 +40,34 @@ function mapTable(table: string): string {
     throw new Error('Invalid table')
   }
   return `public.${quoteIdent(table)}`
+}
+
+/** True when the client sent no usable primary-key id (explicit NULL bypasses DB DEFAULT). */
+function isBlankId(v: unknown): boolean {
+  if (v === null || v === undefined) return true
+  if (typeof v === 'string' && v.trim() === '') return true
+  return false
+}
+
+/**
+ * Insert/upsert paths union column keys across rows; missing `id` becomes SQL NULL and violates NOT NULL.
+ * Either drop `id` everywhere so Postgres applies DEFAULT, or assign UUIDs where missing.
+ */
+function normalizeRowIdsForWrite(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const copy = rows.map((r) => ({ ...r }))
+  const anyIdKey = copy.some((r) => Object.prototype.hasOwnProperty.call(r, 'id'))
+  if (!anyIdKey) return copy
+  const allBlank = copy.every((r) => !Object.prototype.hasOwnProperty.call(r, 'id') || isBlankId(r['id']))
+  if (allBlank) {
+    for (const r of copy) delete r['id']
+    return copy
+  }
+  for (const r of copy) {
+    if (!Object.prototype.hasOwnProperty.call(r, 'id') || isBlankId(r['id'])) {
+      r['id'] = randomUUID()
+    }
+  }
+  return copy
 }
 
 function buildWhere(filters: z.infer<typeof filterSchema>[], params: unknown[]): string {
@@ -181,12 +210,19 @@ queryRoutes.post('/query', async (req, res) => {
     }
 
     if (input.action === 'insert') {
-      const rows =
+      const rawRows =
         input.rows && input.rows.length > 0
           ? input.rows
           : input.values != null && typeof input.values === 'object' && !Array.isArray(input.values)
             ? [input.values as Record<string, unknown>]
             : []
+      if (rawRows.length === 0) {
+        res.status(400).json({ data: null, error: { message: 'Missing insert values or rows' } })
+        return
+      }
+      const rows = normalizeRowIdsForWrite(
+        rawRows.filter((r): r is Record<string, unknown> => r != null && typeof r === 'object' && !Array.isArray(r)),
+      )
       if (rows.length === 0) {
         res.status(400).json({ data: null, error: { message: 'Missing insert values or rows' } })
         return
@@ -251,12 +287,23 @@ queryRoutes.post('/query', async (req, res) => {
     }
 
     if (input.action === 'upsert') {
-      const rows = input.rows && input.rows.length ? input.rows : [input.values ?? {}]
-      const keys = Object.keys(rows[0] ?? {})
+      const raw = input.rows && input.rows.length ? input.rows : [input.values ?? {}]
+      const rows = normalizeRowIdsForWrite(
+        raw.filter((r): r is Record<string, unknown> => r != null && typeof r === 'object' && !Array.isArray(r)),
+      )
+      if (rows.length === 0) {
+        res.status(400).json({ data: null, error: { message: 'Missing upsert values or rows' } })
+        return
+      }
+      const keySet = new Set<string>()
+      for (const row of rows) {
+        for (const k of Object.keys(row)) keySet.add(k)
+      }
+      const keys = [...keySet].sort()
       const values: unknown[] = []
       const tuples = rows.map((row, rowIdx) => {
         const placeholders = keys.map((k, colIdx) => {
-          values.push(row[k])
+          values.push((row as Record<string, unknown>)[k] ?? null)
           return `$${rowIdx * keys.length + colIdx + 1}`
         })
         return `(${placeholders.join(', ')})`
