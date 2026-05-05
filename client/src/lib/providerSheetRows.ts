@@ -128,31 +128,10 @@ function sheetRowToDbPayload(row: SheetRow, sheetId: string, sortOrder: number):
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-function isUuid(id: string): boolean {
+export function isUuid(id: string): boolean {
   return UUID_REGEX.test(id)
 }
 
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  mapper: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const limit = Math.max(1, Math.floor(concurrency))
-  const results: R[] = new Array(items.length)
-  let nextIndex = 0
-
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (true) {
-      const currentIndex = nextIndex
-      nextIndex += 1
-      if (currentIndex >= items.length) return
-      results[currentIndex] = await mapper(items[currentIndex], currentIndex)
-    }
-  })
-
-  await Promise.all(workers)
-  return results
-}
 
 /**
  * Fetch all rows for a provider sheet from provider_sheet_rows, ordered by sort_order.
@@ -204,58 +183,87 @@ export async function fetchSheetRowsForSheetIds(
 }
 
 /**
- * Save rows to provider_sheet_rows. Rows with id matching existing UUID are updated;
- * rows with client ids (new-*, empty-*) are inserted. Any existing DB rows for this sheet
- * that are not in the given list are deleted (so deletes persist to the database).
- * Returns saved rows with real ids in same order.
+ * Save rows to provider_sheet_rows in as few requests as possible.
+ *
+ * - One batch UPSERT covers all rows: existing rows (UUID ids) update via ON CONFLICT (id),
+ *   new rows (non-UUID ids) insert with a server-generated UUID.
+ * - Orphan deletion: if `knownDeletedIds` is supplied the caller tells us exactly which DB
+ *   rows disappeared (no SELECT needed). When omitted we fall back to a SELECT + DELETE so
+ *   the behaviour is identical to the old implementation for callers that don't track deletes.
+ *
+ * Returns saved rows with real UUIDs in the same order as `rows`.
  */
 export async function saveSheetRows(
   db: NativeClient,
   sheetId: string,
-  rows: SheetRow[]
+  rows: SheetRow[],
+  knownDeletedIds?: string[],
 ): Promise<SheetRow[]> {
-  const ROW_SAVE_CONCURRENCY = 12
-  const saved = await mapWithConcurrency(rows, ROW_SAVE_CONCURRENCY, async (row, i) => {
-    const payload = sheetRowToDbPayload(row, sheetId, i)
+  let saved: SheetRow[]
 
-    if (isUuid(row.id)) {
-      // Use .select() without .maybeSingle() so 0 rows (e.g. RLS or missing row) returns [] instead of 406 Not Acceptable
-      const { data, error } = await db
-        .from('provider_sheet_rows')
-        .update({ ...payload, updated_at: new Date().toISOString() })
-        .eq('id', row.id)
-        .eq('sheet_id', sheetId)
-        .select()
+  if (rows.length > 0) {
+    // Build one payload per row. Existing rows carry their UUID so the server resolves
+    // ON CONFLICT (id) → UPDATE. New rows omit id so the server INSERTs with a fresh UUID.
+    const upsertPayloads = rows.map((row, i) => {
+      const base = sheetRowToDbPayload(row, sheetId, i)
+      if (isUuid(row.id)) {
+        return { id: row.id, ...base, updated_at: new Date().toISOString() } as Record<string, unknown>
+      }
+      return { ...base, updated_at: new Date().toISOString() } as Record<string, unknown>
+    })
 
-      if (error) throw error
-      if (data && data.length > 0) return dbToSheetRow(data[0] as ProviderSheetRowDb)
-      return row
-    } else {
-      const { data, error } = await db
-        .from('provider_sheet_rows')
-        .insert(payload)
-        .select()
-        .single()
-
-      if (error) throw error
-      return dbToSheetRow(data)
-    }
-  })
-
-  // Delete any rows in the DB for this sheet that are no longer in our list (so deletes persist)
-  const idsToKeep = saved.map(r => r.id)
-  const { data: existing } = await db
-    .from('provider_sheet_rows')
-    .select('id')
-    .eq('sheet_id', sheetId)
-  const existingIds = (existing || []).map((r: { id: string }) => r.id)
-  const idsToDelete = existingIds.filter(id => !idsToKeep.includes(id))
-  if (idsToDelete.length > 0) {
-    const { error: deleteError } = await db
+    // One network round-trip for all rows (replaces N individual UPDATE/INSERT calls).
+    const { data, error } = await db
       .from('provider_sheet_rows')
-      .delete()
-      .in('id', idsToDelete)
-    if (deleteError) throw deleteError
+      .upsert(upsertPayloads, { onConflict: 'id' })
+      .select()
+
+    if (error) throw error
+
+    // Map returned rows back to the original order.
+    // Existing rows match by UUID; new rows match by sort_order (= their index in the array).
+    const byUUID = new Map<string, SheetRow>()
+    const bySortOrder = new Map<number, SheetRow>()
+    for (const raw of (data ?? []) as ProviderSheetRowDb[]) {
+      const sr = dbToSheetRow(raw)
+      byUUID.set(raw.id, sr)
+      bySortOrder.set(raw.sort_order, sr)
+    }
+    saved = rows.map((row, i) =>
+      isUuid(row.id) ? (byUUID.get(row.id) ?? row) : (bySortOrder.get(i) ?? row)
+    )
+  } else {
+    saved = []
+  }
+
+  // ── Orphan cleanup ────────────────────────────────────────────────────────────
+  // Only needed when rows were actually removed from the list.
+  if (knownDeletedIds !== undefined) {
+    // Caller knows exactly which IDs were deleted — no extra SELECT required.
+    if (knownDeletedIds.length > 0) {
+      const { error: deleteError } = await db
+        .from('provider_sheet_rows')
+        .delete()
+        .in('id', knownDeletedIds)
+      if (deleteError) throw deleteError
+    }
+  } else {
+    // Legacy path: fetch all DB ids for this sheet and delete anything not in our list.
+    const idsToKeep = new Set(saved.filter(r => isUuid(r.id)).map(r => r.id))
+    const { data: existing } = await db
+      .from('provider_sheet_rows')
+      .select('id')
+      .eq('sheet_id', sheetId)
+    const idsToDelete = ((existing ?? []) as { id: string }[])
+      .map(r => r.id)
+      .filter(id => !idsToKeep.has(id))
+    if (idsToDelete.length > 0) {
+      const { error: deleteError } = await db
+        .from('provider_sheet_rows')
+        .delete()
+        .in('id', idsToDelete)
+      if (deleteError) throw deleteError
+    }
   }
 
   return saved

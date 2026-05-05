@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
-import { fetchSheetRows, fetchSheetRowsForSheetIds, saveSheetRows } from '@/lib/providerSheetRows'
+import { fetchSheetRows, fetchSheetRowsForSheetIds, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
 import { fetchBackupCsvAsSheetRows, padSheetRowsTo200 } from '@/lib/providerSheetBackups'
 import BackupVersionsBar, { type BackupVersionMeta } from '@/components/BackupVersionsBar'
@@ -2179,7 +2179,7 @@ export default function ClinicDetail() {
 
 
 
-  const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[]) => {
+  const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]) => {
     if (!clinicId || !userProfile) return
 
     const sheet = providerSheets[providerId]
@@ -2210,7 +2210,7 @@ export default function ClinicDetail() {
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: rowsToSave } }))
 
     try {
-      const savedRows = await saveSheetRows(apiClient, sheet.id, rowsToProcess)
+      const savedRows = await saveSheetRows(apiClient, sheet.id, rowsToProcess, knownDeletedIds ?? [])
       // Patient demographics are owned by `patients` (Patients tab / API), not pushed from provider sheets.
       const freshPatients =
         patientsRef.current.length > 0
@@ -2681,6 +2681,9 @@ export default function ClinicDetail() {
     const rows = providerSheetRows[providerId] || []
     const deletedRow = rows.find(r => r.id === rowId)
     const insertIndex = deletedRow ? rows.findIndex(r => r.id === rowId) : -1
+    // Only pass the deleted UUID to saveSheetRows so it can DELETE directly without a SELECT.
+    // Non-UUID ids (empty-*, new-*) were never persisted so need no DB delete.
+    const deletedDbIds = isUuid(rowId) ? [rowId] : []
     let rowsAfterDelete: SheetRow[] = []
     setProviderSheetRowsByMonth(prev => {
       const current = prev[selectedMonthKey] ?? {}
@@ -2688,7 +2691,7 @@ export default function ClinicDetail() {
       rowsAfterDelete = list.filter(r => r.id !== rowId)
       return { ...prev, [selectedMonthKey]: { ...current, [providerId]: rowsAfterDelete } }
     })
-    await saveProviderSheetRows(providerId, rowsAfterDelete)
+    await saveProviderSheetRows(providerId, rowsAfterDelete, deletedDbIds)
     if (deletedRow != null && insertIndex >= 0) {
       lastUndoRef.current = () => {
         setProviderSheetRowsByMonth(prev => {

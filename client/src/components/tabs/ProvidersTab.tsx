@@ -1618,6 +1618,16 @@ export default function ProvidersTab({
   const handleProviderRowsHandsontableChange = useCallback((changes: Handsontable.CellChange[] | null, source: Handsontable.ChangeSource) => {
     if (!changes || source === 'loadData' || !activeProvider) return
 
+    // Bail out early if no cell value actually changed (e.g. user double-clicked a cell but typed nothing).
+    // Handsontable fires afterChange with source='edit' even when oldValue === newValue, which would
+    // otherwise trigger a full save of all rows — matching how PatientsTab skips unchanged saves.
+    const isEmpty = (v: unknown) => v === null || v === undefined || v === ''
+    const hasRealChange = changes.some(([, , oldValue, newValue]) => {
+      if (isEmpty(oldValue) && isEmpty(newValue)) return false
+      return oldValue !== newValue
+    })
+    if (!hasRealChange) return
+
     // Column index -> SheetRow field (visit_type inserted at 9 when showVisitTypeColumn)
     const fieldsFullBase: Array<keyof SheetRow> = [
       'patient_id', 'patient_first_name', 'last_initial', 'patient_insurance', 'patient_copay', 'patient_coinsurance',
