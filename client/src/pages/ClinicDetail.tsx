@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
@@ -59,10 +59,11 @@ function mergeClinicPatientsWithUpdates(prev: Patient[], changes: Patient[]): Pa
   return Array.from(byId.values())
 }
 
-function newProviderLockRowPayload(clinicId: string, monthKey: string) {
+function newProviderLockRowPayload(clinicId: string, monthKey: string, providerId: string) {
   return {
     clinic_id: clinicId,
     month_key: monthKey,
+    provider_id: providerId,
     patient_id: false,
     first_name: false,
     last_initial: false,
@@ -173,6 +174,11 @@ export default function ClinicDetail() {
     clinic?.payroll === 2
       ? `${selectedMonth.getFullYear()}-${selectedMonth.getMonth() + 1}-${selectedPayroll}`
       : `${selectedMonth.getFullYear()}-${selectedMonth.getMonth() + 1}`
+  /** First clinic provider (same ordering as ProvidersTab) when URL has no :providerId — used for column lock scope. */
+  const firstListedProviderId = useMemo(
+    () => providers.find((p) => !p.id.startsWith('new-'))?.id ?? null,
+    [providers]
+  )
   const providerSheets = providerSheetsByMonth[selectedMonthKey] ?? {}
   const providerSheetRows = providerSheetRowsByMonth[selectedMonthKey] ?? {}
 
@@ -328,8 +334,6 @@ export default function ClinicDetail() {
         void fetchColumnLocks()
         // fetchProviders() is intentionally omitted on the single-provider route: fetchProviderSheetData
         // (triggered by the month effect) loads the one provider we need and syncs it into providers state.
-        // Single-provider route: month effect loads locks after sheet fetch. Calling here duplicates is_lock_providers.
-        if (!providerId && selectedMonthKey) void fetchIsLockProviders(selectedMonthKey)
       } else if (activeTab === 'provider_pay') {
         void fetchStatusColors()
         void fetchProviders()
@@ -436,7 +440,7 @@ export default function ClinicDetail() {
         }
       })()
     }
-  }, [selectedMonthKey, activeTab, clinicId, providerId])
+  }, [selectedMonthKey, activeTab, clinicId, providerId, firstListedProviderId])
 
   const fetchData = async (monthKeyForProviderSheets?: string) => {
     if (!clinicId) return
@@ -843,7 +847,13 @@ export default function ClinicDetail() {
     const monthKey = monthKeyForLocks ?? selectedMonthKey
     if (!monthKey) return
 
-    const inflightKey = `${clinicId}|${monthKey}`
+    const lockPid = providerId ?? firstListedProviderId
+    if (!lockPid) {
+      setIsLockProviders(null)
+      return
+    }
+
+    const inflightKey = `${clinicId}|${monthKey}|${lockPid}`
     const existing = fetchIsLockProvidersInFlightRef.current.get(inflightKey)
     if (existing) {
       await existing
@@ -851,7 +861,7 @@ export default function ClinicDetail() {
     }
 
     const run = (async (): Promise<void> => {
-      providersDebugClinic('fetchIsLockProviders (may run multiple selects/inserts)', { clinicId, monthKey })
+      providersDebugClinic('fetchIsLockProviders (may run multiple selects/inserts)', { clinicId, monthKey, lockPid })
 
       try {
         const { data, error } = await apiClient
@@ -859,6 +869,7 @@ export default function ClinicDetail() {
           .select('*')
           .eq('clinic_id', clinicId)
           .eq('month_key', monthKey)
+          .eq('provider_id', lockPid)
           .maybeSingle()
 
         if (error) {
@@ -876,16 +887,25 @@ export default function ClinicDetail() {
           .select('*')
           .eq('clinic_id', clinicId)
           .eq('month_key', IS_LOCK_PROVIDERS_LEGACY_MONTH_KEY)
+          .eq('provider_id', lockPid)
           .maybeSingle()
 
         if (legacy) {
-          const { id: _id, created_at: _c, updated_at: _u, month_key: _mk, ...cloneFields } = legacy as IsLockProviders
+          const {
+            id: _id,
+            created_at: _c,
+            updated_at: _u,
+            month_key: _mk,
+            provider_id: _pid,
+            ...cloneFields
+          } = legacy as IsLockProviders
           const { data: inserted, error: insertError } = await apiClient
             .from('is_lock_providers')
             .insert({
               ...cloneFields,
               clinic_id: clinicId,
               month_key: monthKey,
+              provider_id: lockPid,
             })
             .select()
             .maybeSingle()
@@ -899,6 +919,7 @@ export default function ClinicDetail() {
             .select('*')
             .eq('clinic_id', clinicId)
             .eq('month_key', monthKey)
+            .eq('provider_id', lockPid)
             .maybeSingle()
           setIsLockProviders((again as IsLockProviders) ?? null)
           return
@@ -906,7 +927,7 @@ export default function ClinicDetail() {
 
         const { data: newData, error: insertError } = await apiClient
           .from('is_lock_providers')
-          .insert(newProviderLockRowPayload(clinicId, monthKey))
+          .insert(newProviderLockRowPayload(clinicId, monthKey, lockPid))
           .select()
           .maybeSingle()
 
@@ -916,6 +937,7 @@ export default function ClinicDetail() {
             .select('*')
             .eq('clinic_id', clinicId)
             .eq('month_key', monthKey)
+            .eq('provider_id', lockPid)
             .maybeSingle()
           setIsLockProviders((again as IsLockProviders) ?? null)
         } else if (newData) {
@@ -939,6 +961,15 @@ export default function ClinicDetail() {
     if (!clinicId || !userProfile?.id) return
     if (!selectedMonthKey) {
       alert('Select a month before changing provider column locks.')
+      return
+    }
+
+    const lockPid =
+      (selectedLockColumn?.isProviderColumn ? selectedLockColumn.providerId : null) ??
+      providerId ??
+      firstListedProviderId
+    if (!lockPid) {
+      alert('Select a provider sheet before changing column locks.')
       return
     }
 
@@ -984,6 +1015,7 @@ export default function ClinicDetail() {
         const upsertData: any = {
           clinic_id: clinicId,
           month_key: selectedMonthKey,
+          provider_id: lockPid,
           patient_id: columnName === 'patient_id' ? isLocked : false,
           first_name: columnName === 'first_name' ? isLocked : false,
           last_initial: columnName === 'last_initial' ? isLocked : false,
@@ -1011,14 +1043,14 @@ export default function ClinicDetail() {
 
         let { error } = await apiClient
           .from('is_lock_providers')
-          .upsert(upsertData, { onConflict: 'clinic_id,month_key' })
+          .upsert(upsertData, { onConflict: 'clinic_id,month_key,provider_id' })
 
         if (error && (error.message?.includes('column') || error.message?.includes('not found') || error.code === 'PGRST204')) {
           console.warn(`Comment column ${commentField} does not exist. Upserting without comment.`)
           delete upsertData[commentField]
           const { error: retryError } = await apiClient
             .from('is_lock_providers')
-            .upsert(upsertData, { onConflict: 'clinic_id,month_key' })
+            .upsert(upsertData, { onConflict: 'clinic_id,month_key,provider_id' })
           if (retryError) throw retryError
         } else if (error) {
           throw error
@@ -3191,10 +3223,12 @@ export default function ClinicDetail() {
               filterRowsByMonth={filterRowsByMonth}
               isLockProviders={isLockProviders}
               onLockProviderColumn={canLockColumns ? (columnName: string) => {
+                const lockPid = providerId ?? firstListedProviderId
+                if (!lockPid) return
                 const existingComment = isLockProviders && isProviderColumnLocked(columnName as keyof IsLockProviders)
                   ? (isLockProviders[`${columnName}_comment` as keyof IsLockProviders] as string | null) || ''
                   : ''
-                setSelectedLockColumn({ columnName, providerId: null, isProviderColumn: true })
+                setSelectedLockColumn({ columnName, providerId: lockPid, isProviderColumn: true })
                 setLockComment(existingComment)
                 setShowLockDialog(true)
               } : undefined}
@@ -3719,9 +3753,15 @@ export default function ClinicDetail() {
                   Billing Todo table column
                 </p>
               )}
-              {selectedLockColumn.isProviderColumn && (
+              {selectedLockColumn.isProviderColumn && selectedLockColumn.providerId && (
                 <p className="text-slate-300 text-sm">
-                  Providers table column
+                  Provider sheet:{' '}
+                  <span className="font-medium text-white">
+                    {(() => {
+                      const p = providers.find((x) => x.id === selectedLockColumn.providerId)
+                      return p ? `${p.first_name} ${p.last_name}`.trim() : selectedLockColumn.providerId
+                    })()}
+                  </span>
                 </p>
               )}
               {selectedLockColumn.isARColumn && (

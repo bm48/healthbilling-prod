@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
 import { fetchSheetRows, saveSheetRows } from '@/lib/providerSheetRows'
@@ -12,6 +12,7 @@ import {
   Patient,
   BillingCode,
   StatusColor,
+  IsLockProviders,
 } from '@/types'
 import ProvidersTab from '@/components/tabs/ProvidersTab'
 import AccountsReceivableTab from '@/components/tabs/AccountsReceivableTab'
@@ -37,6 +38,7 @@ export default function ProviderSheetPage() {
   const pendingProviderSheetSaveRef = useRef<Record<string, SheetRow[]>>({})
   const providerSheetFetchVersionRef = useRef(0)
   const [currentSheet, setCurrentSheet] = useState<ProviderSheet | null>(null)
+  const [isLockProviders, setIsLockProviders] = useState<IsLockProviders | null>(null)
   /** When provider level is 2: 'sheet' | 'accounts_receivable' | 'provider_pay' */
   const [providerViewTab, setProviderViewTab] = useState<'sheet' | 'accounts_receivable' | 'provider_pay'>('sheet')
 
@@ -288,6 +290,39 @@ export default function ProviderSheetPage() {
   useEffect(() => {
     providerSheetRowsRef.current = providerSheetRows
   }, [providerSheetRows])
+
+  const selectedMonthKeyForLocks = useMemo(() => {
+    if (!clinic) return null
+    const y = selectedMonth.getFullYear()
+    const m = selectedMonth.getMonth() + 1
+    return (clinic.payroll ?? 1) === 2 ? `${y}-${m}-1` : `${y}-${m}`
+  }, [clinic, selectedMonth])
+
+  useEffect(() => {
+    if (!clinicId || !provider || !selectedMonthKeyForLocks) {
+      setIsLockProviders(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const { data, error } = await apiClient
+        .from('is_lock_providers')
+        .select('*')
+        .eq('clinic_id', clinicId)
+        .eq('month_key', selectedMonthKeyForLocks)
+        .eq('provider_id', provider.id)
+        .maybeSingle()
+      if (cancelled) return
+      if (error) {
+        setIsLockProviders(null)
+        return
+      }
+      setIsLockProviders((data as IsLockProviders) ?? null)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [clinicId, provider?.id, selectedMonthKeyForLocks])
 
   useEffect(() => {
     if (provider && clinic) fetchProviderSheetData()
@@ -715,6 +750,7 @@ export default function ProviderSheetPage() {
           onNextMonth={handleNextMonth}
           formatMonthYear={formatMonthYear}
           filterRowsByMonth={filterRowsByMonth}
+          isLockProviders={isLockProviders}
         />
       )}
 

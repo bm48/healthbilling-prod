@@ -320,6 +320,8 @@ export interface IsLockAccountsReceivable {
 export interface IsLockProviders {
   id: string
   clinic_id: string
+  /** Provider whose sheet columns these flags apply to. */
+  provider_id: string
   /** Provider sheet month key, e.g. "2025-3" or "2025-3-2". Value "legacy" is used for rows migrated from the old single-row-per-clinic model. */
   month_key: string
   patient_id: boolean
