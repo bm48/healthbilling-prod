@@ -71,6 +71,19 @@ export async function listBackupVersions(
   return (data || []) as BackupVersion[]
 }
 
+const listBackupVersionsInflight = new Map<string, Promise<BackupVersion[]>>()
+
+/** One in-flight list per sheet so remounts / Strict Mode do not duplicate the backup-versions query. */
+export function listBackupVersionsDeduped(db: NativeClient, sheetId: string): Promise<BackupVersion[]> {
+  const existing = listBackupVersionsInflight.get(sheetId)
+  if (existing) return existing
+  const p = listBackupVersions(db, sheetId).finally(() => {
+    listBackupVersionsInflight.delete(sheetId)
+  })
+  listBackupVersionsInflight.set(sheetId, p)
+  return p
+}
+
 /**
  * Get a signed URL to download a backup file (CSV).
  */

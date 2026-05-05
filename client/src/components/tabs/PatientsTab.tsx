@@ -69,6 +69,8 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
   const pendingPatientIdByRowIdRef = useRef<Map<string, string>>(new Map())
   /** Stable UUID for INSERT upserts per placeholder row (DBs without id default still work). */
   const pendingInsertUuidByPlaceholderIdRef = useRef<Map<string, string>>(new Map())
+  /** One in-flight list fetch per clinic (React Strict Mode / quick remount dedupes duplicate `patients` queries). */
+  const patientsListInflightRef = useRef<Map<string, Promise<void>>>(new Map())
 
   /** Handsontable row index in hooks is visual when column sorting is on; patients[] is physical order. */
   const physicalRowFromHot = useCallback((visualRow: number) => {
@@ -126,7 +128,14 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
   }), [clinicId])
 
   const fetchPatients = useCallback(async () => {
-    try {
+    const inflightKey = clinicId
+    const existing = patientsListInflightRef.current.get(inflightKey)
+    if (existing) {
+      await existing
+      return
+    }
+    const run = async () => {
+      try {
       const { data, error } = await apiClient
         .from('patients')
         .select('*')
@@ -196,6 +205,14 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
       console.error('[PatientData] Error fetching patients:', error)
     } finally {
       setLoading(false)
+    }
+    }
+    const flight = run()
+    patientsListInflightRef.current.set(inflightKey, flight)
+    try {
+      await flight
+    } finally {
+      patientsListInflightRef.current.delete(inflightKey)
     }
   }, [clinicId, createEmptyPatient])
 

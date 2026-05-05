@@ -35,6 +35,24 @@ export async function listTabBackupVersions(
   return (data || []) as TabBackupVersion[]
 }
 
+const listTabBackupVersionsInflight = new Map<string, Promise<TabBackupVersion[]>>()
+
+/** One in-flight list per (type, clinic) so remounts / Strict Mode do not duplicate the backup-versions query. */
+export function listTabBackupVersionsDeduped(
+  db: NativeClient,
+  type: TabBackupType,
+  clinicId: string
+): Promise<TabBackupVersion[]> {
+  const k = `${type}:${clinicId}`
+  const existing = listTabBackupVersionsInflight.get(k)
+  if (existing) return existing
+  const p = listTabBackupVersions(db, type, clinicId).finally(() => {
+    listTabBackupVersionsInflight.delete(k)
+  })
+  listTabBackupVersionsInflight.set(k, p)
+  return p
+}
+
 export async function getTabBackupDownloadUrl(
   db: NativeClient,
   filePath: string

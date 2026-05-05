@@ -24,9 +24,9 @@ function isHandsontableUndoRedoSource(source?: string) {
   return source === 'UndoRedo.undo' || source === 'UndoRedo.redo'
 }
 
-function logProvidersTab(event: string, payload?: Record<string, unknown>) {
-  if (payload) console.log(`[ProvidersTab] ${event}`, payload)
-  else console.log(`[ProvidersTab] ${event}`)
+function providersDebugTab(event: string, payload?: Record<string, unknown>) {
+  if (payload !== undefined) console.log(`[ProvidersDebug] ProvidersTab ${event}`, payload)
+  else console.log(`[ProvidersDebug] ProvidersTab ${event}`)
 }
 
 const PROVIDER_GRID_DATE_FIELDS: (keyof SheetRow)[] = ['appointment_date', 'submit_date', 'payment_date', 'ar_date']
@@ -337,6 +337,26 @@ export default function ProvidersTab({
   clinicIdForValidationRef.current = clinicId
   isViewingBackupRef.current = isViewingBackup
 
+  /** Prefer parent-loaded patients; avoids a full-clinic `patients` query on every patient_id edit/batch. */
+  const patientsForLookupRef = useRef(patients)
+  patientsForLookupRef.current = patients
+
+  const resolvePatientsListForValidation = useCallback(async (): Promise<Patient[]> => {
+    const local = patientsForLookupRef.current
+    if (local.length > 0) return local
+    const cid = clinicIdForValidationRef.current
+    if (!cid) return []
+    providersDebugTab('resolvePatientsListForValidation → patients select (props list was empty)', {
+      clinicId: cid,
+    })
+    const { data, error } = await apiClient.from('patients').select('*').eq('clinic_id', cid)
+    if (error) {
+      console.error('[ProvidersTab] patient list for validation failed', error)
+      return []
+    }
+    return (data || []) as Patient[]
+  }, [])
+
   const localRowsProviderKeyRef = useRef<string | null>(null)
 
   /** Column `data` for Patient ID is always 0 in this grid. */
@@ -367,6 +387,7 @@ export default function ProvidersTab({
   // Load persisted highlights and comments for this clinic (so they survive reload and show for providers)
   useEffect(() => {
     if (!clinicId) return
+    providersDebugTab('useEffect[clinicId] → load cell_highlights + cell_comments (parallel)', { clinicId })
     const loadHighlights = async () => {
       const { data } = await apiClient
         .from('cell_highlights')
@@ -462,6 +483,14 @@ export default function ProvidersTab({
       const month = selectedMonth.getMonth() + 1
       const year = selectedMonth.getFullYear()
       const payroll = clinicPayroll === 2 ? (selectedPayroll ?? 1) : 1
+
+      providersDebugTab('isPatientAssignedToDifferentProviderDb (2 queries: other provider_sheets + provider_sheet_rows)', {
+        patientIdPreview: key.length > 16 ? `${key.slice(0, 16)}…` : key,
+        currentProviderId,
+        month,
+        year,
+        payroll,
+      })
 
       const { data: otherSheets, error: otherSheetsError } = await apiClient
         .from('provider_sheets')
@@ -739,6 +768,11 @@ export default function ProvidersTab({
 
     let cancelled = false
     setArSumFromDb(null)
+    providersDebugTab('useEffect[clinicId, selectedMonth] → accounts_receivables sum for month', {
+      clinicId,
+      firstDay,
+      lastDayStr,
+    })
     apiClient
       .from('accounts_receivables')
       .select('amount')
@@ -881,7 +915,7 @@ export default function ProvidersTab({
   useEffect(() => {
     if (isProviderView || !canEdit || !onLockProviderColumn || !isProviderColumnLocked) return
 
-    let timeoutId: NodeJS.Timeout | null = null
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
     let menuEl: HTMLElement | null = null
     let closeListener: ((e: Event) => void) | null = null
     let openedAt = 0
@@ -1521,13 +1555,9 @@ export default function ProvidersTab({
               const cid = clinicIdForValidationRef.current
               if (!hot.isDestroyed && ap && cid && batch.length > 0) {
                 void (async () => {
-                  const { data, error } = await apiClient.from('patients').select('*').eq('clinic_id', cid)
-                  if (error) {
-                    console.error('[ProvidersTab] patient ID validation (DB) failed', error)
-                    return
-                  }
+                  const data = await resolvePatientsListForValidation()
                   const byKey = new Map<string, Patient>()
-                  for (const p of data || []) {
+                  for (const p of data) {
                     const k = String(p.patient_id ?? '').trim().toLowerCase()
                     if (k) byKey.set(k, p as Patient)
                   }
@@ -1583,7 +1613,7 @@ export default function ProvidersTab({
     badChanges.forEach((change) => {
       ;(change as unknown[])[3] = valueToApply
     })
-  }, [showVisitTypeColumn, isViewingBackup, isPatientAssignedToDifferentProviderDb])
+  }, [showVisitTypeColumn, isViewingBackup, isPatientAssignedToDifferentProviderDb, resolvePatientsListForValidation])
 
   const handleProviderRowsHandsontableChange = useCallback((changes: Handsontable.CellChange[] | null, source: Handsontable.ChangeSource) => {
     if (!changes || source === 'loadData' || !activeProvider) return
@@ -1804,11 +1834,7 @@ export default function ProvidersTab({
                 if (!pidRaw) return
                 const key = pidRaw.toLowerCase()
 
-                const { data, error } = await apiClient.from('patients').select('*').eq('clinic_id', clinic)
-                if (error) {
-                  console.error('[ProvidersTab] patient ID validation (edit) failed', error)
-                  return
-                }
+                const data = await resolvePatientsListForValidation()
                 const duplicateInOtherProvider = await isPatientAssignedToDifferentProviderDb(pidRaw, ap.id)
                 if (duplicateInOtherProvider) {
                   try {
@@ -1820,7 +1846,7 @@ export default function ProvidersTab({
                   return
                 }
                 const rec =
-                  (data || []).find((p) => String(p.patient_id ?? '').trim().toLowerCase() === key) ?? null
+                  data.find((p) => String(p.patient_id ?? '').trim().toLowerCase() === key) ?? null
 
                 const cur = latestProviderRowsRef.current?.providerId === ap.id ? [...latestProviderRowsRef.current.rows] : null
                 if (!cur || row >= cur.length) return
@@ -2054,7 +2080,7 @@ export default function ProvidersTab({
     
     // Debounce save and flush on unmount so data isn't lost when switching tabs
     pendingProviderSheetSaveRef.current = { providerId: activeProvider.id, rows: updatedRows }
-    logProvidersTab('pending save scheduled', {
+    providersDebugTab('pending save scheduled', {
       providerId: activeProvider.id,
       rows: updatedRows.length,
       source,
@@ -2067,7 +2093,7 @@ export default function ProvidersTab({
       const pending = pendingProviderSheetSaveRef.current
       if (pending) {
         pendingProviderSheetSaveRef.current = null
-        logProvidersTab('debounced save firing', {
+        providersDebugTab('debounced save firing', {
           providerId: pending.providerId,
           rows: pending.rows.length,
         })
@@ -2082,7 +2108,7 @@ export default function ProvidersTab({
     if (hadPatientIdMerge || hadPatientIdClear || hadDateColumnEdit || hadTotalAutoUpdate || uniqueDeleteIds.length > 0) {
       setStructureVersion((v) => v + 1)
     }
-  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRow, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, isPatientAssignedToDifferentProviderDb])
+  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRow, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, isPatientAssignedToDifferentProviderDb, resolvePatientsListForValidation])
 
   const createEmptySheetRowForSync = useCallback(
     (providerId: string, emptySuffix: number): SheetRow => ({
@@ -2207,7 +2233,7 @@ export default function ProvidersTab({
       latestProviderRowsRef.current = { providerId: activeProvider.id, rows: merged }
       latestTableDataRef.current = getTableDataFromRows(merged)
       pendingProviderSheetSaveRef.current = { providerId: activeProvider.id, rows: merged }
-      logProvidersTab('undo/redo immediate save', {
+      providersDebugTab('undo/redo immediate save', {
         providerId: activeProvider.id,
         rows: merged.length,
       })
@@ -2252,7 +2278,7 @@ export default function ProvidersTab({
       if (providerIdToSave && rowsToSave?.length) {
         pendingProviderSheetSaveRef.current = null
         latestProviderRowsRef.current = null
-        logProvidersTab('unmount flush save', {
+        providersDebugTab('unmount flush save', {
           providerId: providerIdToSave,
           rows: rowsToSave.length,
         })

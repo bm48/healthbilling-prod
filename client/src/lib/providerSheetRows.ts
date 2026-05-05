@@ -169,6 +169,41 @@ export async function fetchSheetRows(db: NativeClient, sheetId: string): Promise
 }
 
 /**
+ * Load rows for many sheets in a single query (one round-trip per clinic month load).
+ * Each sheet's rows are sorted by `sort_order`. Unknown sheet ids map to `[]`.
+ */
+export async function fetchSheetRowsForSheetIds(
+  db: NativeClient,
+  sheetIds: string[],
+): Promise<Map<string, SheetRow[]>> {
+  const out = new Map<string, SheetRow[]>()
+  const unique = [...new Set(sheetIds.filter(Boolean))]
+  for (const id of unique) out.set(id, [])
+  if (unique.length === 0) return out
+
+  console.log('[ProvidersDebug] fetchSheetRowsForSheetIds (batched)', {
+    uniqueSheetCount: unique.length,
+  })
+
+  const { data, error } = await db.from('provider_sheet_rows').select('*').in('sheet_id', unique)
+
+  if (error) throw error
+
+  const bySheet = new Map<string, ProviderSheetRowDb[]>()
+  for (const id of unique) bySheet.set(id, [])
+  for (const raw of (data || []) as ProviderSheetRowDb[]) {
+    const sid = raw.sheet_id
+    if (!bySheet.has(sid)) bySheet.set(sid, [])
+    bySheet.get(sid)!.push(raw)
+  }
+  for (const [sid, dbRows] of bySheet) {
+    dbRows.sort((a, b) => a.sort_order - b.sort_order)
+    out.set(sid, dbRows.map(dbToSheetRow))
+  }
+  return out
+}
+
+/**
  * Save rows to provider_sheet_rows. Rows with id matching existing UUID are updated;
  * rows with client ids (new-*, empty-*) are inserted. Any existing DB rows for this sheet
  * that are not in the given list are deleted (so deletes persist to the database).

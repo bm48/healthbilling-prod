@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
-import { fetchSheetRows } from '@/lib/providerSheetRows'
+import { fetchSheetRowsForSheetIds } from '@/lib/providerSheetRows'
 import { useAuth } from '@/contexts/AuthContext'
 import { Download, Loader } from 'lucide-react'
 import {
@@ -12,7 +12,7 @@ import {
   generateLaborReport,
   getDateRange,
 } from '@/lib/reports'
-import { ProviderSheet, Timecard, User, Clinic, Provider } from '@/types'
+import { ProviderSheet, Timecard, User, Clinic, Provider, type SheetRow } from '@/types'
 
 export default function Reports() {
   const { userProfile } = useAuth()
@@ -99,10 +99,12 @@ export default function Reports() {
         return sheetDate >= startDate && sheetDate <= endDate
       })
 
-      const rowsBySheetId: Record<string, import('@/types').SheetRow[]> = {}
-      await Promise.all(sheets.map(async sheet => {
-        rowsBySheetId[sheet.id] = await fetchSheetRows(apiClient, sheet.id)
-      }))
+      const sheetIds = sheets.map((s: ProviderSheet) => s.id)
+      const rowsBySheetIdMap = await fetchSheetRowsForSheetIds(apiClient, sheetIds)
+      const rowsBySheetId: Record<string, SheetRow[]> = {}
+      for (const sheet of sheets) {
+        rowsBySheetId[sheet.id] = rowsBySheetIdMap.get(sheet.id) ?? []
+      }
 
       // Fetch timecards for labor report
       if (reportType === 'labor') {

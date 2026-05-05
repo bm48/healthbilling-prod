@@ -675,7 +675,7 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
   useEffect(() => {
     if (!canEdit || !onLockColumn || !isColumnLocked) return
 
-    let timeoutId: NodeJS.Timeout | null = null
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
     let menuEl: HTMLElement | null = null
     let closeListener: (() => void) | null = null
 

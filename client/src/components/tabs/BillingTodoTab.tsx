@@ -659,7 +659,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
   useEffect(() => {
     if (!canEdit || !onLockColumn || !isColumnLocked) return
 
-    let timeoutId: NodeJS.Timeout | null = null
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
     let menuEl: HTMLElement | null = null
     let closeListener: (() => void) | null = null
 

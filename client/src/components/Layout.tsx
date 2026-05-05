@@ -280,16 +280,17 @@ export default function Layout({ children }: LayoutProps) {
     }
   }
 
-  // Fetch providers when clinic is expanded (fallback)
+  // Fetch providers when clinic is expanded (fallback). Wait for fetchClinics + fetchAllProviders so we do not duplicate the same providers query as the sidebar bulk load.
   useEffect(() => {
     if (userProfile?.role === 'super_admin' || userProfile?.role === 'admin' || userProfile?.role === 'billing_staff' || userProfile?.role === 'official_staff') {
+      if (loadingClinics) return
       expandedClinics.forEach(clinicId => {
         if (!clinicProviders[clinicId] || clinicProviders[clinicId].length === 0) {
           fetchProvidersForClinic(clinicId)
         }
       })
     }
-  }, [expandedClinics, userProfile])
+  }, [expandedClinics, userProfile, loadingClinics, clinicProviders])
 
   const toggleClinic = (clinicId: string) => {
     setExpandedClinics(prev => {

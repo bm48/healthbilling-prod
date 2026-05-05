@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
 import { useAuth } from '@/contexts/AuthContext'
-import { Clinic, Provider } from '@/types'
-import { fetchSheetRows } from '@/lib/providerSheetRows'
+import { Clinic, Provider, type SheetRow } from '@/types'
+import { fetchSheetRowsForSheetIds } from '@/lib/providerSheetRows'
 import { fetchClinicAddressesByClinicIds } from '@/lib/clinicAddresses'
 import { computeBillingMetrics, type BillingMetrics } from '@/lib/billingMetrics'
 import { Users, FileText, CheckSquare, DollarSign } from 'lucide-react'
@@ -143,13 +143,12 @@ export default function ClinicDashboard() {
           }))
         )
       } else {
-        const rowsBySheet: Record<string, Awaited<ReturnType<typeof fetchSheetRows>>> = {}
-        await Promise.all(
-          sheets.map(async (sheet) => {
-            const rows = await fetchSheetRows(apiClient, sheet.id)
-            rowsBySheet[sheet.id] = rows
-          })
-        )
+        const sheetIds = sheets.map((s) => s.id)
+        const rowsBySheetId = await fetchSheetRowsForSheetIds(apiClient, sheetIds)
+        const rowsBySheet: Record<string, SheetRow[]> = {}
+        for (const sheet of sheets) {
+          rowsBySheet[sheet.id] = rowsBySheetId.get(sheet.id) ?? []
+        }
 
         const byProvider: Record<string, { claims: number; unpaid: number; total: number; metrics: BillingMetrics }> = {}
         providersList.forEach((p) => {

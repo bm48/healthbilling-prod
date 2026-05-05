@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
-import { fetchSheetRows, saveSheetRows } from '@/lib/providerSheetRows'
+import { fetchSheetRows, fetchSheetRowsForSheetIds, saveSheetRows } from '@/lib/providerSheetRows'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
 import { fetchBackupCsvAsSheetRows, padSheetRowsTo200 } from '@/lib/providerSheetBackups'
 import BackupVersionsBar, { type BackupVersionMeta } from '@/components/BackupVersionsBar'
@@ -28,6 +28,11 @@ type TabType = 'patients' | 'todo' | 'providers' | 'accounts_receivable' | 'prov
 /** Pre-migration `is_lock_providers` rows use this month_key; first open of a calendar month clones them into that month. */
 const IS_LOCK_PROVIDERS_LEGACY_MONTH_KEY = 'legacy'
 
+function providersDebugClinic(event: string, detail?: Record<string, unknown>) {
+  if (detail !== undefined) console.log(`[ProvidersDebug] ClinicDetail ${event}`, detail)
+  else console.log(`[ProvidersDebug] ClinicDetail ${event}`)
+}
+
 /** Pre-migration `is_lock_accounts_receivable` rows use this month_key; first open of a month clones them into that month. */
 const IS_LOCK_AR_LEGACY_MONTH_KEY = 'legacy'
 
@@ -43,6 +48,15 @@ function newARLockRowPayload(clinicId: string, monthKey: string) {
     type: false,
     notes: false,
   }
+}
+
+/** Merge Patient Info saves into the clinic patient list for provider co-patient sync without a full-table refetch. */
+function mergeClinicPatientsWithUpdates(prev: Patient[], changes: Patient[]): Patient[] {
+  if (changes.length === 0) return prev
+  const byId = new Map<string, Patient>()
+  for (const p of prev) byId.set(p.id, p)
+  for (const c of changes) byId.set(c.id, c)
+  return Array.from(byId.values())
 }
 
 function newProviderLockRowPayload(clinicId: string, monthKey: string) {
@@ -79,6 +93,22 @@ export default function ClinicDetail() {
   const [activeTab, setActiveTab] = useState<TabType>(providerId ? 'providers' : ((tab as TabType) || 'patients'))
   const [loading, setLoading] = useState(true)
   const [clinic, setClinic] = useState<Clinic | null>(null)
+
+  const fetchClinic = useCallback(async () => {
+    if (!clinicId) return
+    try {
+      const { data, error } = await apiClient
+        .from('clinics')
+        .select('*')
+        .eq('id', clinicId)
+        .maybeSingle()
+
+      if (error) throw error
+      setClinic(data || null)
+    } catch (error) {
+      console.error('Error fetching clinic:', error)
+    }
+  }, [clinicId])
 
   // Patients data - still needed for Providers tab (patient dropdown)
   const [patients, setPatients] = useState<Patient[]>([])
@@ -118,15 +148,6 @@ export default function ClinicDetail() {
   const providerSheetUpdatedRowIdRef = useRef<string | null>(null)
   const [fullName, setFullName] = useState<string>('')
 
-  useEffect(() => {
-    if (lastSelectedProviderIdRef.current) {
-      const provider = providers.find(p => p.id === lastSelectedProviderIdRef.current)
-      if (provider) {
-        const fullName = `${provider.first_name} ${provider.last_name}`
-        setFullName(fullName)
-      }
-    }
-  }, [providers])
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ 
     x: number; 
@@ -160,16 +181,29 @@ export default function ClinicDetail() {
   const [selectedPayrollProviderPay, setSelectedPayrollProviderPay] = useState<1 | 2>(1)
   const providersRef = useRef<Provider[]>([])
   // Provider sheet rows for editable view (when viewing a specific provider's sheet via providerId param)
-  const [providerRows, setProviderRows] = useState<Array<{
+  type ProviderCptRowSnapshot = {
     id: string
     cpt_code: string
     appointment_status: string
     sheetId: string
     rowId: string
-  }>>([])
+  }
+  const [providerRows, setProviderRows] = useState<ProviderCptRowSnapshot[]>([])
+  /** Keeps useDebouncedSave baseline in sync after server hydrate / clears so initial load does not schedule saveProviderRows. */
+  const updateLastSavedProviderRowsRef = useRef<((rows: ProviderCptRowSnapshot[]) => void) | null>(null)
   const [currentProvider, setCurrentProvider] = useState<Provider | null>(null)
+  useEffect(() => {
+    // Prefer currentProvider (set by fetchProviderSheetData on single-provider route) so the title
+    // updates without waiting for the full providers list to load.
+    const target =
+      currentProvider ??
+      (lastSelectedProviderIdRef.current
+        ? providers.find(p => p.id === lastSelectedProviderIdRef.current)
+        : null)
+    if (target) setFullName(`${target.first_name} ${target.last_name}`)
+  }, [providers, currentProvider])
   const [currentSheet, setCurrentSheet] = useState<ProviderSheet | null>(null)
-  const providerRowsRef = useRef<Array<{ id: string; cpt_code: string; appointment_status: string; sheetId: string; rowId: string }>>([])
+  const providerRowsRef = useRef<ProviderCptRowSnapshot[]>([])
   /** Serialize provider sheet saves per provider so an older save (e.g. 59 rows) cannot overwrite a newer one (67 rows) in the DB. */
   const saveProviderSheetInProgressRef = useRef<Set<string>>(new Set())
   const pendingProviderSheetSaveRef = useRef<Record<string, SheetRow[]>>({})
@@ -277,28 +311,33 @@ export default function ClinicDetail() {
     providersRef.current = providers
   }, [providers])
 
+  // Clinic row: only when clinic changes (not on every tab/month/split change) to avoid duplicate "clinics" queries.
   useEffect(() => {
-    if (clinicId) {
-      fetchClinic()
-      if (providerId) {
-        // Provider sheet data for current month is fetched by the selectedMonth effect below
-        if (activeTab === 'providers') {
-          fetchPatients() // Need patients for displaying patient info
-          fetchBillingCodes()
-          fetchStatusColors()
-          fetchColumnLocks()
-          fetchProviders()
-          if (selectedMonthKey) fetchIsLockProviders(selectedMonthKey)
-        } else if (activeTab === 'provider_pay') {
-          fetchStatusColors()
-          fetchProviders()
-        } else if (activeTab === 'accounts_receivable' && selectedMonthKey) {
-          fetchIsLockAccountsReceivable(selectedMonthKey)
-        }
-      } else {
-        // When no providerId, fetch data for the active tab normally (pass selectedMonthKey for provider_pay so loading stays until sheets load)
-        fetchData(selectedMonthKey)
+    if (!clinicId) return
+    void fetchClinic()
+  }, [clinicId, fetchClinic])
+
+  useEffect(() => {
+    if (!clinicId) return
+    if (providerId) {
+      // Provider sheet data for current month is fetched by the selectedMonth effect below
+      if (activeTab === 'providers') {
+        void fetchPatients()
+        void fetchBillingCodes()
+        void fetchStatusColors()
+        void fetchColumnLocks()
+        // fetchProviders() is intentionally omitted on the single-provider route: fetchProviderSheetData
+        // (triggered by the month effect) loads the one provider we need and syncs it into providers state.
+        // Single-provider route: month effect loads locks after sheet fetch. Calling here duplicates is_lock_providers.
+        if (!providerId && selectedMonthKey) void fetchIsLockProviders(selectedMonthKey)
+      } else if (activeTab === 'provider_pay') {
+        void fetchStatusColors()
+        void fetchProviders()
+      } else if (activeTab === 'accounts_receivable' && selectedMonthKey) {
+        void fetchIsLockAccountsReceivable(selectedMonthKey)
       }
+    } else {
+      void fetchData(selectedMonthKey)
     }
   }, [clinicId, activeTab, providerId, selectedMonthKey, splitScreen])
 
@@ -314,6 +353,16 @@ export default function ClinicDetail() {
   const lastProviderSheetsFetchMonthKeyRef = useRef<string | null>(null)
   /** (providerId, monthKey) for the single-provider sheet fetch; only set loading false when that fetch completes. */
   const lastProviderSheetDataFetchRef = useRef<{ providerId: string; monthKey: string } | null>(null)
+  /** Deduplicate concurrent clinic-wide provider sheet loads (e.g. fetchData + month effect racing). */
+  const providerSheetsInFlightRef = useRef<Map<string, Promise<unknown>>>(new Map())
+  /** Deduplicate concurrent single-provider sheet loads. */
+  const providerSheetDataInFlightRef = useRef<Map<string, Promise<unknown>>>(new Map())
+  /** Deduplicate concurrent is_lock_providers loads (tab effect + month effect often fire together). */
+  const fetchIsLockProvidersInFlightRef = useRef<Map<string, Promise<void>>>(new Map())
+  /** Deduplicate concurrent fetchProviders calls (tab effect + fetchData can race). */
+  const fetchProvidersInFlightRef = useRef<Promise<void> | null>(null)
+  /** Deduplicate concurrent fetchColumnLocks calls. */
+  const fetchColumnLocksInFlightRef = useRef<Promise<void> | null>(null)
   // When month (or pay-period half when payroll=2) changes: use cached data if available, otherwise fetch
   useEffect(() => {
     const monthKey = selectedMonthKey
@@ -330,10 +379,19 @@ export default function ClinicDetail() {
     if (!monthChanged && !isInitialLoad) {
       if (providerId) {
         // Single-provider view: skip only if cache is for this clinic and this provider
-        if (contextMatches && cacheForMonth?.[providerId]?.length) return
+        if (contextMatches && cacheForMonth?.[providerId]?.length) {
+          if (activeTab === 'providers' && monthKey) void fetchIsLockProviders(monthKey)
+          // Month effect often set loading true before cache skip; clear so pageReady can pass.
+          if (activeTab === 'providers' || activeTab === 'provider_pay') setLoading(false)
+          return
+        }
       } else {
         // Clinic view: skip only if cache is for this clinic
-        if (contextMatches && hasCached) return
+        if (contextMatches && hasCached) {
+          if (activeTab === 'providers' && monthKey) void fetchIsLockProviders(monthKey)
+          if (activeTab === 'providers' || activeTab === 'provider_pay') setLoading(false)
+          return
+        }
       }
     }
 
@@ -345,48 +403,40 @@ export default function ClinicDetail() {
       if (providerChanged || monthChangedForProvider) {
         setCurrentProvider(null)
         setCurrentSheet(null)
+        updateLastSavedProviderRowsRef.current?.([])
         setProviderRows([])
       }
       setLoading(true)
       lastProviderSheetDataFetchRef.current = { providerId, monthKey: selectedMonthKey }
-      // Load twice so fresh data (e.g. new patient from Patient Info) is visible on first open
       ;(async () => {
-        await fetchProviderSheetData(isMonthChangeOnly, false)
-        if (lastProviderSheetDataFetchRef.current?.providerId === providerId && lastProviderSheetDataFetchRef.current?.monthKey === selectedMonthKey) {
-          await fetchProviderSheetData(isMonthChangeOnly, true)
+        try {
+          await fetchProviderSheetData(isMonthChangeOnly, false)
+          if (activeTab === 'providers' && selectedMonthKey) await fetchIsLockProviders(selectedMonthKey)
+        } finally {
+          // fetchProviderSheetData(..., false) intentionally skips setLoading in its own finally so locks can load first
+          setLoading(false)
         }
-        if (activeTab === 'providers' && selectedMonthKey) await fetchIsLockProviders(selectedMonthKey)
       })()
       return
     }
     if (clinicId && !providerId && (activeTab === 'providers' || activeTab === 'provider_pay')) {
       setLoading(true)
       lastProviderSheetsFetchMonthKeyRef.current = selectedMonthKey
-      // Load twice so fresh data (e.g. new patient from Patient Info) is visible on first open
       ;(async () => {
-        await fetchProviderSheets(selectedMonthKey, isMonthChangeOnly, false)
-        if (lastProviderSheetsFetchMonthKeyRef.current === selectedMonthKey) {
-          await fetchProviderSheets(selectedMonthKey, isMonthChangeOnly, true)
+        try {
+          providersDebugClinic('month effect → fetchProviderSheets + fetchIsLockProviders', {
+            selectedMonthKey,
+            activeTab,
+            isMonthChangeOnly,
+          })
+          await fetchProviderSheets(selectedMonthKey, isMonthChangeOnly, false)
+          if (activeTab === 'providers' && selectedMonthKey) await fetchIsLockProviders(selectedMonthKey)
+        } finally {
+          setLoading(false)
         }
-        if (activeTab === 'providers' && selectedMonthKey) await fetchIsLockProviders(selectedMonthKey)
       })()
     }
   }, [selectedMonthKey, activeTab, clinicId, providerId])
-
-  const fetchClinic = async () => {
-    try {
-      const { data, error } = await apiClient
-        .from('clinics')
-        .select('*')
-        .eq('id', clinicId)
-        .maybeSingle()
-
-      if (error) throw error
-      setClinic(data || null)
-    } catch (error) {
-      console.error('Error fetching clinic:', error)
-    }
-  }
 
   const fetchData = async (monthKeyForProviderSheets?: string) => {
     if (!clinicId) return
@@ -396,6 +446,14 @@ export default function ClinicDetail() {
       setLoading(true)
     }
     try {
+      // Dedupe lock fetches when primary tab + split panes both need the same row (e.g. providers + split).
+      const lockOnce = new Set<string>()
+      const fetchLock = async (key: string, fn: () => Promise<void>) => {
+        if (lockOnce.has(key)) return
+        lockOnce.add(key)
+        await fn()
+      }
+
       // Patients, todos, and accounts_receivable tabs now handle their own data fetching
       if (activeTab === 'providers') {
         await fetchPatients() // Need patients for displaying patient info in provider sheets
@@ -404,7 +462,7 @@ export default function ClinicDetail() {
         await fetchColumnLocks()
         await fetchProviders()
         const mk = monthKeyForProviderSheets ?? selectedMonthKey
-        if (mk) await fetchIsLockProviders(mk)
+        if (mk) await fetchLock(`providers:${mk}`, () => fetchIsLockProviders(mk))
       } else if (activeTab === 'provider_pay') {
         await fetchStatusColors()
         await fetchProviders()
@@ -413,22 +471,25 @@ export default function ClinicDetail() {
           await fetchProviderSheets(monthKeyForProviderSheets, false)
         }
       } else if (activeTab === 'patients') {
-        await fetchIsLockPatients()
-        await fetchIsLockBillingTodo()
-        if (selectedMonthKey) await fetchIsLockProviders(selectedMonthKey)
-        if (selectedMonthKey) await fetchIsLockAccountsReceivable(selectedMonthKey)
+        // Patient Info only needs patient column locks — other tabs fetch their own locks when opened.
+        await fetchLock('patients', fetchIsLockPatients)
+      } else if (activeTab === 'todo') {
+        await fetchLock('billing_todo', fetchIsLockBillingTodo)
       } else if (activeTab === 'accounts_receivable') {
-        if (selectedMonthKey) await fetchIsLockAccountsReceivable(selectedMonthKey)
+        if (selectedMonthKey) await fetchLock(`ar:${selectedMonthKey}`, () => fetchIsLockAccountsReceivable(selectedMonthKey))
       }
-      // Split view: AR on a pane while primary tab is e.g. todo or providers — still load locks for selected month.
-      if (
-        selectedMonthKey &&
-        splitScreen &&
-        (splitScreen.left === 'accounts_receivable' || splitScreen.right === 'accounts_receivable') &&
-        activeTab !== 'patients' &&
-        activeTab !== 'accounts_receivable'
-      ) {
-        await fetchIsLockAccountsReceivable(selectedMonthKey)
+
+      // Split view: load locks only for panes that are actually visible (avoids prefetching Billing/Providers/AR locks on Patient Info).
+      if (splitScreen && selectedMonthKey) {
+        const panes = new Set<TabType>([splitScreen.left, splitScreen.right])
+        if (panes.has('patients')) await fetchLock('patients', fetchIsLockPatients)
+        if (panes.has('todo')) await fetchLock('billing_todo', fetchIsLockBillingTodo)
+        if (panes.has('providers') || panes.has('provider_pay')) {
+          await fetchLock(`providers:${selectedMonthKey}`, () => fetchIsLockProviders(selectedMonthKey))
+        }
+        if (panes.has('accounts_receivable')) {
+          await fetchLock(`ar:${selectedMonthKey}`, () => fetchIsLockAccountsReceivable(selectedMonthKey))
+        }
       }
     } catch (error) {
       console.error('Error fetching data:', error)
@@ -472,22 +533,27 @@ export default function ClinicDetail() {
 
   const fetchColumnLocks = async () => {
     if (!clinicId) return
-    
-    try {
-      const { data, error } = await apiClient
-        .from('column_locks')
-        .select('*')
-        .eq('clinic_id', clinicId)
-      
-      if (error) {
-        setColumnLocks([])
-        return
-      }
-      setColumnLocks(data || [])
-    } catch (error) {
-      console.error('Error fetching column locks:', error)
-      setColumnLocks([])
+    if (fetchColumnLocksInFlightRef.current) {
+      await fetchColumnLocksInFlightRef.current
+      return
     }
+    const run = (async () => {
+      try {
+        const { data, error } = await apiClient
+          .from('column_locks')
+          .select('*')
+          .eq('clinic_id', clinicId)
+        if (error) { setColumnLocks([]); return }
+        setColumnLocks(data || [])
+      } catch (error) {
+        console.error('Error fetching column locks:', error)
+        setColumnLocks([])
+      } finally {
+        fetchColumnLocksInFlightRef.current = null
+      }
+    })()
+    fetchColumnLocksInFlightRef.current = run
+    await run
   }
 
   const fetchIsLockPatients = async () => {
@@ -777,77 +843,95 @@ export default function ClinicDetail() {
     const monthKey = monthKeyForLocks ?? selectedMonthKey
     if (!monthKey) return
 
-    try {
-      const { data, error } = await apiClient
-        .from('is_lock_providers')
-        .select('*')
-        .eq('clinic_id', clinicId)
-        .eq('month_key', monthKey)
-        .maybeSingle()
+    const inflightKey = `${clinicId}|${monthKey}`
+    const existing = fetchIsLockProvidersInFlightRef.current.get(inflightKey)
+    if (existing) {
+      await existing
+      return
+    }
 
-      if (error) {
-        setIsLockProviders(null)
-        return
-      }
+    const run = (async (): Promise<void> => {
+      providersDebugClinic('fetchIsLockProviders (may run multiple selects/inserts)', { clinicId, monthKey })
 
-      if (data) {
-        setIsLockProviders(data as IsLockProviders)
-        return
-      }
-
-      const { data: legacy } = await apiClient
-        .from('is_lock_providers')
-        .select('*')
-        .eq('clinic_id', clinicId)
-        .eq('month_key', IS_LOCK_PROVIDERS_LEGACY_MONTH_KEY)
-        .maybeSingle()
-
-      if (legacy) {
-        const { id: _id, created_at: _c, updated_at: _u, month_key: _mk, ...cloneFields } = legacy as IsLockProviders
-        const { data: inserted, error: insertError } = await apiClient
+      try {
+        const { data, error } = await apiClient
           .from('is_lock_providers')
-          .insert({
-            ...cloneFields,
-            clinic_id: clinicId,
-            month_key: monthKey,
-          })
+          .select('*')
+          .eq('clinic_id', clinicId)
+          .eq('month_key', monthKey)
+          .maybeSingle()
+
+        if (error) {
+          setIsLockProviders(null)
+          return
+        }
+
+        if (data) {
+          setIsLockProviders(data as IsLockProviders)
+          return
+        }
+
+        const { data: legacy } = await apiClient
+          .from('is_lock_providers')
+          .select('*')
+          .eq('clinic_id', clinicId)
+          .eq('month_key', IS_LOCK_PROVIDERS_LEGACY_MONTH_KEY)
+          .maybeSingle()
+
+        if (legacy) {
+          const { id: _id, created_at: _c, updated_at: _u, month_key: _mk, ...cloneFields } = legacy as IsLockProviders
+          const { data: inserted, error: insertError } = await apiClient
+            .from('is_lock_providers')
+            .insert({
+              ...cloneFields,
+              clinic_id: clinicId,
+              month_key: monthKey,
+            })
+            .select()
+            .maybeSingle()
+
+          if (!insertError && inserted) {
+            setIsLockProviders(inserted as IsLockProviders)
+            return
+          }
+          const { data: again } = await apiClient
+            .from('is_lock_providers')
+            .select('*')
+            .eq('clinic_id', clinicId)
+            .eq('month_key', monthKey)
+            .maybeSingle()
+          setIsLockProviders((again as IsLockProviders) ?? null)
+          return
+        }
+
+        const { data: newData, error: insertError } = await apiClient
+          .from('is_lock_providers')
+          .insert(newProviderLockRowPayload(clinicId, monthKey))
           .select()
           .maybeSingle()
 
-        if (!insertError && inserted) {
-          setIsLockProviders(inserted as IsLockProviders)
-          return
+        if (insertError) {
+          const { data: again } = await apiClient
+            .from('is_lock_providers')
+            .select('*')
+            .eq('clinic_id', clinicId)
+            .eq('month_key', monthKey)
+            .maybeSingle()
+          setIsLockProviders((again as IsLockProviders) ?? null)
+        } else if (newData) {
+          setIsLockProviders(newData as IsLockProviders)
         }
-        const { data: again } = await apiClient
-          .from('is_lock_providers')
-          .select('*')
-          .eq('clinic_id', clinicId)
-          .eq('month_key', monthKey)
-          .maybeSingle()
-        setIsLockProviders((again as IsLockProviders) ?? null)
-        return
+      } catch (error) {
+        console.error('Error fetching is_lock_providers:', error)
+        setIsLockProviders(null)
       }
+    })()
 
-      const { data: newData, error: insertError } = await apiClient
-        .from('is_lock_providers')
-        .insert(newProviderLockRowPayload(clinicId, monthKey))
-        .select()
-        .maybeSingle()
-
-      if (insertError) {
-        const { data: again } = await apiClient
-          .from('is_lock_providers')
-          .select('*')
-          .eq('clinic_id', clinicId)
-          .eq('month_key', monthKey)
-          .maybeSingle()
-        setIsLockProviders((again as IsLockProviders) ?? null)
-      } else if (newData) {
-        setIsLockProviders(newData as IsLockProviders)
-      }
-    } catch (error) {
-      console.error('Error fetching is_lock_providers:', error)
-      setIsLockProviders(null)
+    fetchIsLockProvidersInFlightRef.current.set(inflightKey, run)
+    try {
+      await run
+    } finally {
+      fetchIsLockProvidersInFlightRef.current.delete(inflightKey)
     }
   }
 
@@ -1385,6 +1469,7 @@ export default function ClinicDetail() {
   // Simplified fetchPatients - only needed for Providers tab patient dropdown
   const fetchPatients = useCallback(async (): Promise<Patient[] | undefined> => {
     if (!clinicId) return undefined
+    providersDebugClinic('fetchPatients → patients select *', { clinicId })
     try {
       const { data, error } = await apiClient
         .from('patients')
@@ -1394,6 +1479,7 @@ export default function ClinicDetail() {
 
       if (error) throw error
       const fetchedPatients = data || []
+      patientsRef.current = fetchedPatients
       setPatients(fetchedPatients)
       setPatientAssignmentRevision((r) => r + 1)
       return fetchedPatients
@@ -1401,22 +1487,27 @@ export default function ClinicDetail() {
       console.error('Error fetching patients:', error)
       return undefined
     }
-  }, [clinicId, selectedMonthKey])
+  }, [clinicId])
 
-  /** After Patient Info saves, refresh co-patient snapshot into all provider sheets for the selected month. */
-  const handlePatientsCreated = useCallback(async (_changedPatients: Patient[]) => {
-    const freshPatients = await fetchPatients()
-    if (!freshPatients) return
-    setProviderSheetRowsByMonth((prev) => {
-      const month = prev[selectedMonthKey] ?? {}
-      const next: Record<string, SheetRow[]> = {}
-      for (const [pid, rows] of Object.entries(month)) {
-        next[pid] = applyCoPatientSnapshotToSheetRows(rows, freshPatients)
-      }
-      return { ...prev, [selectedMonthKey]: next }
-    })
-    setProviderRowsVersion((v) => v + 1)
-  }, [fetchPatients, selectedMonthKey])
+  /** After Patient Info saves, refresh co-patient snapshot using merged local patient list (no full-table refetch). */
+  const handlePatientsCreated = useCallback(
+    (changedPatients: Patient[]) => {
+      const merged = mergeClinicPatientsWithUpdates(patientsRef.current, changedPatients)
+      patientsRef.current = merged
+      setPatients(merged)
+      setPatientAssignmentRevision((r) => r + 1)
+      setProviderSheetRowsByMonth((prev) => {
+        const month = prev[selectedMonthKey] ?? {}
+        const next: Record<string, SheetRow[]> = {}
+        for (const [pid, rows] of Object.entries(month)) {
+          next[pid] = applyCoPatientSnapshotToSheetRows(rows, merged)
+        }
+        return { ...prev, [selectedMonthKey]: next }
+      })
+      setProviderRowsVersion((v) => v + 1)
+    },
+    [selectedMonthKey],
+  )
 
   // Removed unused functions: savePatients, handleUpdatePatient, handleAddPatientRow, handleDeletePatient
   // These are now handled by PatientsTab component
@@ -1432,27 +1523,48 @@ export default function ClinicDetail() {
       // Clear current provider data if providerId is removed
       setCurrentProvider(null)
       setCurrentSheet(null)
+      updateLastSavedProviderRowsRef.current?.([])
       setProviderRows([])
       return
     }
 
     const captureKey = { providerId, monthKey: selectedMonthKey }
+    const dedupeKey = `${clinicId}|${providerId}|${selectedMonthKey}`
+    const inflightSheet = providerSheetDataInFlightRef.current.get(dedupeKey)
+    if (inflightSheet) {
+      providersDebugClinic('fetchProviderSheetData await in-flight', { dedupeKey })
+      await inflightSheet
+      return
+    }
+
+    const runFetchProviderSheetData = async () => {
     try {
+      providersDebugClinic('fetchProviderSheetData run', {
+        dedupeKey,
+        providerId,
+        monthKey: selectedMonthKey,
+        isMonthChange,
+      })
       // Avoid second spinner: if we already have data for this provider (e.g. effect re-ran after restore/save), don't show loading again
       const alreadyHaveData = (providerSheetRows[providerId]?.length ?? 0) > 0
       if (!isMonthChange && !alreadyHaveData) setLoading(true)
-      
-      // Fetch provider info from providers table (not users table)
-      const { data: providerData, error: providerError } = await apiClient
-        .from('providers')
-        .select('*')
-        .eq('id', providerId)
-        .maybeSingle()
 
-      if (providerError && providerError.code !== 'PGRST116') {
-        throw providerError
+      // Prefer already-loaded providers list — avoids a DB round-trip when fetchProviders() already ran.
+      const providerFromRef = providersRef.current.find((p) => p.id === providerId) ?? null
+      let providerData: Provider | null = providerFromRef
+
+      if (!providerData) {
+        // Not in ref yet — fetch the single provider (race: page loaded directly on /providers/:id before fetchProviders finished)
+        const { data: fetched, error: providerError } = await apiClient
+          .from('providers')
+          .select('*')
+          .eq('id', providerId)
+          .maybeSingle()
+
+        if (providerError && providerError.code !== 'PGRST116') throw providerError
+        providerData = fetched ?? null
       }
-      
+
       if (!providerData) {
         if (
           lastProviderSheetDataFetchRef.current?.providerId === captureKey.providerId &&
@@ -1460,6 +1572,7 @@ export default function ClinicDetail() {
         ) {
           setCurrentProvider(null)
           setCurrentSheet(null)
+          updateLastSavedProviderRowsRef.current?.([])
           setProviderRows([])
           setProviderSheetRowsByMonth(prev => {
             const cur = prev[selectedMonthKey] ?? {}
@@ -1478,6 +1591,14 @@ export default function ClinicDetail() {
 
       if (!isStillCurrent()) return
       setCurrentProvider(providerData)
+      // Sync this provider into the list so ProvidersTab / ProviderPayTab receive it even when
+      // fetchProviders() was intentionally skipped (single-provider route).
+      setProviders(curr => {
+        if (curr.some(p => p.id === providerData.id)) return curr
+        const next = [...curr, providerData]
+        providersRef.current = next
+        return next
+      })
 
       // Use selected month/year and pay-period half (when clinic has payroll=2)
       const month = selectedMonth.getMonth() + 1
@@ -1571,8 +1692,13 @@ export default function ClinicDetail() {
       let sheetRows: SheetRow[] = []
       if (sheet) {
         sheetRows = await fetchSheetRows(apiClient, sheet.id)
-        const { data: clinicPatients } = await apiClient.from('patients').select('*').eq('clinic_id', clinicId)
-        sheetRows = enrichSheetRowsFromPatients(sheetRows, (clinicPatients || []) as Patient[])
+        let clinicPatientsList: Patient[] =
+          patientsRef.current.length > 0 ? [...patientsRef.current] : []
+        if (clinicPatientsList.length === 0) {
+          const { data: clinicPatients } = await apiClient.from('patients').select('*').eq('clinic_id', clinicId)
+          clinicPatientsList = (clinicPatients || []) as Patient[]
+        }
+        sheetRows = enrichSheetRowsFromPatients(sheetRows, clinicPatientsList)
 
         sheetRows.forEach((row: SheetRow) => {
           rows.push({
@@ -1586,6 +1712,7 @@ export default function ClinicDetail() {
       }
 
       if (!isStillCurrent()) return
+      updateLastSavedProviderRowsRef.current?.(rows)
       setProviderRows(rows)
 
       // Create empty rows for providers table (200 rows per provider)
@@ -1652,6 +1779,15 @@ export default function ClinicDetail() {
       ) {
         setLoading(false)
       }
+    }
+    }
+
+    const sheetDataFlight = runFetchProviderSheetData()
+    providerSheetDataInFlightRef.current.set(dedupeKey, sheetDataFlight)
+    try {
+      await sheetDataFlight
+    } finally {
+      providerSheetDataInFlightRef.current.delete(dedupeKey)
     }
   }
 
@@ -1729,35 +1865,60 @@ export default function ClinicDetail() {
     }
   }, [currentSheet, fetchProviderSheetData])
 
-  const { saveImmediately: _saveProviderRowsImmediately } = useDebouncedSave(saveProviderRows, providerRows, 1000)
+  const { saveImmediately: _saveProviderRowsImmediately, updateLastSaved: updateLastSavedProviderRows } =
+    useDebouncedSave(saveProviderRows, providerRows, 1000)
+  updateLastSavedProviderRowsRef.current = updateLastSavedProviderRows
 
 
   const fetchProviders = async () => {
-    try {
-      const { data, error } = await apiClient
-        .from('providers')
-        .select('*')
-        .eq('active', true)
-        .contains('clinic_ids', [clinicId])
-        .order('last_name')
-        .order('first_name')
-
-      if (error) throw error
-      const fetchedProviders = data || []
-      // Preserve any unsaved providers (with 'new-' prefix)
-      setProviders(currentProviders => {
-        const unsavedProviders = currentProviders.filter(p => p.id.startsWith('new-'))
-        return [...unsavedProviders, ...fetchedProviders]
-      })
-    } catch (error) {
-      console.error('Error fetching providers:', error)
+    if (fetchProvidersInFlightRef.current) {
+      await fetchProvidersInFlightRef.current
+      return
     }
+    const run = (async () => {
+      try {
+        providersDebugClinic('fetchProviders → providers select *', { clinicId })
+        const { data, error } = await apiClient
+          .from('providers')
+          .select('*')
+          .eq('active', true)
+          .contains('clinic_ids', [clinicId])
+          .order('last_name')
+          .order('first_name')
+
+        if (error) throw error
+        const fetchedProviders = data || []
+        // Preserve any unsaved providers (with 'new-' prefix)
+        setProviders((currentProviders) => {
+          const unsavedProviders = currentProviders.filter((p) => p.id.startsWith('new-'))
+          const next = [...unsavedProviders, ...fetchedProviders]
+          providersRef.current = next
+          return next
+        })
+      } catch (error) {
+        console.error('Error fetching providers:', error)
+      } finally {
+        fetchProvidersInFlightRef.current = null
+      }
+    })()
+    fetchProvidersInFlightRef.current = run
+    await run
   }
 
   const fetchProviderSheets = async (monthKey: string, isMonthChange = false, clearLoadingWhenDone = true) => {
     if (!clinicId || !userProfile) return
 
+    const dedupeKey = `${clinicId}|${monthKey}|clinic-sheets`
+    const inflight = providerSheetsInFlightRef.current.get(dedupeKey)
+    if (inflight) {
+      providersDebugClinic('fetchProviderSheets await in-flight', { dedupeKey })
+      await inflight
+      return
+    }
+
+    const runFetchProviderSheets = async () => {
     try {
+      providersDebugClinic('fetchProviderSheets run start', { dedupeKey, monthKey, isMonthChange })
       // Avoid second spinner: if we already have data for this month (e.g. effect re-ran after restore/save), don't show loading again
       const alreadyHaveData = monthKey === selectedMonthKey && Object.keys(providerSheets).length > 0
       if (!isMonthChange && !alreadyHaveData) setLoading(true)
@@ -1767,50 +1928,122 @@ export default function ClinicDetail() {
       const month = parts[1]!
       const payroll = (clinic?.payroll === 2 && parts[2] != null ? (parts[2] as 1 | 2) : (clinic?.payroll ?? 1)) as 1 | 2
 
-      // Fetch all active providers for this clinic
-      const { data: providersData } = await apiClient
-        .from('providers')
-        .select('id')
-        .eq('active', true)
-        .contains('clinic_ids', [clinicId])
+      const providerIdsFromRef = providersRef.current.filter((p) => !p.id.startsWith('new-')).map((p) => p.id)
+      let providerIds: string[]
+      if (providerIdsFromRef.length > 0) {
+        providerIds = providerIdsFromRef
+      } else {
+        const { data: providersData } = await apiClient
+          .from('providers')
+          .select('id')
+          .eq('active', true)
+          .contains('clinic_ids', [clinicId])
 
-      if (!providersData || providersData.length === 0) {
-        if (lastProviderSheetsFetchMonthKeyRef.current === monthKey) {
-          lastProviderSheetContextRef.current = { clinicId, providerId: null, monthKey }
-          if (clearLoadingWhenDone) setLoading(false)
+        if (!providersData || providersData.length === 0) {
+          if (lastProviderSheetsFetchMonthKeyRef.current === monthKey) {
+            lastProviderSheetContextRef.current = { clinicId, providerId: null, monthKey }
+            if (clearLoadingWhenDone) setLoading(false)
+          }
+          return
         }
-        return
+        providerIds = providersData.map((p: { id: string }) => p.id)
       }
 
-      const providerIds = providersData.map((p: { id: string }) => p.id)
+      providersDebugClinic('fetchProviderSheets providerIds', {
+        count: providerIds.length,
+        source: providerIdsFromRef.length > 0 ? 'providersRef' : 'providers table',
+      })
 
-      const { data: clinicPatientsForEnrich } = await apiClient.from('patients').select('*').eq('clinic_id', clinicId)
-      const clinicPatientsList = (clinicPatientsForEnrich || []) as Patient[]
+      let clinicPatientsList: Patient[] =
+        patientsRef.current.length > 0 ? [...patientsRef.current] : []
+      if (clinicPatientsList.length === 0) {
+        providersDebugClinic('fetchProviderSheets enrich → patients select (patientsRef empty)', { clinicId })
+        const { data: clinicPatientsForEnrich } = await apiClient.from('patients').select('*').eq('clinic_id', clinicId)
+        clinicPatientsList = (clinicPatientsForEnrich || []) as Patient[]
+      }
 
-      // Fetch or create provider sheets for all providers
+      // Fetch or create provider sheets for all providers (1 query for sheets + 1 for all rows, not 2×N)
       const sheetsMap: Record<string, ProviderSheet> = {}
-      const rowsMap: Record<string, SheetRow[]> = {}
+      const providerIdSet = new Set(providerIds)
 
-      for (const providerId of providerIds) {
-        // Try to fetch existing sheet. Order by id so we get the same sheet when duplicates exist (matches dashboard).
-        const { data: existingSheet, error: fetchError } = await apiClient
+      const { data: allMonthSheets, error: monthSheetsError } = await apiClient
+        .from('provider_sheets')
+        .select('*')
+        .eq('clinic_id', clinicId)
+        .eq('month', month)
+        .eq('year', year)
+        .eq('payroll', payroll)
+        .in('provider_id', providerIds)
+
+      if (monthSheetsError) throw monthSheetsError
+
+      const sheetsPerProvider = new Map<string, ProviderSheet[]>()
+      for (const row of (allMonthSheets || []) as ProviderSheet[]) {
+        const pid = row.provider_id
+        if (!providerIdSet.has(pid)) continue
+        if (!sheetsPerProvider.has(pid)) sheetsPerProvider.set(pid, [])
+        sheetsPerProvider.get(pid)!.push(row)
+      }
+      for (const pid of providerIds) {
+        const arr = sheetsPerProvider.get(pid)
+        if (arr && arr.length > 0) {
+          arr.sort((a, b) => a.id.localeCompare(b.id))
+          sheetsMap[pid] = arr[0]!
+        }
+      }
+
+      const mergeSheetIntoMap = (row: ProviderSheet) => {
+        const pid = row.provider_id
+        if (!providerIdSet.has(pid)) return
+        const existing = sheetsMap[pid]
+        if (!existing || row.id.localeCompare(existing.id) < 0) {
+          sheetsMap[pid] = row
+        }
+      }
+
+      const missingForCreate = providerIds.filter((pid) => !sheetsMap[pid])
+      if (missingForCreate.length > 0) {
+        const insertPayload = missingForCreate.map((provider_id) => ({
+          clinic_id: clinicId,
+          provider_id,
+          month,
+          year,
+          payroll,
+          locked: false,
+          locked_columns: [] as string[],
+        }))
+
+        const { data: batchInserted, error: batchInsertError } = await apiClient
           .from('provider_sheets')
-          .select('*')
-          .eq('clinic_id', clinicId)
-          .eq('provider_id', providerId)
-          .eq('month', month)
-          .eq('year', year)
-          .eq('payroll', payroll)
-          .order('id', { ascending: true })
-          .limit(1)
-          .maybeSingle()
+          .insert(insertPayload as Record<string, unknown>[])
+          .select()
 
-        let sheet: ProviderSheet
+        if (!batchInsertError && batchInserted?.length) {
+          for (const row of batchInserted as ProviderSheet[]) {
+            mergeSheetIntoMap(row)
+          }
+        }
 
-        if (existingSheet && !fetchError) {
-          sheet = existingSheet
-        } else {
-          // Create new sheet if doesn't exist
+        let stillMissing = missingForCreate.filter((pid) => !sheetsMap[pid])
+        if (stillMissing.length > 0) {
+          const { data: refetchedCreated, error: refetchCreatedErr } = await apiClient
+            .from('provider_sheets')
+            .select('*')
+            .eq('clinic_id', clinicId)
+            .eq('month', month)
+            .eq('year', year)
+            .eq('payroll', payroll)
+            .in('provider_id', stillMissing)
+
+          if (!refetchCreatedErr && refetchedCreated) {
+            for (const row of refetchedCreated as ProviderSheet[]) {
+              mergeSheetIntoMap(row)
+            }
+          }
+        }
+
+        stillMissing = missingForCreate.filter((pid) => !sheetsMap[pid])
+        for (const providerId of stillMissing) {
           const { data: newSheet, error: createError } = await apiClient
             .from('provider_sheets')
             .insert({
@@ -1842,24 +2075,29 @@ export default function ClinicDetail() {
                 console.error('Error refetching provider sheet after duplicate:', refetchError ?? createError)
                 continue
               }
-              sheet = refetchSheet
+              sheetsMap[providerId] = refetchSheet
             } else {
               console.error('Error creating provider sheet:', createError)
-              continue
             }
-          } else if (!newSheet) {
-            console.error('Failed to create provider sheet - no data returned')
-            continue
+          } else if (newSheet) {
+            sheetsMap[providerId] = newSheet
           } else {
-            sheet = newSheet
+            console.error('Failed to create provider sheet - no data returned')
           }
         }
+      }
 
-        sheetsMap[providerId] = sheet
-        let sheetRows = await fetchSheetRows(apiClient, sheet.id)
+      const sheetIds = providerIds.map((pid) => sheetsMap[pid]?.id).filter(Boolean) as string[]
+      const rowsBySheetId = await fetchSheetRowsForSheetIds(apiClient, sheetIds)
+
+      const rowsMap: Record<string, SheetRow[]> = {}
+      for (const providerId of providerIds) {
+        const sheet = sheetsMap[providerId]
+        if (!sheet) continue
+
+        let sheetRows = rowsBySheetId.get(sheet.id) ?? []
         sheetRows = enrichSheetRowsFromPatients(sheetRows, clinicPatientsList)
 
-        // Add empty rows to reach 200 total rows per provider
         const createEmptyProviderSheetRow = (index: number): SheetRow => ({
           id: `empty-${providerId}-${index}`,
           patient_id: null,
@@ -1903,16 +2141,19 @@ export default function ClinicDetail() {
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
-        
+
         const emptyRowsNeeded = Math.max(0, 200 - sheetRows.length)
-        const emptyRows = Array.from({ length: emptyRowsNeeded }, (_, i) => 
-          createEmptyProviderSheetRow(i)
-        )
+        const emptyRows = Array.from({ length: emptyRowsNeeded }, (_, i) => createEmptyProviderSheetRow(i))
         rowsMap[providerId] = [...sheetRows, ...emptyRows]
       }
 
       const isStillCurrentMonth = lastProviderSheetsFetchMonthKeyRef.current === monthKey
       if (isStillCurrentMonth) {
+        providersDebugClinic('fetchProviderSheets success', {
+          monthKey,
+          providersWithSheet: Object.keys(sheetsMap).length,
+          batchedSheetIdsForRows: sheetIds.length,
+        })
         setProviderSheetsByMonth(prev => ({ ...prev, [monthKey]: sheetsMap }))
         setProviderSheetRowsByMonth(prev => ({ ...prev, [monthKey]: rowsMap }))
         lastProviderSheetContextRef.current = { clinicId, providerId: null, monthKey }
@@ -1924,6 +2165,15 @@ export default function ClinicDetail() {
       if (clearLoadingWhenDone && lastProviderSheetsFetchMonthKeyRef.current === monthKey) {
         setLoading(false)
       }
+    }
+    }
+
+    const sheetsFlight = runFetchProviderSheets()
+    providerSheetsInFlightRef.current.set(dedupeKey, sheetsFlight)
+    try {
+      await sheetsFlight
+    } finally {
+      providerSheetsInFlightRef.current.delete(dedupeKey)
     }
   }
 
@@ -1962,7 +2212,10 @@ export default function ClinicDetail() {
     try {
       const savedRows = await saveSheetRows(apiClient, sheet.id, rowsToProcess)
       // Patient demographics are owned by `patients` (Patients tab / API), not pushed from provider sheets.
-      const freshPatients = await fetchPatients()
+      const freshPatients =
+        patientsRef.current.length > 0
+          ? patientsRef.current
+          : (await fetchPatients()) ?? []
       try {
         const pendingKey = `provider_sheet_pending_${clinicId}_${providerId}_${selectedMonthKey}`
         localStorage.removeItem(pendingKey)
@@ -2051,7 +2304,7 @@ export default function ClinicDetail() {
         }
 
         let nextMonthRows: Record<string, SheetRow[]> = { ...current, [providerId]: nextForProvider }
-        if (freshPatients) {
+        if (freshPatients.length > 0) {
           const merged: Record<string, SheetRow[]> = {}
           for (const [pid, rws] of Object.entries(nextMonthRows)) {
             merged[pid] = applyCoPatientSnapshotToSheetRows(rws, freshPatients)
@@ -2060,7 +2313,7 @@ export default function ClinicDetail() {
         }
         return { ...prev, [selectedMonthKey]: nextMonthRows } as Record<string, Record<string, SheetRow[]>>
       })
-      if (freshPatients) {
+      if (freshPatients.length > 0) {
         setProviderRowsVersion((v) => v + 1)
       }
     } catch (error) {

@@ -11,7 +11,7 @@ export function useDebouncedSave<T>(
   delay: number = 1000,
   isEditing: boolean = false
 ) {
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedRef = useRef<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
 

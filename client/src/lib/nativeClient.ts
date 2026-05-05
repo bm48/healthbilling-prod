@@ -45,6 +45,85 @@ function apiBase(): string {
   return (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 }
 
+/** Set `localStorage.setItem('HB_DEBUG_QUERIES','1')` + reload to log every `/api/db/query` call (all tables). */
+function hbDebugAllDbQueries(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem('HB_DEBUG_QUERIES') === '1'
+  } catch {
+    return false
+  }
+}
+
+/** Without localStorage, we still log these tables (Providers tab + related reads). */
+const HB_PROVIDERS_DEBUG_TABLES = new Set([
+  'provider_sheets',
+  'provider_sheet_rows',
+  'cell_highlights',
+  'cell_comments',
+  'is_lock_providers',
+  'accounts_receivables',
+  /** Shown when opening Billing / Providers paths (also logged from ClinicDetail). */
+  'patients',
+  'providers',
+])
+
+function hbTruncate(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…`
+}
+
+function hbSummarizeFiltersForDebug(filters: Filter[]): string {
+  if (filters.length === 0) return '(no filters)'
+  return filters
+    .map((f) => {
+      switch (f.op) {
+        case 'eq':
+          return `${f.column}=${hbTruncate(JSON.stringify(f.value), 40)}`
+        case 'neq':
+          return `${f.column}!=${hbTruncate(JSON.stringify(f.value), 24)}`
+        case 'in': {
+          const arr = f.value as unknown[]
+          const head = arr.slice(0, 3).map((v) => hbTruncate(String(v), 16)).join(',')
+          return `${f.column} in [n=${arr.length}${arr.length ? `: ${head}${arr.length > 3 ? ',…' : ''}` : ''}]`
+        }
+        case 'is':
+          return `${f.column} is null`
+        case 'gte':
+        case 'lte':
+        case 'lt':
+          return `${f.column} ${f.op} ${hbTruncate(JSON.stringify(f.value), 24)}`
+        case 'not':
+          return `${f.column} not(${f.comparator ?? '?'})`
+        case 'overlaps':
+        case 'contains':
+          return `${f.column} ${f.op}(…)`
+        default:
+          return `${(f as Filter).op}:${(f as { column?: string }).column ?? '?'}`
+      }
+    })
+    .join(' | ')
+}
+
+function hbProvidersDebugCallerStack(): string {
+  const lines = new Error().stack?.split('\n') ?? []
+  const out: string[] = []
+  for (let i = 2; i < lines.length && out.length < 8; i++) {
+    const line = lines[i]!
+    if (line.includes('nativeClient.ts')) continue
+    out.push(line.trim())
+  }
+  return out.join(' ← ')
+}
+
+function hbLogProvidersDebugDbQuery(
+  seq: number,
+  table: string,
+  action: 'select' | 'insert' | 'update' | 'delete' | 'upsert',
+  detail: Record<string, unknown>,
+): void {
+  console.log(`[ProvidersDebug] db/query #${seq}`, { table, action, ...detail })
+  console.log(`[ProvidersDebug] db/query #${seq} caller`, hbProvidersDebugCallerStack())
+}
+
 function readPersistedSession(storageKey: string): AppSession | null {
   try {
     const raw = localStorage.getItem(storageKey)
@@ -231,6 +310,46 @@ export class PostgrestBuilder implements Promise<PostgrestResponse> {
   }
 
   private async run(): Promise<PostgrestResponse> {
+    const allDbg = hbDebugAllDbQueries()
+    const traceTable = HB_PROVIDERS_DEBUG_TABLES.has(this.table) || allDbg
+    if (traceTable && typeof window !== 'undefined') {
+      const w = window as Window & { __hbProvidersDebugSeq?: number; __hbProvidersDebugHint?: boolean }
+      const dbgSeq = (w.__hbProvidersDebugSeq = (w.__hbProvidersDebugSeq ?? 0) + 1)
+      if (dbgSeq === 1 && !allDbg && !w.__hbProvidersDebugHint) {
+        w.__hbProvidersDebugHint = true
+        console.info(
+          '[ProvidersDebug] Logging /api/db/query for:',
+          [...HB_PROVIDERS_DEBUG_TABLES].join(', '),
+          '| All tables: localStorage.setItem("HB_DEBUG_QUERIES","1"); location.reload()',
+        )
+      }
+      const detail: Record<string, unknown> = {}
+      if (this.action === 'select') {
+        detail.select = this.selectColumns
+        detail.filters = hbSummarizeFiltersForDebug(this.mapFilters())
+        if (this.orders.length) detail.order = this.orders
+        if (this.limitN != null) detail.limit = this.limitN
+        detail.flags = {
+          single: this.flagSingle,
+          maybeSingle: this.flagMaybeSingle,
+          head: this.flagHead || (this.selectOptions?.head ?? false),
+        }
+      } else if (this.action === 'insert') {
+        const p = this.insertPayload
+        detail.rowCount = Array.isArray(p) ? p.length : p ? 1 : 0
+      } else if (this.action === 'update' || this.action === 'delete') {
+        detail.filters = hbSummarizeFiltersForDebug(this.mapFilters())
+      } else if (this.action === 'upsert') {
+        const rows = Array.isArray(this.insertPayload)
+          ? this.insertPayload
+          : this.insertPayload
+            ? [this.insertPayload as Record<string, unknown>]
+            : []
+        detail.rowCount = rows.length
+      }
+      hbLogProvidersDebugDbQuery(dbgSeq, this.table, this.action, detail)
+    }
+
     const token = this.getAccessToken()
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (token) headers.Authorization = `Bearer ${token}`

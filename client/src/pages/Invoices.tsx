@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { apiClient } from '@/lib/apiClient'
-import { fetchSheetRows } from '@/lib/providerSheetRows'
+import { fetchSheetRowsForSheetIds } from '@/lib/providerSheetRows'
 import { SheetRow, Clinic, Patient, User } from '@/types'
 import { useAuth } from '@/contexts/AuthContext'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -117,7 +117,9 @@ export default function Invoices() {
         .eq('year', year)
       if (sheetsError) throw sheetsError
       const sheets = sheetsData || []
-      const rowsBySheet = await Promise.all(sheets.map(s => fetchSheetRows(apiClient, s.id)))
+      const sheetIdsForRows = sheets.map((s: { id: string }) => s.id)
+      const rowsBySheetIdMap = await fetchSheetRowsForSheetIds(apiClient, sheetIdsForRows)
+      const rowsBySheet = sheets.map((s) => rowsBySheetIdMap.get(s.id) ?? [])
       const byClinic = new Map<string, {
         insurance: number
         patient: number
@@ -232,7 +234,9 @@ export default function Invoices() {
       if (sheetsError) throw sheetsError
 
       const sheets = sheetsData || []
-      const rowsBySheet = await Promise.all(sheets.map(s => fetchSheetRows(apiClient, s.id)))
+      const sheetIdsForInvoiceRows = sheets.map((s: { id: string }) => s.id)
+      const rowsBySheetIdMapInvoices = await fetchSheetRowsForSheetIds(apiClient, sheetIdsForInvoiceRows)
+      const rowsBySheet = sheets.map((s) => rowsBySheetIdMapInvoices.get(s.id) ?? [])
 
       // Fetch clinics and users for display
       const clinicIds = [...new Set(sheets.map(s => s.clinic_id))]

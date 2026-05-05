@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { apiClient } from '@/lib/apiClient'
-import { listBackupVersions, getBackupDownloadUrl } from '@/lib/providerSheetBackups'
-import { listTabBackupVersions, getTabBackupDownloadUrl, type TabBackupType } from '@/lib/tabBackups'
+import { listBackupVersionsDeduped, getBackupDownloadUrl } from '@/lib/providerSheetBackups'
+import { listTabBackupVersionsDeduped, getTabBackupDownloadUrl, type TabBackupType } from '@/lib/tabBackups'
 import { History, Download, RotateCcw, Loader2, X } from 'lucide-react'
 
 /** Minimal version shape shared by provider sheet and tab backups */
@@ -69,11 +69,11 @@ export default function BackupVersionsBar(
 
   const fetchVersions = useCallback(() => {
     if (backupType === 'providers') {
-      listBackupVersions(apiClient, entityId)
+      listBackupVersionsDeduped(apiClient, entityId)
         .then((list) => setVersions(list.map(normalizeToMeta)))
         .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load versions'))
     } else {
-      listTabBackupVersions(apiClient, backupType, entityId)
+      listTabBackupVersionsDeduped(apiClient, backupType, entityId)
         .then((list) => setVersions(list.map(normalizeToMeta)))
         .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load versions'))
     }
@@ -83,8 +83,8 @@ export default function BackupVersionsBar(
     let cancelled = false
     setError(null)
     const load = backupType === 'providers'
-      ? listBackupVersions(apiClient, entityId).then((list) => list.map(normalizeToMeta))
-      : listTabBackupVersions(apiClient, backupType, entityId).then((list) => list.map(normalizeToMeta))
+      ? listBackupVersionsDeduped(apiClient, entityId).then((list) => list.map(normalizeToMeta))
+      : listTabBackupVersionsDeduped(apiClient, backupType, entityId).then((list) => list.map(normalizeToMeta))
     load
       .then((list) => { if (!cancelled) setVersions(list) })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load versions') })
