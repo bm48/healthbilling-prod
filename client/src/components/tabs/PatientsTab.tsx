@@ -4,6 +4,7 @@ import { Patient, IsLockPatients } from '@/types'
 import { useAuth } from '@/contexts/AuthContext'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
+import { v4 as uuidv4 } from 'uuid'
 import { copayTextCellRenderer, coinsuranceTextCellRenderer } from '@/lib/handsontableCustomRenderers'
 import { toDisplayValue, toStoredString } from '@/lib/utils'
 
@@ -362,7 +363,7 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         if (oldId.startsWith('empty-') || oldId.startsWith('new-')) {
           let insertId = pendingInsertUuidByPlaceholderIdRef.current.get(oldId)
           if (!insertId) {
-            insertId = crypto.randomUUID()
+            insertId = uuidv4()
             pendingInsertUuidByPlaceholderIdRef.current.set(oldId, insertId)
           }
           patientData.id = insertId

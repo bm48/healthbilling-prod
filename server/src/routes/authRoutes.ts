@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
-import { randomUUID } from 'node:crypto'
+import { v4 as uuidv4 } from 'uuid'
 import { pool } from '../db.js'
 import { env } from '../config.js'
 import {
@@ -213,7 +213,7 @@ authRoutes.post('/signup', async (req, res) => {
     return
   }
   const passwordHash = await bcrypt.hash(password, 10)
-  const id = randomUUID()
+  const id = uuidv4()
   try {
     await pool.query(
       `INSERT INTO public.users (
@@ -276,7 +276,7 @@ authRoutes.post('/admin-create-user', requireAuth, async (req, res) => {
     return
   }
   const passwordHash = await bcrypt.hash(password, 10)
-  const id = randomUUID()
+  const id = uuidv4()
   try {
     await pool.query(
       `INSERT INTO public.users (

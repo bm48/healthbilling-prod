@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
-import { createHash, randomBytes } from 'node:crypto'
+import { sha256 } from 'js-sha256'
+import { v4 as uuidv4 } from 'uuid'
 import { pool, ensureServerSchema } from './db.js'
 import { env } from './config.js'
 
@@ -12,7 +13,12 @@ export type AuthUser = {
 }
 
 export function hashToken(raw: string): string {
-  return createHash('sha256').update(raw).digest('hex')
+  return sha256(raw)
+}
+
+function createRefreshTokenRaw(): string {
+  // 3 UUIDs without dashes yields 96 hex chars, matching prior randomBytes(48).toString('hex') length.
+  return `${uuidv4()}${uuidv4()}${uuidv4()}`.replace(/-/g, '')
 }
 
 export async function verifyPassword(password: string, hash: string | null): Promise<boolean> {
@@ -33,7 +39,7 @@ export function makeAccessToken(user: AuthUser): string {
 
 export async function issueRefreshToken(userId: string): Promise<string> {
   await ensureServerSchema()
-  const raw = randomBytes(48).toString('hex')
+  const raw = createRefreshTokenRaw()
   const tokenHash = hashToken(raw)
   const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30)
   await pool.query(
@@ -62,7 +68,7 @@ export async function rotateRefreshToken(rawToken: string): Promise<{ userId: st
       return null
     }
     await client.query(`UPDATE public.server_refresh_tokens SET revoked_at = now() WHERE id = $1`, [row.id])
-    const raw = randomBytes(48).toString('hex')
+    const raw = createRefreshTokenRaw()
     const nextHash = hashToken(raw)
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30)
     await client.query(

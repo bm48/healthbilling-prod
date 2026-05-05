@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { v4 as uuidv4 } from 'uuid'
 import { Router } from 'express'
 import { z } from 'zod'
 import { pool } from '../db.js'
@@ -64,7 +64,7 @@ function normalizeRowIdsForWrite(rows: Record<string, unknown>[]): Record<string
   }
   for (const r of copy) {
     if (!Object.prototype.hasOwnProperty.call(r, 'id') || isBlankId(r['id'])) {
-      r['id'] = randomUUID()
+      r['id'] = uuidv4()
     }
   }
   return copy
