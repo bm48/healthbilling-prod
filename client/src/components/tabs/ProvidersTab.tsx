@@ -25,11 +25,82 @@ function isHandsontableUndoRedoSource(source?: string) {
 }
 
 function providersDebugTab(event: string, payload?: Record<string, unknown>) {
-  if (payload !== undefined) console.log(`[ProvidersDebug] ProvidersTab ${event}`, payload)
-  else console.log(`[ProvidersDebug] ProvidersTab ${event}`)
+  void event
+  void payload
 }
 
 const PROVIDER_GRID_DATE_FIELDS: (keyof SheetRow)[] = ['appointment_date', 'submit_date', 'payment_date', 'ar_date']
+
+/** Matches `columnFieldsFullBase` / row order used by `getTableDataFromRows` for full sheets (before optional Tele column insert). */
+const IS_LOCK_PROVIDERS_FIELD_ORDER: Array<keyof IsLockProviders> = [
+  'patient_id',
+  'first_name',
+  'last_initial',
+  'insurance',
+  'copay',
+  'coinsurance',
+  'date_of_service',
+  'cpt_code',
+  'appointment_note_status',
+  'claim_status',
+  'most_recent_submit_date',
+  'ins_pay',
+  'ins_pay_date',
+  'pt_res',
+  'collected_from_pt',
+  'pt_pay_status',
+  'pt_payment_ar_ref_date',
+  'total',
+  'notes',
+]
+
+/**
+ * Map Handsontable row-array index (`columns[].data`) → `is_lock_providers` field for header lock icons.
+ * Layouts differ for office staff vs full sheet vs level-1 provider (see `getTableDataFromRows`).
+ */
+function lockFieldFromProvidersRowDataIndex(
+  rowDataIndex: number,
+  opts: {
+    showVisitTypeColumn: boolean
+    officeStaffView: boolean
+    isProviderView: boolean
+    providerLevel: number
+  }
+): keyof IsLockProviders | null {
+  const { showVisitTypeColumn, officeStaffView, isProviderView, providerLevel } = opts
+  const full = IS_LOCK_PROVIDERS_FIELD_ORDER
+
+  if (officeStaffView) {
+    if (showVisitTypeColumn) {
+      if (rowDataIndex === 9) return null
+      if (rowDataIndex >= 0 && rowDataIndex < 9) return full[rowDataIndex]
+      if (rowDataIndex === 10) return 'collected_from_pt'
+      if (rowDataIndex === 11) return 'pt_pay_status'
+      if (rowDataIndex === 12) return 'pt_payment_ar_ref_date'
+      return null
+    }
+    if (rowDataIndex >= 0 && rowDataIndex < 9) return full[rowDataIndex]
+    if (rowDataIndex === 9) return 'collected_from_pt'
+    if (rowDataIndex === 10) return 'pt_pay_status'
+    if (rowDataIndex === 11) return 'pt_payment_ar_ref_date'
+    return null
+  }
+
+  if (isProviderView && providerLevel !== 2) {
+    if (showVisitTypeColumn && rowDataIndex === 9) return null
+    if (rowDataIndex >= 0 && rowDataIndex <= 8) return full[rowDataIndex]
+    return null
+  }
+
+  if (showVisitTypeColumn) {
+    if (rowDataIndex === 9) return null
+    if (rowDataIndex >= 0 && rowDataIndex < 9) return full[rowDataIndex]
+    if (rowDataIndex >= 10 && rowDataIndex <= 19) return full[rowDataIndex - 1]
+    return null
+  }
+  if (rowDataIndex >= 0 && rowDataIndex < full.length) return full[rowDataIndex]
+  return null
+}
 
 /** Map visible grid columns → SheetRow fields for undo/redo sync (matches handleProviderRowsHandsontableChange layout). */
 function mergeProviderRowFromGridRowForSync(
@@ -851,6 +922,68 @@ export default function ProvidersTab({
       ? (providerLevel === 2 ? columnTitlesFull : columnTitlesProviderView)
       : (showCondenseButton && isCondensed ? columnTitlesFull.slice(0, 9) : columnTitlesFull)
 
+  /**
+   * Visual column -> persisted providers column key mapping for highlights/comments.
+   * Must match `providerColumnsWithLocks` visual order exactly (including hidden data indexes and Visit Type placement).
+   */
+  const visualColumnKeys = useMemo((): Array<keyof IsLockProviders | null> => {
+    const full: Array<keyof IsLockProviders | null> = [
+      'patient_id',
+      'first_name',
+      'last_initial',
+      'insurance',
+      'copay',
+      'coinsurance',
+      'date_of_service',
+      'cpt_code',
+      'appointment_note_status',
+      'claim_status',
+      'most_recent_submit_date',
+      'ins_pay',
+      'ins_pay_date',
+      'pt_res',
+      'collected_from_pt',
+      'pt_pay_status',
+      'pt_payment_ar_ref_date',
+      'total',
+      'notes',
+    ]
+    if (officeStaffView) {
+      const office: Array<keyof IsLockProviders | null> = [
+        'patient_id',
+        'first_name',
+        'last_initial',
+        'insurance',
+        'copay',
+        'coinsurance',
+        'date_of_service',
+        'cpt_code',
+      ]
+      if (showVisitTypeColumn) office.push(null)
+      office.push('appointment_note_status', 'collected_from_pt', 'pt_pay_status', 'pt_payment_ar_ref_date')
+      return office
+    }
+    if (isProviderView && providerLevel !== 2) {
+      const partial: Array<keyof IsLockProviders | null> = [
+        'patient_id',
+        'first_name',
+        'last_initial',
+        'date_of_service',
+        'cpt_code',
+      ]
+      if (showVisitTypeColumn) partial.push(null)
+      partial.push('appointment_note_status')
+      return partial
+    }
+    const fullVisible: Array<keyof IsLockProviders | null> = [...full.slice(0, 8)]
+    if (showVisitTypeColumn) fullVisible.push(null)
+    fullVisible.push(...full.slice(8))
+    if (!isProviderView && showCondenseButton && isCondensed) {
+      return fullVisible.slice(0, showVisitTypeColumn ? 10 : 9)
+    }
+    return fullVisible
+  }, [officeStaffView, isProviderView, providerLevel, showVisitTypeColumn, showCondenseButton, isCondensed])
+
   /** Bumps when lock flags change so Handsontable re-renders headers (see `afterGetColHeader` + `colHeaderRefreshKey`). */
   const providerLocksKey = useMemo(() => {
     if (!lockData) return 'none'
@@ -863,30 +996,6 @@ export default function ProvidersTab({
   }, [lockData, columnFields])
 
   const lockIconSrc = `${import.meta.env.BASE_URL.replace(/\/?$/, '/')}lock_icon.png`
-
-  const afterGetProviderColHeader = useCallback(
-    (col: number, TH: HTMLTableCellElement, headerLevel?: number) => {
-      if (headerLevel != null && headerLevel !== 0) return
-      TH.querySelector('.providers-col-header-lock-wrap')?.remove()
-      if (col < 0) return
-      const field = columnFields[col] as string | undefined
-      if (!field || field === 'visit_type') return
-      if (!lockData || !lockData[field as keyof IsLockProviders]) return
-      const wrap = document.createElement('span')
-      wrap.className = 'providers-col-header-lock-wrap'
-      wrap.title = 'Column locked'
-      const img = document.createElement('img')
-      img.className = 'providers-col-header-lock-img'
-      img.src = lockIconSrc
-      img.alt = ''
-      img.width = 18
-      img.height = 18
-      wrap.appendChild(img)
-      const inner = (TH.querySelector('div') as HTMLElement | null) || TH
-      inner.appendChild(wrap)
-    },
-    [columnFields, lockData, lockIconSrc]
-  )
 
   /** In provider view (full and partial), providers can edit ID (0), Date of Service (6), CPT Code (7), Appt/Note Status (8), and when enabled Visit Type (9) */
   const isProviderEditableColumn = (dataIndex: number) =>
@@ -1031,7 +1140,7 @@ export default function ProvidersTab({
   const providerCellsCallback = useCallback(
     (row: number, col: number) => {
       const sheetRow = activeProviderRows[row]
-      const colKey = columnFields[col]
+      const colKey = visualColumnKeys[col]
       if (!colKey) return {}
       const key = `${sheetRow?.id ?? `row-${row}`}:${colKey}`
       const isResolved = resolvedCells.has(key)
@@ -1050,26 +1159,26 @@ export default function ProvidersTab({
       }
       return {}
     },
-    [activeProviderRows, columnFields, highlightedCells, highlightColorByKey, commentsMap, resolvedCells, userHighlightColor]
+    [activeProviderRows, visualColumnKeys, highlightedCells, highlightColorByKey, commentsMap, resolvedCells, userHighlightColor]
   )
 
   // Tooltip for cells with comments (e.g. on provider side when hovering)
   const getCellTitle = useCallback(
     (row: number, col: number) => {
       const sheetRow = activeProviderRows[row]
-      const colKey = columnFields[col]
+      const colKey = visualColumnKeys[col]
       if (!colKey) return undefined
       const key = `${sheetRow?.id ?? `row-${row}`}:${colKey}`
       return commentsMap.get(key) ?? undefined
     },
-    [activeProviderRows, columnFields, commentsMap]
+    [activeProviderRows, visualColumnKeys, commentsMap]
   )
 
   const handleCellRemoveComment = useCallback(
     async (row: number, col: number) => {
       if (!clinicId) return
       const sheetRow = activeProviderRows[row]
-      const colKey = columnFields[col]
+      const colKey = visualColumnKeys[col]
       if (!colKey) return
       const rowId = sheetRow?.id ?? `row-${row}`
       const key = `${rowId}:${colKey}`
@@ -1091,24 +1200,24 @@ export default function ProvidersTab({
         return next
       })
     },
-    [activeProviderRows, columnFields, clinicId]
+    [activeProviderRows, visualColumnKeys, clinicId]
   )
 
   const getCellIsHighlighted = useCallback(
     (row: number, col: number) => {
       const sheetRow = activeProviderRows[row]
-      const colKey = columnFields[col]
+      const colKey = visualColumnKeys[col]
       if (!colKey) return false
       const key = `${sheetRow?.id ?? `row-${row}`}:${colKey}`
       return highlightedCells.has(key)
     },
-    [activeProviderRows, columnFields, highlightedCells]
+    [activeProviderRows, visualColumnKeys, highlightedCells]
   )
 
   const handleCellHighlight = useCallback(async (row: number, col: number) => {
     if (!clinicId) return
     const sheetRow = activeProviderRows[row]
-    const colKey = columnFields[col]
+    const colKey = visualColumnKeys[col]
     if (!colKey) return
     const rowId = sheetRow?.id ?? `row-${row}`
     const key = `${rowId}:${colKey}`
@@ -1147,12 +1256,12 @@ export default function ProvidersTab({
       setHighlightedCells((prev) => new Set(prev).add(key))
       setHighlightColorByKey((prev) => new Map(prev).set(key, currentUserColor))
     }
-  }, [activeProviderRows, columnFields, clinicId, highlightedCells, userHighlightColor, userProfile?.id])
+  }, [activeProviderRows, visualColumnKeys, clinicId, highlightedCells, userHighlightColor, userProfile?.id])
 
   const handleCellSeeComment = useCallback((row: number, col: number) => {
     if (!clinicId) return
     const sheetRow = activeProviderRows[row]
-    const colKey = columnFields[col]
+    const colKey = visualColumnKeys[col]
     if (!colKey) return
     const rowId = sheetRow?.id ?? `row-${row}`
     const key = `${rowId}:${colKey}`
@@ -1187,7 +1296,7 @@ export default function ProvidersTab({
     requestAnimationFrame(() => {
       openModal()
     })
-  }, [activeProviderRows, columnFields, commentsMap, clinicId])
+  }, [activeProviderRows, visualColumnKeys, commentsMap, clinicId])
 
   const handleSaveComment = useCallback(async () => {
     if (!commentModal || !clinicId) return
@@ -1313,10 +1422,10 @@ export default function ProvidersTab({
         // { data: 3, title: 'Ins', type: 'text' as const, width: 90, readOnly: getReadOnlyProviderView(3) },
         // { data: 4, title: 'Co-pay', type: 'text' as const, width: 80, renderer: copayTextCellRenderer, readOnly: getReadOnlyProviderView(4) },
         // { data: 5, title: 'Co-Ins', type: 'text' as const, width: 80, renderer: coinsuranceTextCellRenderer, readOnly: getReadOnlyProviderView(5) },
-        { data: 6, title: 'Date of Service', type: 'text' as const, width: 90, editor: DateOfServiceEditor, readOnly: getReadOnlyProviderView(6) },
-        { data: 7, title: 'CPT Code', type: 'dropdown' as const, width: 160, editor: MultiSelectCptEditor, selectOptions: billingCodes.map(c => c.code), renderer: createMultiBubbleDropdownRenderer((val) => getCPTColor(val)) as any, readOnly: getReadOnlyProviderView(7) },
+        { data: 6, title: 'Date of Service', type: 'text' as const, width: 90, editor: DateOfServiceEditor, readOnly: getReadOnlyProviderView(6) || getReadOnly('date_of_service') },
+        { data: 7, title: 'CPT Code', type: 'dropdown' as const, width: 160, editor: MultiSelectCptEditor, selectOptions: billingCodes.map(c => c.code), renderer: createMultiBubbleDropdownRenderer((val) => getCPTColor(val)) as any, readOnly: getReadOnlyProviderView(7) || getReadOnly('cpt_code') },
         ...(visitTypeCol ? [visitTypeCol(getReadOnlyProviderView(9))] : []),
-        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyProviderView(8) },
+        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyProviderView(8) || getReadOnly('appointment_note_status') },
       ]
       return base
     }
@@ -1328,20 +1437,20 @@ export default function ProvidersTab({
         { data: 3, title: 'Ins', type: 'text' as const, width: 90, readOnly: true },
         { data: 4, title: 'Co-pay', type: 'text' as const, width: 80, renderer: copayTextCellRenderer, readOnly: true },
         { data: 5, title: 'Co-Ins', type: 'text' as const, width: 80, renderer: coinsuranceTextCellRenderer, readOnly: true },
-        { data: 6, title: 'Date of Service', type: 'text' as const, width: 90, editor: DateOfServiceEditor, readOnly: getReadOnlyProviderView(6) },
-        { data: 7, title: 'CPT Code', type: 'dropdown' as const, width: 160, editor: MultiSelectCptEditor, selectOptions: billingCodes.map(c => c.code), renderer: createMultiBubbleDropdownRenderer((val) => getCPTColor(val)) as any, readOnly: getReadOnlyProviderView(7) },
+        { data: 6, title: 'Date of Service', type: 'text' as const, width: 90, editor: DateOfServiceEditor, readOnly: getReadOnlyProviderView(6) || getReadOnly('date_of_service') },
+        { data: 7, title: 'CPT Code', type: 'dropdown' as const, width: 160, editor: MultiSelectCptEditor, selectOptions: billingCodes.map(c => c.code), renderer: createMultiBubbleDropdownRenderer((val) => getCPTColor(val)) as any, readOnly: getReadOnlyProviderView(7) || getReadOnly('cpt_code') },
         ...(visitTypeCol ? [visitTypeCol(getReadOnlyProviderView(9))] : []),
-        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyProviderView(8) },
-        { data: 9 + pvOffset, title: 'Claim Status', type: 'dropdown' as const, width: 90, selectOptions: ['Claim Sent', 'RS', 'IP', 'Pending Pay', 'Paid', 'Deductible', 'N/A', 'PP', 'Denial', 'Rejected', 'No Coverage'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'claim')) as any, readOnly: getReadOnlyProviderView(9) },
-        { data: 10 + pvOffset, title: 'Most Recent Submit Date', type: 'text' as const, width: 120, editor: 'text', readOnly: getReadOnlyProviderView(10) },
-        { data: 11 + pvOffset, title: 'Ins Pay', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(11) },
-        { data: 12 + pvOffset, title: 'Ins Pay Date', type: 'dropdown' as const, width: 100, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyProviderView(12) },
-        { data: 13 + pvOffset, title: 'PT RES', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(13) },
-        { data: 14 + pvOffset, title: 'Collected from PT', type: 'numeric' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(14) },
-        { data: 15 + pvOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, readOnly: getReadOnlyProviderView(15) },
-        { data: 16 + pvOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyProviderView(16) },
-        { data: 17 + pvOffset, title: 'Total', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(17) },
-        { data: 18 + pvOffset, title: 'Notes', type: 'text' as const, width: 150, readOnly: getReadOnlyProviderView(18) },
+        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyProviderView(8) || getReadOnly('appointment_note_status') },
+        { data: 9 + pvOffset, title: 'Claim Status', type: 'dropdown' as const, width: 90, selectOptions: ['Claim Sent', 'RS', 'IP', 'Pending Pay', 'Paid', 'Deductible', 'N/A', 'PP', 'Denial', 'Rejected', 'No Coverage'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'claim')) as any, readOnly: getReadOnlyProviderView(9 + pvOffset) || getReadOnly('claim_status') },
+        { data: 10 + pvOffset, title: 'Most Recent Submit Date', type: 'text' as const, width: 120, editor: 'text', readOnly: getReadOnlyProviderView(10 + pvOffset) || getReadOnly('most_recent_submit_date') },
+        { data: 11 + pvOffset, title: 'Ins Pay', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(11 + pvOffset) || getReadOnly('ins_pay') },
+        { data: 12 + pvOffset, title: 'Ins Pay Date', type: 'dropdown' as const, width: 100, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyProviderView(12 + pvOffset) || getReadOnly('ins_pay_date') },
+        { data: 13 + pvOffset, title: 'PT RES', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(13 + pvOffset) || getReadOnly('pt_res') },
+        { data: 14 + pvOffset, title: 'Collected from PT', type: 'numeric' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(14 + pvOffset) || getReadOnly('collected_from_pt') },
+        { data: 15 + pvOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, readOnly: getReadOnlyProviderView(15 + pvOffset) || getReadOnly('pt_pay_status') },
+        { data: 16 + pvOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyProviderView(16 + pvOffset) || getReadOnly('pt_payment_ar_ref_date') },
+        { data: 17 + pvOffset, title: 'Total', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(17 + pvOffset) || getReadOnly('total') },
+        { data: 18 + pvOffset, title: 'Notes', type: 'text' as const, width: 150, readOnly: getReadOnlyProviderView(18 + pvOffset) || getReadOnly('notes') },
       ]
     }
     
@@ -1504,6 +1613,36 @@ export default function ProvidersTab({
     ]
     return (showCondenseButton && isCondensed) ? fullProviderColumns.slice(0, showVisitTypeColumn ? 10 : 9) : fullProviderColumns
   }, [activeProvider, clinicPayroll, billingCodes, statusColors, getCPTColor, getStatusColor, getMonthColor, patients, canEdit, lockData, getReadOnly, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, restrictEditToSchedulingColumns])
+
+  const afterGetProviderColHeader = useCallback(
+    (col: number, TH: HTMLTableCellElement, headerLevel?: number) => {
+      if (headerLevel != null && headerLevel !== 0) return
+      TH.querySelector('.providers-col-header-lock-wrap')?.remove()
+      if (col < 0) return
+      const colDef = providerColumnsWithLocks[col] as { data?: number | string } | undefined
+      if (!colDef || typeof colDef.data !== 'number') return
+      const field = lockFieldFromProvidersRowDataIndex(colDef.data, {
+        showVisitTypeColumn,
+        officeStaffView,
+        isProviderView,
+        providerLevel,
+      })
+      if (!field || !lockData || !lockData[field]) return
+      const wrap = document.createElement('span')
+      wrap.className = 'providers-col-header-lock-wrap'
+      wrap.title = 'Column locked'
+      const img = document.createElement('img')
+      img.className = 'providers-col-header-lock-img'
+      img.src = lockIconSrc
+      img.alt = ''
+      img.width = 18
+      img.height = 18
+      wrap.appendChild(img)
+      const inner = (TH.querySelector('div') as HTMLElement | null) || TH
+      inner.appendChild(wrap)
+    },
+    [providerColumnsWithLocks, lockData, lockIconSrc, showVisitTypeColumn, officeStaffView, isProviderView, providerLevel]
+  )
 
   // Before Handsontable applies edits: non-empty patient_id values are deferred — we revert the cell in this hook,
   // then validate against the patients table in DB and only then setDataAtCell(..., 'patientIdDbValidated').

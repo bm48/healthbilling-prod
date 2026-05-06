@@ -311,7 +311,7 @@ export class PostgrestBuilder implements Promise<PostgrestResponse> {
 
   private async run(): Promise<PostgrestResponse> {
     const allDbg = hbDebugAllDbQueries()
-    const traceTable = HB_PROVIDERS_DEBUG_TABLES.has(this.table) || allDbg
+    const traceTable = allDbg
     if (traceTable && typeof window !== 'undefined') {
       const w = window as Window & { __hbProvidersDebugSeq?: number; __hbProvidersDebugHint?: boolean }
       const dbgSeq = (w.__hbProvidersDebugSeq = (w.__hbProvidersDebugSeq ?? 0) + 1)

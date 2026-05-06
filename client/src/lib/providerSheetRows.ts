@@ -160,10 +160,6 @@ export async function fetchSheetRowsForSheetIds(
   for (const id of unique) out.set(id, [])
   if (unique.length === 0) return out
 
-  console.log('[ProvidersDebug] fetchSheetRowsForSheetIds (batched)', {
-    uniqueSheetCount: unique.length,
-  })
-
   const { data, error } = await db.from('provider_sheet_rows').select('*').in('sheet_id', unique)
 
   if (error) throw error

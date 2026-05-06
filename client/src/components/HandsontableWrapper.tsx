@@ -1046,12 +1046,14 @@ export default function HandsontableWrapper({
       if (cell.closest('thead') || cell.closest('.ht_clone_top') || cell.closest('.ht_clone_left')) return
       if (!cell.closest('.ht_master')) return
 
-      // Treat any click inside a dropdown cell (bubble or arrow) as opening the dropdown
-      const cellHasBubble = cell.querySelector('.handsontable-bubble-select')
-      if (!bubble && !cellHasBubble) {
-        selectionFromMouseRef.current = true
+      // Only open dropdown when clicking the bubble itself.
+      // Clicking elsewhere in the cell should just select the cell (no dropdown open).
+      const cellHasBubble = Boolean(cell.querySelector('.handsontable-bubble-select'))
+      if (cellHasBubble && !bubble) {
+        selectionFromMouseRef.current = false
         return
       }
+      selectionFromMouseRef.current = Boolean(bubble)
 
       let row: number | null = null
       let col: number | null = null
@@ -1088,6 +1090,9 @@ export default function HandsontableWrapper({
           (cellProperties.type === 'dropdown' || cellProperties.editor === 'select' || (cellProperties as any).selectOptions)
         const isEditing = typeof hotInstance.isEditing === 'function' ? hotInstance.isEditing() : false
         if (!isDropdown || isEditing) return
+        // If this cell uses a bubble renderer, require bubble click (enforced above).
+        // If it doesn't have a bubble, fall back to default Handsontable behavior (don't force-open).
+        if (!bubble && !cellHasBubble) return
       } catch {
         return
       }

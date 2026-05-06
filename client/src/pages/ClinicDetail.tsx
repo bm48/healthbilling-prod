@@ -29,8 +29,8 @@ type TabType = 'patients' | 'todo' | 'providers' | 'accounts_receivable' | 'prov
 const IS_LOCK_PROVIDERS_LEGACY_MONTH_KEY = 'legacy'
 
 function providersDebugClinic(event: string, detail?: Record<string, unknown>) {
-  if (detail !== undefined) console.log(`[ProvidersDebug] ClinicDetail ${event}`, detail)
-  else console.log(`[ProvidersDebug] ClinicDetail ${event}`)
+  void event
+  void detail
 }
 
 /** Pre-migration `is_lock_accounts_receivable` rows use this month_key; first open of a month clones them into that month. */
@@ -2381,7 +2381,7 @@ export default function ClinicDetail() {
           return
         }
         restoredPendingKeysRef.current.add(key)
-        console.log('[ClinicDetail] Restoring pending provider rows from localStorage: providerId=', providerId, 'rows=', data.rows.length)
+        // Intentionally silent: avoid noisy runtime logs in normal tab usage.
         saveProviderSheetRows(providerId, data.rows).then(() => {
           try { localStorage.removeItem(key) } catch (_) {}
         }).catch(err => {

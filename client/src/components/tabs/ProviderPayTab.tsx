@@ -124,8 +124,8 @@ export default function ProviderPayTab({
   onSelectedProviderIdChange,
 }: ProviderPayTabProps) {
   const logProviderPay = useCallback((event: string, payload?: Record<string, unknown>) => {
-    if (payload) console.log(`[ProviderPayTab] ${event}`, payload)
-    else console.log(`[ProviderPayTab] ${event}`)
+    void event
+    void payload
   }, [])
   const containerRef = useRef<HTMLDivElement>(null)
   const [tableHeight, setTableHeight] = useState(600)

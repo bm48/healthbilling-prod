@@ -26,6 +26,40 @@ function toCSV(rows: Record<string, unknown>[]): string {
   return [header, ...dataLines].join('\r\n')
 }
 
+const PATIENT_EXCLUDED_EXPORT_KEYS = new Set(['id', 'clinic_id', 'patient_id', 'created_at', 'updated_at'])
+
+/** Build one CSV row from a full `patients` record by removing only excluded columns. */
+function patientRecordToExportRow(p: Record<string, unknown>, index: number): Record<string, unknown> {
+  const out: Record<string, unknown> = { 'No.': index + 1 }
+  Object.keys(p).forEach((key) => {
+    if (PATIENT_EXCLUDED_EXPORT_KEYS.has(key)) return
+    const v = p[key]
+    out[key] = v == null || v === 'null' ? '' : v
+  })
+  return out
+}
+
+function hasNonEmpty(v: unknown): boolean {
+  if (v == null) return false
+  const s = String(v).trim()
+  return s !== '' && s.toLowerCase() !== 'null'
+}
+
+function isEmptyPatientExportRecord(p: Record<string, unknown>): boolean {
+  return !(
+    hasNonEmpty(p['first_name']) ||
+    hasNonEmpty(p['last_name']) ||
+    hasNonEmpty(p['phone']) ||
+    hasNonEmpty(p['email']) ||
+    hasNonEmpty(p['address']) ||
+    hasNonEmpty(p['insurance']) ||
+    hasNonEmpty(p['subscriber_id']) ||
+    hasNonEmpty(p['copay']) ||
+    hasNonEmpty(p['coinsurance']) ||
+    hasNonEmpty(p['date_of_birth'])
+  )
+}
+
 type SettingsTabId = 'users' | 'billing-codes' | 'audit-logs' | 'unlock' | 'clinics' | 'export' | 'month-close' | 'change-password'
 type Variant = 'super_admin' | 'admin'
 
@@ -1341,8 +1375,18 @@ export default function SuperAdminSettings() {
                         <button
                           onClick={async () => {
                             try {
-                              const { data: users } = await apiClient.from('users').select('*')
-                              const csv = toCSV((users ?? []) as Record<string, unknown>[])
+                              const { data: users } = await apiClient
+                                .from('users')
+                                .select('full_name,email,role,hourly_pay')
+                                .order('email', { ascending: true })
+                              const exportRows: Record<string, unknown>[] = (users ?? []).map((u, i) => ({
+                                'No.': i + 1,
+                                'Full name': u.full_name ?? '',
+                                Email: u.email ?? '',
+                                Role: u.role ?? '',
+                                'Hourly pay': u.hourly_pay ?? '',
+                              }))
+                              const csv = toCSV(exportRows)
                               const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
                               const url = URL.createObjectURL(blob)
                               const a = document.createElement('a')
@@ -1363,8 +1407,22 @@ export default function SuperAdminSettings() {
                         <button
                           onClick={async () => {
                             try {
-                              const { data: clinics } = await apiClient.from('clinics').select('*')
-                              const csv = toCSV((clinics ?? []) as Record<string, unknown>[])
+                              const { data: clinics, error: clinicsError } = await apiClient
+                                .from('clinics')
+                                .select('name,phone,fax,npi,ein,payroll,invoice_rate')
+                                .order('name', { ascending: true })
+                              if (clinicsError) throw clinicsError
+                              const clinicRows: Record<string, unknown>[] = (clinics ?? []).map((c, i) => ({
+                                'No.': i + 1,
+                                name: c.name ?? '',
+                                phone: c.phone ?? '',
+                                fax: c.fax ?? '',
+                                npi: c.npi ?? '',
+                                ein: c.ein ?? '',
+                                payroll: c.payroll ?? '',
+                                invoice_rate: c.invoice_rate ?? '',
+                              }))
+                              const csv = toCSV(clinicRows)
                               const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
                               const url = URL.createObjectURL(blob)
                               const a = document.createElement('a')
@@ -1385,8 +1443,30 @@ export default function SuperAdminSettings() {
                         <button
                           onClick={async () => {
                             try {
-                              const { data: patients } = await apiClient.from('patients').select('*')
-                              const csv = toCSV((patients ?? []) as Record<string, unknown>[])
+                              // `select('*')` matches Patient tab / API behavior; subset lists were returning rows with empty
+                              // demographic fields in some environments. Omit id, clinic_id, patient_id, timestamps when mapping.
+                              const { data: patientsRaw, error: patientsError } = await apiClient
+                                .from('patients')
+                                .select('*')
+                                .order('created_at', { ascending: false })
+                              if (patientsError) throw patientsError
+                              const sortedPatients = ((patientsRaw ?? []) as Record<string, unknown>[])
+                                .filter((p) => !isEmptyPatientExportRecord(p))
+                                .sort((a, b) => {
+                                const aHasIdentity = hasNonEmpty(a['first_name']) || hasNonEmpty(a['last_name']) || hasNonEmpty(a['phone']) || hasNonEmpty(a['email']) || hasNonEmpty(a['address'])
+                                const bHasIdentity = hasNonEmpty(b['first_name']) || hasNonEmpty(b['last_name']) || hasNonEmpty(b['phone']) || hasNonEmpty(b['email']) || hasNonEmpty(b['address'])
+                                if (aHasIdentity !== bHasIdentity) return aHasIdentity ? -1 : 1
+                                const aLast = String(a['last_name'] ?? '').toLowerCase()
+                                const bLast = String(b['last_name'] ?? '').toLowerCase()
+                                if (aLast !== bLast) return aLast.localeCompare(bLast)
+                                const aFirst = String(a['first_name'] ?? '').toLowerCase()
+                                const bFirst = String(b['first_name'] ?? '').toLowerCase()
+                                return aFirst.localeCompare(bFirst)
+                              })
+                              const patientRows: Record<string, unknown>[] = sortedPatients.map((p, i) =>
+                                patientRecordToExportRow(p as Record<string, unknown>, i)
+                              )
+                              const csv = toCSV(patientRows)
                               const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
                               const url = URL.createObjectURL(blob)
                               const a = document.createElement('a')
