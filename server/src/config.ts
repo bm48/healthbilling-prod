@@ -33,6 +33,8 @@ const envSchema = z.object({
       if (typeof v === 'boolean') return v
       return ['true', '1', 'yes'].includes(String(v).toLowerCase())
     }),
+  /** Shared secret for POST /api/cron/* (system cron sends JSON { "cron_secret": "..." }). */
+  BACKUP_CRON_SECRET: z.string().min(16).optional(),
 })
 
 export const env = envSchema.parse(process.env)

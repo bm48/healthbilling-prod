@@ -7,6 +7,7 @@ import { authRoutes } from './routes/authRoutes.js'
 import { queryRoutes } from './routes/queryRoutes.js'
 import { serviceRoutes } from './routes/serviceRoutes.js'
 import { ensureStorageRoot, storageRoutes } from './routes/storageRoutes.js'
+import { backupCronRoutes } from './routes/backupCronRoutes.js'
 
 const app = express()
 app.use(cors({ origin: env.FRONTEND_ORIGIN, credentials: true }))
@@ -29,6 +30,7 @@ app.get('/health', (_req, res) => {
 })
 
 app.use('/api', serviceRoutes)
+app.use('/api/cron', backupCronRoutes)
 app.use('/api/auth', authRoutes)
 app.use('/api/db', queryRoutes)
 app.use('/api/storage', storageRoutes)
