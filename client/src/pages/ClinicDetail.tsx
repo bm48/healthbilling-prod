@@ -209,6 +209,17 @@ export default function ClinicDetail() {
         : null)
     if (target) setFullName(`${target.first_name} ${target.last_name}`)
   }, [providers, currentProvider])
+
+  /** Prefer currentProvider; fall back to providers list so Visit Type column matches DB if currentProvider was cleared mid-fetch. */
+  const providersTabShowVisitTypeColumn = useMemo(() => {
+    if (!providerId) return providers.some((p) => p.show_visit_type_column)
+    return (
+      currentProvider?.show_visit_type_column ??
+      providers.find((p) => p.id === providerId)?.show_visit_type_column ??
+      false
+    )
+  }, [providerId, currentProvider, providers])
+
   const [currentSheet, setCurrentSheet] = useState<ProviderSheet | null>(null)
   const providerRowsRef = useRef<ProviderCptRowSnapshot[]>([])
   /** Serialize provider sheet saves per provider so an older save (e.g. 59 rows) cannot overwrite a newer one (67 rows) in the DB. */
@@ -410,7 +421,8 @@ export default function ClinicDetail() {
       const prevContext = lastProviderSheetContextRef.current
       const providerChanged = prevContext?.providerId !== providerId
       const monthChangedForProvider = prevContext?.monthKey !== monthKey
-      if (providerChanged || monthChangedForProvider) {
+      const clinicChangedForProvider = prevContext != null && prevContext.clinicId !== clinicId
+      if (providerChanged || monthChangedForProvider || clinicChangedForProvider) {
         setCurrentProvider(null)
         setCurrentSheet(null)
         updateLastSavedProviderRowsRef.current?.([])
@@ -418,6 +430,10 @@ export default function ClinicDetail() {
       }
       setLoading(true)
       lastProviderSheetDataFetchRef.current = { providerId, monthKey: selectedMonthKey }
+      // Mark target context immediately so a second effect run (e.g. providers list filling in)
+      // does not treat clinic-wide { providerId: null } or a null ref as a "provider change" and
+      // clear currentProvider while fetchProviderSheetData is still in flight.
+      lastProviderSheetContextRef.current = { clinicId, providerId, monthKey }
       ;(async () => {
         try {
           await fetchProviderSheetData(isMonthChangeOnly, false)
@@ -446,7 +462,10 @@ export default function ClinicDetail() {
         }
       })()
     }
-  }, [selectedMonthKey, activeTab, clinicId, providerId, firstListedProviderId])
+    // firstListedProviderId intentionally omitted: it is not used in this effect; including it
+    // re-ran the effect when fetchProviderSheetData merged the provider into `providers`, which
+    // cleared currentProvider mid-flight and broke props like show_visit_type_column.
+  }, [selectedMonthKey, activeTab, clinicId, providerId])
 
   const fetchData = async (monthKeyForProviderSheets?: string) => {
     if (!clinicId) return
@@ -1587,21 +1606,18 @@ export default function ClinicDetail() {
       const alreadyHaveData = (providerSheetRows[providerId]?.length ?? 0) > 0
       if (!isMonthChange && !alreadyHaveData) setLoading(true)
 
-      // Prefer already-loaded providers list — avoids a DB round-trip when fetchProviders() already ran.
+      // Always load this provider from the DB. The ref can be stale (e.g. super admin toggled
+      // show_visit_type_column after fetchProviders, or single-provider route skipped fetchProviders).
       const providerFromRef = providersRef.current.find((p) => p.id === providerId) ?? null
-      let providerData: Provider | null = providerFromRef
+      const { data: fetchedProvider, error: providerError } = await apiClient
+        .from('providers')
+        .select('*')
+        .eq('id', providerId)
+        .maybeSingle()
 
-      if (!providerData) {
-        // Not in ref yet — fetch the single provider (race: page loaded directly on /providers/:id before fetchProviders finished)
-        const { data: fetched, error: providerError } = await apiClient
-          .from('providers')
-          .select('*')
-          .eq('id', providerId)
-          .maybeSingle()
-
-        if (providerError && providerError.code !== 'PGRST116') throw providerError
-        providerData = fetched ?? null
-      }
+      if (providerError && providerError.code !== 'PGRST116') throw providerError
+      const providerData: Provider | null =
+        (fetchedProvider as Provider | null) ?? providerFromRef
 
       if (!providerData) {
         if (
@@ -1629,11 +1645,16 @@ export default function ClinicDetail() {
 
       if (!isStillCurrent()) return
       setCurrentProvider(providerData)
-      // Sync this provider into the list so ProvidersTab / ProviderPayTab receive it even when
-      // fetchProviders() was intentionally skipped (single-provider route).
+      // Sync this provider into the list (replace stale row when id already present).
       setProviders(curr => {
-        if (curr.some(p => p.id === providerData.id)) return curr
-        const next = [...curr, providerData]
+        const idx = curr.findIndex(p => p.id === providerData.id)
+        if (idx < 0) {
+          const next = [...curr, providerData]
+          providersRef.current = next
+          return next
+        }
+        const next = [...curr]
+        next[idx] = providerData
         providersRef.current = next
         return next
       })
@@ -3187,9 +3208,7 @@ export default function ClinicDetail() {
                     const padded = padSheetRowsTo200(raw)
                     const layout =
                       providerSheetExportLayoutRef.current ?? {
-                        showVisitTypeColumn: providerId
-                          ? (currentProvider?.show_visit_type_column ?? false)
-                          : providers.some((p) => p.show_visit_type_column),
+                        showVisitTypeColumn: providersTabShowVisitTypeColumn,
                         officeStaffView: isOfficeStaff,
                         isProviderView: false,
                         providerLevel: 1,
@@ -3258,7 +3277,7 @@ export default function ClinicDetail() {
               onReorderProviderRows={handleReorderProviderRows}
               restrictEditToSchedulingColumns={restrictProviderSheetEditToScheduling}
               officeStaffView={isOfficeStaff}
-              showVisitTypeColumn={providerId ? (currentProvider?.show_visit_type_column ?? false) : providers.some(p => p.show_visit_type_column)}
+              showVisitTypeColumn={providersTabShowVisitTypeColumn}
               isViewingBackup={!!selectedBackupVersion}
               backupVersionKey={backupViewKey}
               patientAssignmentRevision={patientAssignmentRevision}
