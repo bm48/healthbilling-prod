@@ -26,6 +26,27 @@ import ProviderPayTab, { type IsLockProviderPay } from '@/components/tabs/Provid
 
 type TabType = 'patients' | 'todo' | 'providers' | 'accounts_receivable' | 'provider_pay'
 
+function initialTabFromPath(
+  clinicId: string | undefined,
+  providerIdFromRoute: string | undefined,
+  tabParam: string | undefined,
+  pathname: string,
+): TabType {
+  if (clinicId && providerIdFromRoute) {
+    const base = `/clinic/${clinicId}/providers/${providerIdFromRoute}`
+    if (pathname === `${base}/accounts_receivable`) return 'accounts_receivable'
+    if (pathname === `${base}/provider_pay`) return 'provider_pay'
+    if (pathname === base) return 'providers'
+  }
+  if (clinicId && pathname.startsWith(`/clinic/${clinicId}/providers`) && !providerIdFromRoute) {
+    return 'providers'
+  }
+  if (tabParam && ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay'].includes(tabParam)) {
+    return tabParam as TabType
+  }
+  return 'patients'
+}
+
 /** Pre-migration `is_lock_providers` rows use this month_key; first open of a calendar month clones them into that month. */
 const IS_LOCK_PROVIDERS_LEGACY_MONTH_KEY = 'legacy'
 
@@ -92,7 +113,9 @@ export default function ClinicDetail() {
   const navigate = useNavigate()
   const location = useLocation()
   const { userProfile } = useAuth()
-  const [activeTab, setActiveTab] = useState<TabType>(providerId ? 'providers' : ((tab as TabType) || 'patients'))
+  const [activeTab, setActiveTab] = useState<TabType>(() =>
+    initialTabFromPath(clinicId, providerId, tab, location.pathname),
+  )
   const [loading, setLoading] = useState(true)
   const [clinic, setClinic] = useState<Clinic | null>(null)
 
@@ -143,9 +166,22 @@ export default function ClinicDetail() {
   const [splitScreenLeftWidth, setSplitScreenLeftWidth] = useState<number>(67) // Percentage
   const [isResizing, setIsResizing] = useState(false)
   const splitScreenContainerRef = useRef<HTMLDivElement>(null)
+  /** Snapshot when entering split view so closing split restores the same URL and tab (no forced redirect to Billing To-Do). */
+  const splitScreenExitRestoreRef = useRef<{ pathname: string; tab: TabType } | null>(null)
   const billingTodoExportRef = useRef<{ exportToCSV: () => void } | null>(null)
   /** Remember last selected provider so clicking Billing tab returns to that provider's sheet */
   const lastSelectedProviderIdRef = useRef<string | null>(null)
+  const lastProviderStorageKey = clinicId ? `clinic_${clinicId}_lastProviderId` : null
+  const getLastSelectedProviderId = () =>
+    lastSelectedProviderIdRef.current ?? (lastProviderStorageKey ? sessionStorage.getItem(lastProviderStorageKey) : null)
+  useEffect(() => {
+    if (providerId && clinicId) {
+      lastSelectedProviderIdRef.current = providerId
+      try {
+        sessionStorage.setItem(`clinic_${clinicId}_lastProviderId`, providerId)
+      } catch (_) {}
+    }
+  }, [providerId, clinicId])
   /** Id of the row last updated in handleUpdateProviderSheetRow (used to set patient_id after creating a new patient) */
   const providerSheetUpdatedRowIdRef = useRef<string | null>(null)
   const [fullName, setFullName] = useState<string>('')
@@ -201,14 +237,12 @@ export default function ClinicDetail() {
   const [currentProvider, setCurrentProvider] = useState<Provider | null>(null)
   useEffect(() => {
     // Prefer currentProvider (set by fetchProviderSheetData on single-provider route) so the title
-    // updates without waiting for the full providers list to load.
-    const target =
-      currentProvider ??
-      (lastSelectedProviderIdRef.current
-        ? providers.find(p => p.id === lastSelectedProviderIdRef.current)
-        : null)
+    // updates without waiting for the full providers list to load. Include session fallback so the name
+    // survives navigating to AR / Provider Pay on the generic /clinic/:id/:tab route (different mount).
+    const id = providerId ?? getLastSelectedProviderId()
+    const target = currentProvider ?? (id ? providers.find((p) => p.id === id) : null)
     if (target) setFullName(`${target.first_name} ${target.last_name}`)
-  }, [providers, currentProvider])
+  }, [providers, currentProvider, providerId, clinicId])
 
   /** Prefer currentProvider; fall back to providers list so Visit Type column matches DB if currentProvider was cleared mid-fetch. */
   const providersTabShowVisitTypeColumn = useMemo(() => {
@@ -278,16 +312,39 @@ export default function ClinicDetail() {
   }, [clinicId, userProfile, isBillingStaff, isOfficialStaff, navigate])
 
   // Sync activeTab with URL parameter
-  // When URL is /clinic/:clinicId/providers (or /providers/:id), we match the providers route so "tab" is undefined; treat as providers tab and do not redirect.
-  const isProvidersRoute = clinicId && location.pathname.startsWith(`/clinic/${clinicId}/providers`)
+  // When URL is /clinic/:clinicId/providers (or nested /providers/:id/…), match providers routes; "tab" param is undefined — derive tab from pathname.
+  const isProvidersRoute = !!(clinicId && location.pathname.startsWith(`/clinic/${clinicId}/providers`))
   useEffect(() => {
-    // Don't sync tab from URL while flushing before tab leave (loading), so flush-triggered re-renders don't overwrite activeTab back to 'patients' before navigate() updates the URL
+    // Don't sync tab from URL while flushing before tab leave (loading), so flush-triggered re-render doesn't overwrite activeTab before navigate()
     if (loading) return
-    if (providerId) {
+    const scopedBase =
+      clinicId && providerId ? `/clinic/${clinicId}/providers/${providerId}` : null
+    const onProviderFinanceAR = scopedBase && location.pathname === `${scopedBase}/accounts_receivable`
+    const onProviderFinancePP = scopedBase && location.pathname === `${scopedBase}/provider_pay`
+    const onSingleProviderBilling = !!(scopedBase && location.pathname === scopedBase)
+
+    if (isBillingStaff && clinicId && (onProviderFinanceAR || onProviderFinancePP)) {
+      navigate(`/clinic/${clinicId}/todo`, { replace: true })
+      return
+    }
+
+    if (onProviderFinanceAR) {
+      setActiveTab('accounts_receivable')
+      return
+    }
+    if (onProviderFinancePP) {
+      setActiveTab('provider_pay')
+      return
+    }
+    if (providerId && isProvidersRoute && onSingleProviderBilling) {
       setActiveTab('providers')
-    } else if (isProvidersRoute) {
+      return
+    }
+    if (!providerId && isProvidersRoute) {
       setActiveTab('providers')
-    } else if (tab && ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay'].includes(tab)) {
+      return
+    }
+    if (tab && ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay'].includes(tab)) {
       if (isOfficialStaff && tab !== 'todo' && tab !== 'providers') {
         navigate(`/clinic/${clinicId}/todo`, { replace: true })
       } else if (tab === 'todo' && userProfile?.role === 'admin') {
@@ -297,7 +354,7 @@ export default function ClinicDetail() {
       } else {
         setActiveTab(tab as TabType)
       }
-    } else if (!tab && clinicId) {
+    } else if (!tab && clinicId && !isProvidersRoute) {
       if (isBillingStaff || isOfficialStaff) {
         navigate(`/clinic/${clinicId}/todo`, { replace: true })
       } else if (userProfile?.role === 'admin') {
@@ -306,21 +363,49 @@ export default function ClinicDetail() {
         navigate(`/clinic/${clinicId}/todo`, { replace: true })
       }
     }
-  }, [tab, clinicId, navigate, providerId, isProvidersRoute, userProfile?.role, isBillingStaff, isOfficialStaff, loading])
+  }, [
+    tab,
+    clinicId,
+    navigate,
+    providerId,
+    isProvidersRoute,
+    location.pathname,
+    userProfile?.role,
+    isBillingStaff,
+    isOfficialStaff,
+    loading,
+  ])
 
-  // Remember provider when viewing a provider's sheet so Billing tab can return to it (persist in sessionStorage so it survives switching to another tab, which mounts a different route/instance)
-  const lastProviderStorageKey = clinicId ? `clinic_${clinicId}_lastProviderId` : null
+  // Hydrate header / split-screen name when AR or Provider Pay is open on a provider-scoped URL (billing fetch may not run for those tabs alone).
   useEffect(() => {
-    if (providerId && clinicId) {
-      lastSelectedProviderIdRef.current = providerId
-      try {
-        sessionStorage.setItem(`clinic_${clinicId}_lastProviderId`, providerId)
-      } catch (_) {}
+    if (!clinicId || !providerId || (activeTab !== 'accounts_receivable' && activeTab !== 'provider_pay')) return
+    if (currentProvider?.id === providerId) return
+    let cancelled = false
+    void apiClient
+      .from('providers')
+      .select('*')
+      .eq('id', providerId)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled || error || !data) return
+        setCurrentProvider(data as Provider)
+        setProviders((curr) => {
+          const idx = curr.findIndex((p) => p.id === providerId)
+          if (idx < 0) {
+            const next = [...curr, data as Provider]
+            providersRef.current = next
+            return next
+          }
+          const next = [...curr]
+          next[idx] = data as Provider
+          providersRef.current = next
+          return next
+        })
+      })
+    return () => {
+      cancelled = true
     }
-  }, [providerId, clinicId])
-
-  const getLastSelectedProviderId = () =>
-    lastSelectedProviderIdRef.current ?? (lastProviderStorageKey ? sessionStorage.getItem(lastProviderStorageKey) : null)
+  }, [clinicId, providerId, activeTab, currentProvider?.id])
 
   useEffect(() => {
     patientsRef.current = patients
@@ -2911,33 +2996,45 @@ export default function ClinicDetail() {
         setLoading(true)
         flushBeforeTabLeave().then(() => {
           setActiveTab(tab)
-          const lastProviderId = getLastSelectedProviderId()
+          const scopePid = providerId ?? getLastSelectedProviderId()
           const path =
-            tab === 'providers' && lastProviderId
-              ? `/clinic/${clinicId}/providers/${lastProviderId}`
-              : `/clinic/${clinicId}/${tab}`
+            tab === 'providers' && scopePid
+              ? `/clinic/${clinicId}/providers/${scopePid}`
+              : tab === 'accounts_receivable' && scopePid
+                ? `/clinic/${clinicId}/providers/${scopePid}/accounts_receivable`
+                : tab === 'provider_pay' && scopePid
+                  ? `/clinic/${clinicId}/providers/${scopePid}/provider_pay`
+                  : `/clinic/${clinicId}/${tab}`
           navigate(path, { replace: true })
           setLoading(false)
         }).catch(err => {
           console.error('[ClinicDetail] Flush before tab leave failed:', err)
           setLoading(false)
           setActiveTab(tab)
-          const lastProviderId = getLastSelectedProviderId()
+          const scopePid = providerId ?? getLastSelectedProviderId()
           const path =
-            tab === 'providers' && lastProviderId
-              ? `/clinic/${clinicId}/providers/${lastProviderId}`
-              : `/clinic/${clinicId}/${tab}`
+            tab === 'providers' && scopePid
+              ? `/clinic/${clinicId}/providers/${scopePid}`
+              : tab === 'accounts_receivable' && scopePid
+                ? `/clinic/${clinicId}/providers/${scopePid}/accounts_receivable`
+                : tab === 'provider_pay' && scopePid
+                  ? `/clinic/${clinicId}/providers/${scopePid}/provider_pay`
+                  : `/clinic/${clinicId}/${tab}`
           navigate(path, { replace: true })
         })
         return
       }
       setActiveTab(tab)
       // When switching to Billing (providers), go to last selected provider's sheet if we have one (use sessionStorage so it works after switching from another tab, which uses a different route instance)
-      const lastProviderId = getLastSelectedProviderId()
+      const scopePid = providerId ?? getLastSelectedProviderId()
       const path =
-        tab === 'providers' && lastProviderId
-          ? `/clinic/${clinicId}/providers/${lastProviderId}`
-          : `/clinic/${clinicId}/${tab}`
+        tab === 'providers' && scopePid
+          ? `/clinic/${clinicId}/providers/${scopePid}`
+          : tab === 'accounts_receivable' && scopePid
+            ? `/clinic/${clinicId}/providers/${scopePid}/accounts_receivable`
+            : tab === 'provider_pay' && scopePid
+              ? `/clinic/${clinicId}/providers/${scopePid}/provider_pay`
+              : `/clinic/${clinicId}/${tab}`
       navigate(path, { replace: true })
     }
   }
@@ -3087,7 +3184,8 @@ export default function ClinicDetail() {
           </>
         )
       case 'provider_pay': {
-        const effectiveProviderPay = providerId ?? providers.filter((p): p is Provider => p.level === 2)[0]?.id
+        const effectiveProviderPay =
+          providerId ?? getLastSelectedProviderId() ?? providers.filter((p): p is Provider => p.level === 2)[0]?.id
         const year = selectedMonthProviderPay.getFullYear()
         const month = selectedMonthProviderPay.getMonth() + 1
         const payrollForBackup = clinic?.payroll === 2 ? selectedPayrollProviderPay : 1
@@ -3368,6 +3466,13 @@ export default function ClinicDetail() {
 
   // Open split screen: provider billing sheet on the left, current tab (or next) on the right
   const openSplitScreen = () => {
+    const snapshot = { pathname: location.pathname, tab: activeTab }
+    splitScreenExitRestoreRef.current = snapshot
+    if (clinicId) {
+      try {
+        sessionStorage.setItem(`clinic_${clinicId}_splitScreenExitRestore`, JSON.stringify(snapshot))
+      } catch (_) {}
+    }
     // Provider billing sheet should always be the left side in split view
     const leftTab: TabType = 'providers'
     // Prefer to keep the user's current context on the right when possible
@@ -3388,7 +3493,31 @@ export default function ClinicDetail() {
   
   // Exit split screen
   const handleExitSplitScreen = () => {
+    let restore = splitScreenExitRestoreRef.current
+    splitScreenExitRestoreRef.current = null
+    if (!restore && clinicId) {
+      try {
+        const raw = sessionStorage.getItem(`clinic_${clinicId}_splitScreenExitRestore`)
+        if (raw) {
+          const o = JSON.parse(raw) as { pathname?: string; tab?: string }
+          const tabs: TabType[] = ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay']
+          if (o.pathname && o.tab && tabs.includes(o.tab as TabType)) {
+            restore = { pathname: o.pathname, tab: o.tab as TabType }
+          }
+        }
+      } catch (_) {}
+    }
+    if (clinicId) {
+      try {
+        sessionStorage.removeItem(`clinic_${clinicId}_splitScreenExitRestore`)
+      } catch (_) {}
+    }
     setSplitScreen(null)
+    if (restore && clinicId) {
+      setActiveTab(restore.tab)
+      navigate(restore.pathname, { replace: true })
+      return
+    }
     if (isBillingStaff || isOfficialStaff) {
       setActiveTab('todo')
       navigate(`/clinic/${clinicId}/todo`, { replace: true })
@@ -3474,7 +3603,9 @@ export default function ClinicDetail() {
                 type="button"
                 onClick={() => handleTabChange('patients')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-colors ${
-                  activeTab === 'patients'
+                  (splitScreen
+                    ? splitScreen.left === 'patients' || splitScreen.right === 'patients'
+                    : activeTab === 'patients')
                     ? 'bg-primary-500/20 text-primary-400 border-primary-400'
                     : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
                 }`}
@@ -3488,7 +3619,9 @@ export default function ClinicDetail() {
                 type="button"
                 onClick={() => handleTabChange('todo')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-colors ${
-                  activeTab === 'todo' || splitScreen?.right === 'todo' || splitScreen?.left === 'todo'
+                  (splitScreen
+                    ? splitScreen.left === 'todo' || splitScreen.right === 'todo'
+                    : activeTab === 'todo')
                     ? 'bg-primary-500/20 text-primary-400 border-primary-400'
                     : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
                 }`}
@@ -3531,7 +3664,9 @@ export default function ClinicDetail() {
           <button
             onClick={() => handleTabChange('providers')}
             className={`px-6 py-3 font-medium transition-colors flex items-center gap-2 ${
-              activeTab === 'providers' || splitScreen?.left === 'providers'
+              (splitScreen
+                ? splitScreen.left === 'providers' || splitScreen.right === 'providers'
+                : activeTab === 'providers')
                 ? 'text-primary-400 border-b-2 border-primary-400'
                 : 'text-white/70 hover:text-white'
             }`}
@@ -3544,7 +3679,9 @@ export default function ClinicDetail() {
           <button
             onClick={() => handleTabChange('accounts_receivable')}
             className={`px-6 py-3 font-medium transition-colors flex items-center gap-2 ${
-              activeTab === 'accounts_receivable' || splitScreen?.right === 'accounts_receivable'
+              (splitScreen
+                ? splitScreen.left === 'accounts_receivable' || splitScreen.right === 'accounts_receivable'
+                : activeTab === 'accounts_receivable')
                 ? 'text-primary-400 border-b-2 border-primary-400'
                 : 'text-white/70 hover:text-white'
             }`}
@@ -3557,7 +3694,9 @@ export default function ClinicDetail() {
           <button
             onClick={() => handleTabChange('provider_pay')}
             className={`px-6 py-3 font-medium transition-colors flex items-center gap-2 ${
-              activeTab === 'provider_pay' || splitScreen?.left === 'provider_pay' || splitScreen?.right === 'provider_pay'
+              (splitScreen
+                ? splitScreen.left === 'provider_pay' || splitScreen.right === 'provider_pay'
+                : activeTab === 'provider_pay')
                 ? 'text-primary-400 border-b-2 border-primary-400'
                 : 'text-white/70 hover:text-white'
             }`}
@@ -3607,21 +3746,18 @@ export default function ClinicDetail() {
                 minHeight: 0
               }}
             >
-              <div className="p-2 border-white/20 flex justify-between items-center -mb-[3.4rem]">
-                <div className="flex items-center gap-3 ">
-                  <span className="text-white font-medium">
+              <div className="shrink-0 p-2 border-b border-white/20 flex justify-between items-center gap-2 min-h-[2.5rem]">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="text-white font-medium shrink-0">
                     {getTabLabel(splitScreen.left)}
                   </span>
                   {splitScreen.left === 'providers' && currentProvider && (
-                    <span className="text-white/90 text-sm text-[#ffd600]">
+                    <span className="text-white/90 text-sm text-[#ffd600] truncate">
                       {currentProvider.first_name} {currentProvider.last_name}
-                      {/* {currentProvider.specialty && (
-                        <span className="text-white/70 ml-1 text-[#ffd600]">({currentProvider.specialty})</span>
-                      )} */}
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   {splitScreen.left === 'todo' && (
                     <button
                       type="button"
@@ -3633,18 +3769,16 @@ export default function ClinicDetail() {
                     </button>
                   )}
                   <button
+                    type="button"
                     onClick={() => setSplitScreen({ ...splitScreen, left: getNextTab(splitScreen.left, splitScreen.right) })}
-                    className="text-white/70 hover:text-white text-sm px-2"
+                    className="text-white/70 hover:text-white text-sm px-2 whitespace-nowrap"
                     title="Switch left tab"
                   >
                     Switch
                   </button>
                 </div>
-            </div>
-              <div 
-                className="flex flex-col flex-1 min-h-0 overflow-hidden" 
-                style={{ width: '100%' }}
-              >
+              </div>
+              <div className="flex flex-col flex-1 min-h-0 overflow-hidden w-full">
                 {renderTabContent(splitScreen.left)}
               </div>
             </div>
@@ -3683,13 +3817,13 @@ export default function ClinicDetail() {
                 minHeight: 0
               }}
             >
-              <div className="p-2 border-b border-white/20 flex justify-between items-center">
-                <div className="flex items-center gap-3">
-                  <span className="text-white font-medium">
+              <div className="shrink-0 p-2 border-b border-white/20 flex justify-between items-center gap-2 min-h-[2.5rem]">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="text-white font-medium shrink-0">
                     {getTabLabel(splitScreen.right)}
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   {splitScreen.right === 'todo' && (
                     <button
                       type="button"
@@ -3701,28 +3835,29 @@ export default function ClinicDetail() {
                     </button>
                   )}
                   <button
+                    type="button"
                     onClick={() => {
-                      // When cycling the right tab, skip 'providers' so provider billing only appears on the left
                       let next = getNextTab(splitScreen.right, splitScreen.left)
                       if (next === 'providers') {
                         next = getNextTab(next, 'providers')
                       }
                       setSplitScreen({ ...splitScreen, right: next })
                     }}
-                    className="text-white/70 hover:text-white text-sm px-2"
+                    className="text-white/70 hover:text-white text-sm px-2 whitespace-nowrap"
                     title="Switch right tab"
                   >
                     Switch
                   </button>
                   <button
+                    type="button"
                     onClick={handleExitSplitScreen}
                     className="text-white/70 hover:text-white text-sm px-2"
                     title="Exit split screen"
                   >
                     ✕
-              </button>
+                  </button>
+                </div>
               </div>
-            </div>
               <div 
                 className="flex flex-col flex-1 min-h-0 overflow-hidden" 
                 style={{ width: '100%' }}

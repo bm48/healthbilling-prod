@@ -182,8 +182,39 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      {/* Most specific first: keep provider in URL for AR / Provider Pay so ClinicDetail state and header stay scoped to that provider */}
       <Route
-        path="/clinic/:clinicId/providers/:providerId?"
+        path="/clinic/:clinicId/providers/:providerId/accounts_receivable"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <ClinicDetailWithProviderKey />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/clinic/:clinicId/providers/:providerId/provider_pay"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <ClinicDetailWithProviderKey />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/clinic/:clinicId/providers/:providerId"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <ClinicDetailWithProviderKey />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/clinic/:clinicId/providers"
         element={
           <ProtectedRoute>
             <Layout>

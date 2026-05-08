@@ -634,7 +634,10 @@ export default function Layout({ children }: LayoutProps) {
                                             key={provider.id}
                                             to={`${clinicPath}/providers/${provider.id}`}
                                             className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm ml-2 ${
-                                              location.pathname === `${clinicPath}/providers/${provider.id}`
+                                              (() => {
+                                                const base = `${clinicPath}/providers/${provider.id}`
+                                                return location.pathname === base || location.pathname.startsWith(`${base}/`)
+                                              })()
                                                 ? 'bg-primary-600 text-white font-medium'
                                                 : 'text-white/60 hover:bg-white/10 hover:text-white'
                                             }`}
@@ -1040,7 +1043,10 @@ export default function Layout({ children }: LayoutProps) {
                                               key={provider.id}
                                               to={`${clinicPath}/providers/${provider.id}`}
                                               className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm ml-2 ${
-                                                location.pathname === `${clinicPath}/providers/${provider.id}`
+                                                (() => {
+                                                  const base = `${clinicPath}/providers/${provider.id}`
+                                                  return location.pathname === base || location.pathname.startsWith(`${base}/`)
+                                                })()
                                                   ? 'bg-primary-600 text-white font-medium'
                                                   : 'text-white/60 hover:bg-white/10 hover:text-white'
                                               }`}
@@ -1218,7 +1224,10 @@ export default function Layout({ children }: LayoutProps) {
                                     key={provider.id}
                                     to={`/clinic/${clinic.id}/providers/${provider.id}`}
                                     className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm ml-2 block ${
-                                      location.pathname === `/clinic/${clinic.id}/providers/${provider.id}`
+                                      (() => {
+                                        const base = `/clinic/${clinic.id}/providers/${provider.id}`
+                                        return location.pathname === base || location.pathname.startsWith(`${base}/`)
+                                      })()
                                         ? 'bg-primary-600 text-white font-medium'
                                         : 'text-white/60 hover:bg-white/10 hover:text-white'
                                     }`}
