@@ -1,13 +1,20 @@
-# Tab backups: 09:00 and 21:00 US Pacific (America/Los_Angeles, includes PDT/PST).
-# Install: copy lines below into `crontab -e` on the VPS (adjust BASE and secret).
+# Tab backups — twice daily during Pacific Daylight Time (PDT, UTC−7).
 #
-# Requires BACKUP_CRON_SECRET in server/.env (same value as CRON_SECRET here).
+# Schedule uses the VPS clock in UTC (typical on AWS: Etc/UTC). No CRON_TZ needed.
+#   16:00 UTC → 09:00 PDT (morning)
+#   04:00 UTC → 21:00 PDT (evening)
+#
+# After the fall change to PST (UTC−8), the same UTC hours run at 08:00 / 20:00 local.
+# For year-round 9/9 Pacific, use a systemd timer with OnCalendar=... America/Los_Angeles
+# or fix CRON_TZ support on your cron package.
+#
+# Install: copy into `crontab -e` (adjust BASE, secret, log path).
+# Requires BACKUP_CRON_SECRET in server/.env (same value as BACKUP_SECRET here).
 
-CRON_TZ=America/Los_Angeles
 BACKUP_SECRET='replace-with-same-value-as-BACKUP_CRON_SECRET-in-env'
 BASE='http://127.0.0.1:4000'
 
-0 9,21 * * * curl -sS -X POST "$BASE/api/cron/backup-ar" -H "Content-Type: application/json" -d "{\"cron_secret\":\"$BACKUP_SECRET\"}" >> /var/log/health-billing-backup.log 2>&1
-0 9,21 * * * curl -sS -X POST "$BASE/api/cron/backup-patients" -H "Content-Type: application/json" -d "{\"cron_secret\":\"$BACKUP_SECRET\"}" >> /var/log/health-billing-backup.log 2>&1
-0 9,21 * * * curl -sS -X POST "$BASE/api/cron/backup-provider-pay" -H "Content-Type: application/json" -d "{\"cron_secret\":\"$BACKUP_SECRET\"}" >> /var/log/health-billing-backup.log 2>&1
-0 9,21 * * * curl -sS -X POST "$BASE/api/cron/backup-provider-sheets" -H "Content-Type: application/json" -d "{\"cron_secret\":\"$BACKUP_SECRET\"}" >> /var/log/health-billing-backup.log 2>&1
+0 4,16 * * * curl -sS -X POST "$BASE/api/cron/backup-ar" -H "Content-Type: application/json" -d "{\"cron_secret\":\"$BACKUP_SECRET\"}" >> /var/log/health-billing-backup.log 2>&1
+0 4,16 * * * curl -sS -X POST "$BASE/api/cron/backup-patients" -H "Content-Type: application/json" -d "{\"cron_secret\":\"$BACKUP_SECRET\"}" >> /var/log/health-billing-backup.log 2>&1
+0 4,16 * * * curl -sS -X POST "$BASE/api/cron/backup-provider-pay" -H "Content-Type: application/json" -d "{\"cron_secret\":\"$BACKUP_SECRET\"}" >> /var/log/health-billing-backup.log 2>&1
+0 4,16 * * * curl -sS -X POST "$BASE/api/cron/backup-provider-sheets" -H "Content-Type: application/json" -d "{\"cron_secret\":\"$BACKUP_SECRET\"}" >> /var/log/health-billing-backup.log 2>&1

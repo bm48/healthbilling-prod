@@ -7,8 +7,13 @@ import { useCallback, useMemo, useEffect, useLayoutEffect, useRef, useState } fr
 import { createPortal } from 'react-dom'
 import { apiClient } from '@/lib/apiClient'
 import { useAuth } from '@/contexts/AuthContext'
-import { toDisplayValue, toDisplayDate, parseDateOfServiceInput, toStoredString } from '@/lib/utils'
+import { parseDateOfServiceInput, toStoredString } from '@/lib/utils'
 import { computeBillingMetrics } from '@/lib/billingMetrics'
+import {
+  sheetRowsToUiMatrix,
+  providerSheetUiExportHeaders,
+  type ProviderSheetUiExportLayout,
+} from '@/lib/providerSheetBackupUiExport'
 
 /** Only defer patient_id to DB validation for paste / fill / multi-cell — not per-keystroke cell edits. */
 function shouldBatchDeferPatientId(source: string, nonNullChangeCount: number): boolean {
@@ -190,22 +195,6 @@ function buildSheetRowWithPatientIdMerge(baseRow: SheetRow, patientId: string, d
   return merged
 }
 
-/** Clear patient ID + related columns after invalid “other provider” validation; `newId` is the row id (promote empty- → new- when needed). */
-function sheetRowAfterInvalidOtherProviderPatient(baseRow: SheetRow, newId: string): SheetRow {
-  return {
-    ...baseRow,
-    id: newId,
-    patient_id: null,
-    patient_first_name: null,
-    patient_last_name: null,
-    last_initial: null,
-    patient_insurance: null,
-    patient_copay: null,
-    patient_coinsurance: null,
-    updated_at: new Date().toISOString(),
-  }
-}
-
 interface ProvidersTabProps {
   /** Required for loading/saving cell highlights and comments; from URL on provider side when they click a clinic */
   clinicId?: string
@@ -267,6 +256,8 @@ interface ProvidersTabProps {
   patientAssignmentRevision?: number
   /** Register a flush function to run before leaving Providers tab. */
   onRegisterFlushBeforeTabLeave?: (flush: () => Promise<void>) => void
+  /** Current grid layout for CSV export (backup download matches visible columns / condensed mode). */
+  onExportLayoutChange?: (layout: ProviderSheetUiExportLayout) => void
 }
 
 export default function ProvidersTab({
@@ -310,6 +301,7 @@ export default function ProvidersTab({
   backupVersionKey = 0,
   patientAssignmentRevision = 0,
   onRegisterFlushBeforeTabLeave,
+  onExportLayoutChange,
 }: ProvidersTabProps) {
   
   const { userProfile } = useAuth()
@@ -325,13 +317,28 @@ export default function ProvidersTab({
   const [commentModalLoading, setCommentModalLoading] = useState(false)
   const [isCondensed, setIsCondensed] = useState(false)
   const [arSumFromDb, setArSumFromDb] = useState<number | null>(null)
-  /** Bumped to force Handsontable to resync from props (e.g. reject invalid patient_id for this provider). */
+  /** Bumped to force Handsontable to resync from props. */
   const [structureVersion, setStructureVersion] = useState(0)
   const commentTextareaRef = useRef<HTMLTextAreaElement>(null)
   const commentModalContainerRef = useRef<HTMLDivElement>(null)
   const hotInstanceRef = useRef<Handsontable | null>(null)
 
   const showCondenseButton = !officeStaffView && !isProviderView
+
+  const providerSheetUiLayout = useMemo(
+    (): ProviderSheetUiExportLayout => ({
+      showVisitTypeColumn,
+      officeStaffView,
+      isProviderView,
+      providerLevel,
+      isCondensed,
+    }),
+    [showVisitTypeColumn, officeStaffView, isProviderView, providerLevel, isCondensed]
+  )
+
+  useEffect(() => {
+    onExportLayoutChange?.(providerSheetUiLayout)
+  }, [providerSheetUiLayout, onExportLayoutChange])
 
   const providersToShow = providerId 
     ? providers.filter(p => p.id === providerId)
@@ -394,8 +401,6 @@ export default function ProvidersTab({
 
   /** Patient rows to merge after `patientIdDbValidated` setDataAtCell (from DB lookup). */
   const pendingPatientMergeByRowRef = useRef<Map<number, Patient | null>>(new Map())
-  /** Snapshot before single-cell Patient ID edit; used to revert row if DB says ID belongs to another provider. */
-  const pendingInvalidPatientRowRef = useRef<Map<number, SheetRow>>(new Map())
   /** Latest non-empty patient_id per row while typing (debounced validation). */
   const patientIdEditLatestPidRef = useRef<Map<number, string>>(new Map())
   const patientIdEditDebounceRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
@@ -443,7 +448,6 @@ export default function ProvidersTab({
     patientIdDeferredQueueRef.current = []
     patientIdFlushScheduledRef.current = false
     pendingPatientMergeByRowRef.current.clear()
-    pendingInvalidPatientRowRef.current.clear()
     patientIdEditLatestPidRef.current.clear()
     for (const t of patientIdEditDebounceRef.current.values()) clearTimeout(t)
     patientIdEditDebounceRef.current.clear()
@@ -522,76 +526,6 @@ export default function ProvidersTab({
     return null
   }, [statusColors])
 
-  const coPatientByIdKey = useMemo(() => {
-    const m = new Map<string, Patient>()
-    for (const p of patients) {
-      const k = String(p.patient_id ?? '').trim().toLowerCase()
-      if (k) m.set(k, p)
-    }
-    return m
-  }, [patients])
-
-  const isPatientAssignedToDifferentProvider = useCallback(
-    (patientId: string, currentProviderId: string): boolean => {
-      const key = String(patientId ?? '').trim().toLowerCase()
-      if (!key) return false
-      for (const [providerIdForRows, rows] of Object.entries(providerSheetRows)) {
-        if (providerIdForRows === currentProviderId) continue
-        const matchRow = (rows || []).find((row) => String(row.patient_id ?? '').trim().toLowerCase() === key)
-        if (matchRow) {
-          return true
-        }
-      }
-      return false
-    },
-    [providerSheetRows]
-  )
-
-  const isPatientAssignedToDifferentProviderDb = useCallback(
-    async (patientId: string, currentProviderId: string): Promise<boolean> => {
-      const key = String(patientId ?? '').trim()
-      if (!key || !clinicId) return false
-      const month = selectedMonth.getMonth() + 1
-      const year = selectedMonth.getFullYear()
-      const payroll = clinicPayroll === 2 ? (selectedPayroll ?? 1) : 1
-
-      providersDebugTab('isPatientAssignedToDifferentProviderDb (2 queries: other provider_sheets + provider_sheet_rows)', {
-        patientIdPreview: key.length > 16 ? `${key.slice(0, 16)}…` : key,
-        currentProviderId,
-        month,
-        year,
-        payroll,
-      })
-
-      const { data: otherSheets, error: otherSheetsError } = await apiClient
-        .from('provider_sheets')
-        .select('id, provider_id')
-        .eq('clinic_id', clinicId)
-        .eq('month', month)
-        .eq('year', year)
-        .eq('payroll', payroll)
-        .neq('provider_id', currentProviderId)
-
-      if (otherSheetsError) return isPatientAssignedToDifferentProvider(patientId, currentProviderId)
-
-      const otherSheetIds = (otherSheets || []).map((s: { id: string }) => s.id)
-      if (otherSheetIds.length === 0) return false
-
-      const { data: duplicateRows, error: duplicateRowsError } = await apiClient
-        .from('provider_sheet_rows')
-        .select('id, sheet_id, patient_id')
-        .in('sheet_id', otherSheetIds)
-        .eq('patient_id', key)
-        .limit(1)
-
-      if (duplicateRowsError) return isPatientAssignedToDifferentProvider(patientId, currentProviderId)
-
-      const hasDuplicate = Boolean(duplicateRows && duplicateRows.length > 0)
-      return hasDuplicate
-    },
-    [clinicId, selectedMonth, clinicPayroll, selectedPayroll, isPatientAssignedToDifferentProvider]
-  )
-
   useEffect(() => {
     // Clear drafts once DB catches up (or patient no longer exists), so source-of-truth returns to patients table.
     const drafts = coPatientDraftByIdKeyRef.current
@@ -623,114 +557,11 @@ export default function ProvidersTab({
     }
   }, [patients])
 
-  // Map rows to Handsontable 2D array format (shared by getProviderRowsHandsontableData and change handler); never show "null"
-  // When isProviderView and providerLevel 2, show full columns; when providerLevel 1, show only up to Appt/Note Status
-  // When officeStaffView, show ID through Appt/Note Status (0-8) and Collected from PT through PT Payment AR Ref Date (14-16)
-  const getTableDataFromRows = useCallback((rows: SheetRow[]) => {
-    return rows.map(row => {
-      const patientDisplay = toDisplayValue(row.patient_id)
-      // Patient demographics on provider rows are sourced from `patients` by patient_id.
-      const pidKey = String(row.patient_id ?? '').trim().toLowerCase()
-      const coPatient = pidKey ? coPatientByIdKey.get(pidKey) : undefined
-      const firstNameDisplay = toDisplayValue(
-        coPatient ? coPatient.first_name : row.patient_first_name
-      )
-      const lastNameSource = coPatient ? coPatient.last_name : row.patient_last_name
-      const lastInitialDisplay = toDisplayValue(
-        lastNameSource ? String(lastNameSource).charAt(0) : row.last_initial
-      )
-      const insuranceDisplay = toDisplayValue(
-        coPatient ? coPatient.insurance : row.patient_insurance
-      )
-      const copayDisplay = toDisplayValue(
-        coPatient ? coPatient.copay : row.patient_copay
-      )
-      const coinsuranceDisplay = toDisplayValue(
-        coPatient ? coPatient.coinsurance : row.patient_coinsurance
-      )
-      const visitTypeVal = () => row.visit_type === 'Telehealth'
-      const insertVisitType = (arr: (string | number)[]) => showVisitTypeColumn ? [...arr.slice(0, 9), visitTypeVal(), ...arr.slice(9)] : arr
-      if (officeStaffView) {
-        const base = [
-          patientDisplay,
-          firstNameDisplay,
-          lastInitialDisplay,
-          insuranceDisplay,
-          copayDisplay,
-          coinsuranceDisplay,
-          toDisplayDate(row.appointment_date),
-          toDisplayValue(row.cpt_code),
-          toDisplayValue(row.appointment_status),
-          toDisplayValue(row.collected_from_patient),
-          toDisplayValue(row.patient_pay_status),
-          toDisplayValue(row.ar_date),
-        ]
-        return insertVisitType(base) as (string | number)[]
-      }
-      if (isProviderView && providerLevel !== 2) {
-        const base = [
-          patientDisplay,
-          firstNameDisplay,
-          lastInitialDisplay,
-          insuranceDisplay,
-          copayDisplay,
-          coinsuranceDisplay,
-          toDisplayDate(row.appointment_date),
-          toDisplayValue(row.cpt_code),
-          toDisplayValue(row.appointment_status),
-        ]
-        return insertVisitType(base) as (string | number)[]
-      }
-      if (isProviderView && providerLevel === 2) {
-        const base = [
-          patientDisplay,
-          firstNameDisplay,
-          lastInitialDisplay,
-          insuranceDisplay,
-          copayDisplay,
-          coinsuranceDisplay,
-          toDisplayDate(row.appointment_date),
-          toDisplayValue(row.cpt_code),
-          toDisplayValue(row.appointment_status),
-          toDisplayValue(row.claim_status),
-          toDisplayValue(row.submit_date),
-          toDisplayValue(row.insurance_payment),
-          toDisplayValue(row.payment_date),
-          toDisplayValue(row.insurance_adjustment),
-          toDisplayValue(row.collected_from_patient),
-          toDisplayValue(row.patient_pay_status),
-          toDisplayValue(row.ar_date),
-          toDisplayValue(row.total),
-          toDisplayValue(row.notes),
-        ]
-        return insertVisitType(base) as (string | number)[]
-      }
-      const fullRow = [
-        patientDisplay,
-        firstNameDisplay,
-        lastInitialDisplay,
-        insuranceDisplay,
-        copayDisplay,
-        coinsuranceDisplay,
-        toDisplayDate(row.appointment_date),
-        toDisplayValue(row.cpt_code),
-        toDisplayValue(row.appointment_status),
-        toDisplayValue(row.claim_status),
-        toDisplayValue(row.submit_date),
-        toDisplayValue(row.insurance_payment),
-        toDisplayValue(row.payment_date),
-        toDisplayValue(row.insurance_adjustment),
-        toDisplayValue(row.collected_from_patient),
-        toDisplayValue(row.patient_pay_status),
-        toDisplayValue(row.ar_date),
-        toDisplayValue(row.total),
-        toDisplayValue(row.notes),
-      ]
-      const withVisitType = insertVisitType(fullRow) as (string | number)[]
-      if (showCondenseButton && isCondensed) return withVisitType.slice(0, showVisitTypeColumn ? 10 : 9)
-      return withVisitType
-    })
-  }, [isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, coPatientByIdKey])
+  // Map rows to Handsontable 2D array format (shared with provider backup CSV export in `providerSheetBackupUiExport`).
+  const getTableDataFromRows = useCallback(
+    (rows: SheetRow[]) => sheetRowsToUiMatrix(rows, patients, providerSheetUiLayout) as (string | number | boolean)[][],
+    [patients, providerSheetUiLayout]
+  )
 
   // Convert rows to Handsontable data format; prefer latest from change handler, then props, to avoid losing typed data when parent re-renders after load (like PatientsTab).
   // When viewing backup, always use backup rows from props. When not viewing backup and ref is null, use props (activeProviderRows) so "Back to current" shows current data immediately instead of stale local state.
@@ -877,24 +708,12 @@ export default function ProvidersTab({
     'most_recent_submit_date', 'ins_pay', 'ins_pay_date', 'pt_res', 'collected_from_pt',
     'pt_pay_status', 'pt_payment_ar_ref_date', 'total', 'notes'
   ]
-  const columnTitlesFullBase = [
-    'ID', 'First Name', 'LI', 'Insurance', 'Co-pay', 'Co-Ins',
-    'Date of Service', 'CPT Code', 'Appt/Note Status', 'Claim Status', 'Most Recent Submit Date',
-    'Ins Pay', 'Ins Pay Date', 'PT RES', 'Collected from PT', 'PT Pay Status',
-    'PT Payment AR Ref Date', 'Total', 'Notes'
-  ]
   const columnFieldsFull = showVisitTypeColumn
     ? ([...columnFieldsFullBase.slice(0, 9), 'visit_type', ...columnFieldsFullBase.slice(9)] as string[])
     : columnFieldsFullBase
-  const columnTitlesFull = showVisitTypeColumn
-    ? [...columnTitlesFullBase.slice(0, 9), 'Visit Type', ...columnTitlesFullBase.slice(9)]
-    : columnTitlesFullBase
   const columnFieldsProviderView = showVisitTypeColumn
     ? (['patient_id', 'first_name', 'last_initial', 'insurance', 'copay', 'coinsurance', 'date_of_service', 'cpt_code', 'appointment_note_status', 'visit_type'] as const)
     : (['patient_id', 'first_name', 'last_initial', 'insurance', 'copay', 'coinsurance', 'date_of_service', 'cpt_code', 'appointment_note_status'] as const)
-  const columnTitlesProviderView = showVisitTypeColumn
-    ? ['ID', 'First Name', 'LI', 'Insurance', 'Co-pay', 'Co-Ins', 'Date of Service', 'CPT Code', 'Appt/Note Status', 'Visit Type']
-    : ['ID', 'First Name', 'LI', 'Insurance', 'Co-pay', 'Co-Ins', 'Date of Service', 'CPT Code', 'Appt/Note Status']
   const columnFieldsOfficeStaffBase: Array<keyof IsLockProviders> = [
     'patient_id', 'first_name', 'last_initial', 'insurance', 'copay', 'coinsurance',
     'date_of_service', 'cpt_code', 'appointment_note_status',
@@ -903,24 +722,15 @@ export default function ProvidersTab({
   const columnFieldsOfficeStaff = showVisitTypeColumn
     ? ([...columnFieldsOfficeStaffBase.slice(0, 9), 'visit_type', ...columnFieldsOfficeStaffBase.slice(9)] as string[])
     : columnFieldsOfficeStaffBase
-  const columnTitlesOfficeStaffBase = [
-    'ID', 'First Name', 'LI', 'Insurance', 'Co-pay', 'Co-Ins',
-    'Date of Service', 'CPT Code', 'Appt/Note Status',
-    'Collected from PT', 'PT Pay Status', 'PT Payment AR Ref Date'
-  ]
-  const columnTitlesOfficeStaff = showVisitTypeColumn
-    ? [...columnTitlesOfficeStaffBase.slice(0, 9), 'Visit Type', ...columnTitlesOfficeStaffBase.slice(9)]
-    : columnTitlesOfficeStaffBase
   const columnFields = officeStaffView
     ? columnFieldsOfficeStaff
     : isProviderView
       ? (providerLevel === 2 ? columnFieldsFull : columnFieldsProviderView)
       : (showCondenseButton && isCondensed ? columnFieldsFull.slice(0, 9) : columnFieldsFull)
-  const columnTitles = officeStaffView
-    ? columnTitlesOfficeStaff
-    : isProviderView
-      ? (providerLevel === 2 ? columnTitlesFull : columnTitlesProviderView)
-      : (showCondenseButton && isCondensed ? columnTitlesFull.slice(0, 9) : columnTitlesFull)
+  const columnTitles = useMemo(
+    () => providerSheetUiExportHeaders(providerSheetUiLayout),
+    [providerSheetUiLayout]
+  )
 
   /**
    * Visual column -> persisted providers column key mapping for highlights/comments.
@@ -1645,8 +1455,7 @@ export default function ProvidersTab({
   )
 
   // Before Handsontable applies edits: non-empty patient_id values are deferred — we revert the cell in this hook,
-  // then validate against the patients table in DB and only then setDataAtCell(..., 'patientIdDbValidated').
-  // This prevents any patient demographics from appearing when the ID belongs to another provider.
+  // then resolve the patient from the clinic list and only then setDataAtCell(..., 'patientIdDbValidated').
   // When Visit Type column is present, fill/drag can copy boolean into Appt/Note Status (col 8). Replace with source cell value so fill works.
   const beforeChangeCorrectProviderRows = useCallback(
     (
@@ -1707,17 +1516,6 @@ export default function ProvidersTab({
                   for (const [row, { col, newVal }] of byRow) {
                     const key = newVal.trim().toLowerCase()
                     const rec = byKey.get(key)
-                    const duplicateInOtherProvider = await isPatientAssignedToDifferentProviderDb(newVal, ap.id)
-                    if (duplicateInOtherProvider) {
-                      pendingPatientMergeByRowRef.current.set(row, null)
-                      try {
-                        hot.setDataAtCell(row, col as number, null, 'revertInvalidPatientId')
-                        window.alert('This patient is already assigned to another provider')
-                      } catch (e) {
-                        console.error('[ProvidersTab] setDataAtCell after patient assignment validation failed', e)
-                      }
-                      continue
-                    }
                     pendingPatientMergeByRowRef.current.set(row, rec ?? null)
                     try {
                       hot.setDataAtCell(row, col as number, newVal, 'patientIdDbValidated')
@@ -1752,7 +1550,7 @@ export default function ProvidersTab({
     badChanges.forEach((change) => {
       ;(change as unknown[])[3] = valueToApply
     })
-  }, [showVisitTypeColumn, isViewingBackup, isPatientAssignedToDifferentProviderDb, resolvePatientsListForValidation])
+  }, [showVisitTypeColumn, isViewingBackup, resolvePatientsListForValidation])
 
   const handleProviderRowsHandsontableChange = useCallback((changes: Handsontable.CellChange[] | null, source: Handsontable.ChangeSource) => {
     if (!changes || source === 'loadData' || !activeProvider) return
@@ -1806,7 +1604,6 @@ export default function ProvidersTab({
     let idCounter = 0
     let hadPatientIdMerge = false
     let hadPatientIdClear = false
-    let hadRejectedPatientId = false
     let hadDateColumnEdit = false
     let hadTotalAutoUpdate = false
     const deleteRowIds: string[] = []
@@ -1902,7 +1699,6 @@ export default function ProvidersTab({
             if (t) clearTimeout(t)
             patientIdEditDebounceRef.current.delete(row)
             patientIdEditLatestPidRef.current.delete(row)
-            pendingInvalidPatientRowRef.current.delete(row)
             updatedRows[row] = {
               ...sheetRow,
               id: newId,
@@ -1924,13 +1720,6 @@ export default function ProvidersTab({
             if (dbPatient) hadPatientIdMerge = true
             updatedRows[row] = buildSheetRowWithPatientIdMerge(sheetRow, patientIdOrNull, dbPatient ?? null)
             setDraftFromRow(updatedRows[row] as SheetRow)
-            return
-          }
-          if (String(source) === 'revertInvalidPatientId') {
-            pendingInvalidPatientRowRef.current.delete(row)
-            hadRejectedPatientId = true
-            hadPatientIdClear = true
-            updatedRows[row] = sheetRowAfterInvalidOtherProviderPatient(sheetRow, newId)
             return
           }
           // Internal refresh: optional merge from in-memory patients list only (no new user typing). (loadData is skipped at top of handler.)
@@ -1956,11 +1745,8 @@ export default function ProvidersTab({
             setDraftFromRow(updatedRows[row] as SheetRow)
             return
           }
-          // Normal typing / single-cell edit: keep patient_id in the row; debounce async DB validation (batch paste uses beforeChange defer).
+          // Normal typing / single-cell edit: keep patient_id in the row; debounce patient merge (batch paste uses beforeChange defer).
           patientIdEditLatestPidRef.current.set(row, patientIdOrNull)
-          if (!pendingInvalidPatientRowRef.current.has(row)) {
-            pendingInvalidPatientRowRef.current.set(row, JSON.parse(JSON.stringify(sheetRow)) as SheetRow)
-          }
           updatedRows[row] = {
             ...sheetRow,
             id: newId,
@@ -1984,16 +1770,6 @@ export default function ProvidersTab({
                 const key = pidRaw.toLowerCase()
 
                 const data = await resolvePatientsListForValidation()
-                const duplicateInOtherProvider = await isPatientAssignedToDifferentProviderDb(pidRaw, ap.id)
-                if (duplicateInOtherProvider) {
-                  try {
-                    hotInstanceRef.current?.setDataAtCell(row, 0, null, 'revertInvalidPatientId')
-                  } catch (e) {
-                    console.error('[ProvidersTab] failed to revert duplicate patient id after DB check', e)
-                  }
-                  window.alert('This patient is already assigned to another provider')
-                  return
-                }
                 const rec =
                   data.find((p) => String(p.patient_id ?? '').trim().toLowerCase() === key) ?? null
 
@@ -2016,7 +1792,6 @@ export default function ProvidersTab({
                 latestProviderRowsRef.current = { providerId: ap.id, rows: cur }
                 latestTableDataRef.current = getTableDataFromRows(cur)
                 pendingProviderSheetSaveRef.current = { providerId: ap.id, rows: cur }
-                pendingInvalidPatientRowRef.current.delete(row)
                 onSaveProviderSheetRowsDirectRef.current(ap.id, cur).catch((e) =>
                   console.error('[ProvidersTab] save after patient id merge (edit)', e)
                 )
@@ -2154,10 +1929,6 @@ export default function ProvidersTab({
     // Store latest table data and rows so next render and flush-on-unmount have current data (like PatientsTab setPatients)
     latestTableDataRef.current = getTableDataFromRows(updatedRows)
     latestProviderRowsRef.current = { providerId: activeProvider.id, rows: updatedRows }
-    if (hadRejectedPatientId) {
-      // Ensure grid redraw uses reverted data immediately (without waiting for any save path).
-      latestTableDataRef.current = null
-    }
 
     // Auto add/remove highlight when Ins Pay or Collected from PT is set to 0 / "00" or changed
     if (zeroHighlightUpdates.length > 0 && clinicId) {
@@ -2257,7 +2028,7 @@ export default function ProvidersTab({
     if (hadPatientIdMerge || hadPatientIdClear || hadDateColumnEdit || hadTotalAutoUpdate || uniqueDeleteIds.length > 0) {
       setStructureVersion((v) => v + 1)
     }
-  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRow, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, isPatientAssignedToDifferentProviderDb, resolvePatientsListForValidation])
+  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRow, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
 
   const createEmptySheetRowForSync = useCallback(
     (providerId: string, emptySuffix: number): SheetRow => ({

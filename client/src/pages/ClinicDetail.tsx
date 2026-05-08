@@ -5,6 +5,7 @@ import { apiClient } from '@/lib/apiClient'
 import { fetchSheetRows, fetchSheetRowsForSheetIds, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
 import { fetchBackupCsvAsSheetRows, padSheetRowsTo200 } from '@/lib/providerSheetBackups'
+import { sheetRowsToUiCsv, type ProviderSheetUiExportLayout } from '@/lib/providerSheetBackupUiExport'
 import BackupVersionsBar, { type BackupVersionMeta } from '@/components/BackupVersionsBar'
 import {
   fetchBackupCsvAsAR,
@@ -220,6 +221,11 @@ export default function ClinicDetail() {
   const [backupViewKey, setBackupViewKey] = useState(0)
   /** Tracks which version fetch is current; ignore stale completions (race when user selects 1, 2, 3 quickly). */
   const lastRequestedBackupIdRef = useRef<string | null>(null)
+  /** Latest Providers tab grid layout so backup CSV export matches visible columns (incl. condensed). */
+  const providerSheetExportLayoutRef = useRef<ProviderSheetUiExportLayout | null>(null)
+  const onProviderSheetExportLayoutChange = useCallback((layout: ProviderSheetUiExportLayout) => {
+    providerSheetExportLayoutRef.current = layout
+  }, [])
   /** AR tab backup override (full list from backup CSV). */
   const [backupOverrideAR, setBackupOverrideAR] = useState<AccountsReceivable[] | null>(null)
   const [selectedBackupVersionAR, setSelectedBackupVersionAR] = useState<BackupVersionMeta | null>(null)
@@ -3176,6 +3182,22 @@ export default function ClinicDetail() {
                     const dateTime = `${Y}-${M}-${D} ${h}.${m}`
                     return `${providerName}_Billing_${dateTime}.csv`
                   }}
+                  getDownloadBlob={async (version) => {
+                    const raw = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
+                    const padded = padSheetRowsTo200(raw)
+                    const layout =
+                      providerSheetExportLayoutRef.current ?? {
+                        showVisitTypeColumn: providerId
+                          ? (currentProvider?.show_visit_type_column ?? false)
+                          : providers.some((p) => p.show_visit_type_column),
+                        officeStaffView: isOfficeStaff,
+                        isProviderView: false,
+                        providerLevel: 1,
+                        isCondensed: false,
+                      }
+                    const csv = sheetRowsToUiCsv(padded, patients, layout)
+                    return new Blob([csv], { type: 'text/csv;charset=utf-8' })
+                  }}
                   onSelectVersion={async (version) => {
                     const requestedId = version.id
                     lastRequestedBackupIdRef.current = requestedId
@@ -3241,6 +3263,7 @@ export default function ClinicDetail() {
               backupVersionKey={backupViewKey}
               patientAssignmentRevision={patientAssignmentRevision}
               onRegisterFlushBeforeTabLeave={(flush) => { providersTabFlushRef.current = flush }}
+              onExportLayoutChange={onProviderSheetExportLayoutChange}
             />
           </>
         )

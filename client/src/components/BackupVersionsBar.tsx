@@ -43,10 +43,6 @@ function toLocalDateString(iso: string): string {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
 }
 
-function toLocalTimeString(iso: string): string {
-  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-}
-
 function normalizeToMeta(v: { id: string; version: number; created_at: string; file_path: string }): BackupVersionMeta {
   return { id: v.id, version: v.version, created_at: v.created_at, file_path: v.file_path }
 }
@@ -258,7 +254,8 @@ export default function BackupVersionsBar(
                   ) : (
                     versionsForSelectedDate.map((v, index) => (
                       <option className="text-black cursor-pointer" key={v.id} value={v.id}>
-                        Version {index + 1} — {toLocalTimeString(v.created_at)}
+                        {/* Version {index + 1} — {toLocalTimeString(v.created_at)} */}
+                        Version {index + 1}
                       </option>
                     ))
                   )}
