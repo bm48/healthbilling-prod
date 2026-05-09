@@ -315,6 +315,8 @@ export interface IsLockAccountsReceivable {
   notes_comment: string | null
   created_at: string
   updated_at: string
+  /** When true and the user is viewing a past month/period, the whole AR sheet is read-only until an admin unlocks. */
+  whole_sheet_locked?: boolean
 }
 
 export interface IsLockProviders {

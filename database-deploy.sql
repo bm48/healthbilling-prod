@@ -1043,34 +1043,36 @@ CREATE TABLE "public"."is_lock_accounts_receivable" (
   "notes_comment" text COLLATE "pg_catalog"."default",
   "created_at" timestamptz(6) DEFAULT now(),
   "updated_at" timestamptz(6) DEFAULT now(),
-  "month_key" text COLLATE "pg_catalog"."default" NOT NULL DEFAULT 'legacy'::text
+  "month_key" text COLLATE "pg_catalog"."default" NOT NULL DEFAULT 'legacy'::text,
+  "whole_sheet_locked" bool NOT NULL DEFAULT false
 )
 ;
 COMMENT ON COLUMN "public"."is_lock_accounts_receivable"."month_key" IS 'Matches clinic month key for AR: "YYYY-M" or "YYYY-M-P" when clinic payroll=2. Value "legacy" holds pre-migration locks copied into each month on first open.';
+COMMENT ON COLUMN "public"."is_lock_accounts_receivable"."whole_sheet_locked" IS 'When true and the viewed period is in the past, AR sheet is read-only until an admin unlocks.';
 
 -- ----------------------------
 -- Records of is_lock_accounts_receivable
 -- ----------------------------
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('a01f5980-9790-49b5-bc55-0c67f5dec6c3', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-26 08:32:36.96883-08', '2026-01-30 02:00:30.512484-08', 'legacy');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('54cd357c-0e69-4783-875a-c418580e92c1', '39ac8ddc-6d40-43ec-8872-20a2482456a1', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-19 11:01:12.308664-08', '2026-02-19 11:01:12.308664-08', 'legacy');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('cf32ce96-4edf-40cc-a92a-8dcbffa0dd6b', 'dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-20 22:54:08.149436-08', '2026-02-20 22:54:08.149436-08', 'legacy');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('007427e7-51a8-4609-9b26-73bd704495cb', '31debb33-9b78-4304-9109-c042b0ff1579', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-24 13:10:47.081516-08', '2026-02-24 13:10:47.081516-08', 'legacy');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('a72f2c50-dc2f-4ebd-aa05-a4fcfef90377', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-27 11:08:08.947173-08', '2026-02-27 11:08:08.947173-08', 'legacy');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('3581679b-4574-441f-b229-68fd2c3d418f', '8cf4f148-1724-41f6-86a0-0da21a775b59', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-01 21:53:09.349281-08', '2026-03-01 21:53:09.349281-08', 'legacy');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('b7aba429-900d-4151-8b95-9daa64a867b8', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-23 22:08:23.187151-07', '2026-03-23 22:08:23.187151-07', '2026-4');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('4a22a486-1569-490b-bf2a-d55abdcd8f36', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-23 22:08:46.614844-07', '2026-03-23 22:08:46.614844-07', '2026-2');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('97fa12c5-983f-4a2d-957b-8516f82c0a84', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 't', 't', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-23 22:08:14.54146-07', '2026-03-23 22:11:11.474391-07', '2026-3');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('a30dee1b-94df-432c-85e2-5bd54aee68f9', '8cf4f148-1724-41f6-86a0-0da21a775b59', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-23 23:04:56.306764-07', '2026-03-23 23:04:56.306764-07', '2026-3');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('46b273a1-abb6-4be5-8d38-3e8bd8ccd247', '39ac8ddc-6d40-43ec-8872-20a2482456a1', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-25 01:22:35.704544-07', '2026-03-25 01:22:35.704544-07', '2026-3');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('7cb7b1c7-f5f2-4635-b2fd-fa4ee3bd9e82', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-25 01:23:19.273262-07', '2026-03-25 01:23:19.273262-07', '2026-3');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('abf3ca1b-aaa4-4112-ab60-31e3bd1c464e', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-25 01:23:19.567206-07', '2026-03-25 01:23:19.567206-07', '2026-3-1');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('8cc21512-ed60-4e58-b6a1-5b16882138c2', '39ac8ddc-6d40-43ec-8872-20a2482456a1', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-01 09:41:05.914632-07', '2026-04-01 09:41:05.914632-07', '2026-4');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('0b0f38a3-62cb-4619-a0c5-1e0df46fa359', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-06 02:43:50.067778-07', '2026-04-06 02:43:50.067778-07', '2026-4');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('f76e95e7-e8d5-47e2-9d7c-43ea5aa6f838', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-06 02:43:50.947179-07', '2026-04-06 02:43:50.947179-07', '2026-4-1');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('71702373-0637-43fa-a943-ab8b6bee63c8', '31debb33-9b78-4304-9109-c042b0ff1579', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-07 10:19:32.250867-07', '2026-04-07 10:19:32.250867-07', '2026-4');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('c67ac6d1-f944-4bf5-9bbd-89085e2dff3c', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-28 01:55:03.907944-07', '2026-04-28 01:55:03.907944-07', '2026-5');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('39e0949c-447d-4f3b-9e4f-f93e44914082', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-28 01:55:12.364143-07', '2026-04-28 01:55:12.364143-07', '2026-1');
-INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('aee76c3e-3e69-450c-8c98-393b7442dae7', '8cf4f148-1724-41f6-86a0-0da21a775b59', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-28 02:12:53.091887-07', '2026-04-28 02:12:53.091887-07', '2026-4');
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('a01f5980-9790-49b5-bc55-0c67f5dec6c3', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-26 08:32:36.96883-08', '2026-01-30 02:00:30.512484-08', 'legacy', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('54cd357c-0e69-4783-875a-c418580e92c1', '39ac8ddc-6d40-43ec-8872-20a2482456a1', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-19 11:01:12.308664-08', '2026-02-19 11:01:12.308664-08', 'legacy', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('cf32ce96-4edf-40cc-a92a-8dcbffa0dd6b', 'dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-20 22:54:08.149436-08', '2026-02-20 22:54:08.149436-08', 'legacy', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('007427e7-51a8-4609-9b26-73bd704495cb', '31debb33-9b78-4304-9109-c042b0ff1579', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-24 13:10:47.081516-08', '2026-02-24 13:10:47.081516-08', 'legacy', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('a72f2c50-dc2f-4ebd-aa05-a4fcfef90377', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-27 11:08:08.947173-08', '2026-02-27 11:08:08.947173-08', 'legacy', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('3581679b-4574-441f-b229-68fd2c3d418f', '8cf4f148-1724-41f6-86a0-0da21a775b59', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-01 21:53:09.349281-08', '2026-03-01 21:53:09.349281-08', 'legacy', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('b7aba429-900d-4151-8b95-9daa64a867b8', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-23 22:08:23.187151-07', '2026-03-23 22:08:23.187151-07', '2026-4', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('4a22a486-1569-490b-bf2a-d55abdcd8f36', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-23 22:08:46.614844-07', '2026-03-23 22:08:46.614844-07', '2026-2', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('97fa12c5-983f-4a2d-957b-8516f82c0a84', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 't', 't', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-23 22:08:14.54146-07', '2026-03-23 22:11:11.474391-07', '2026-3', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('a30dee1b-94df-432c-85e2-5bd54aee68f9', '8cf4f148-1724-41f6-86a0-0da21a775b59', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-23 23:04:56.306764-07', '2026-03-23 23:04:56.306764-07', '2026-3', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('46b273a1-abb6-4be5-8d38-3e8bd8ccd247', '39ac8ddc-6d40-43ec-8872-20a2482456a1', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-25 01:22:35.704544-07', '2026-03-25 01:22:35.704544-07', '2026-3', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('7cb7b1c7-f5f2-4635-b2fd-fa4ee3bd9e82', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-25 01:23:19.273262-07', '2026-03-25 01:23:19.273262-07', '2026-3', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('abf3ca1b-aaa4-4112-ab60-31e3bd1c464e', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-25 01:23:19.567206-07', '2026-03-25 01:23:19.567206-07', '2026-3-1', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('8cc21512-ed60-4e58-b6a1-5b16882138c2', '39ac8ddc-6d40-43ec-8872-20a2482456a1', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-01 09:41:05.914632-07', '2026-04-01 09:41:05.914632-07', '2026-4', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('0b0f38a3-62cb-4619-a0c5-1e0df46fa359', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-06 02:43:50.067778-07', '2026-04-06 02:43:50.067778-07', '2026-4', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('f76e95e7-e8d5-47e2-9d7c-43ea5aa6f838', '3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-06 02:43:50.947179-07', '2026-04-06 02:43:50.947179-07', '2026-4-1', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('71702373-0637-43fa-a943-ab8b6bee63c8', '31debb33-9b78-4304-9109-c042b0ff1579', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-07 10:19:32.250867-07', '2026-04-07 10:19:32.250867-07', '2026-4', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('c67ac6d1-f944-4bf5-9bbd-89085e2dff3c', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-28 01:55:03.907944-07', '2026-04-28 01:55:03.907944-07', '2026-5', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('39e0949c-447d-4f3b-9e4f-f93e44914082', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-28 01:55:12.364143-07', '2026-04-28 01:55:12.364143-07', '2026-1', false);
+INSERT INTO "public"."is_lock_accounts_receivable" VALUES ('aee76c3e-3e69-450c-8c98-393b7442dae7', '8cf4f148-1724-41f6-86a0-0da21a775b59', 'f', 'f', 'f', 'f', 'f', 'f', 'f', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-04-28 02:12:53.091887-07', '2026-04-28 02:12:53.091887-07', '2026-4', false);
 
 -- ----------------------------
 -- Table structure for is_lock_billing_todo
@@ -2576,14 +2578,16 @@ CREATE TABLE "public"."provider_pay" (
   "created_at" timestamptz(6) DEFAULT now(),
   "updated_at" timestamptz(6) DEFAULT now(),
   "notes" text COLLATE "pg_catalog"."default",
-  "payroll" int2 NOT NULL DEFAULT 1
+  "payroll" int2 NOT NULL DEFAULT 1,
+  "whole_sheet_locked" bool NOT NULL DEFAULT false
 )
 ;
+COMMENT ON COLUMN "public"."provider_pay"."whole_sheet_locked" IS 'When true and the viewed period is in the past, provider pay is read-only until an admin unlocks.';
 
 -- ----------------------------
 -- Records of provider_pay
 -- ----------------------------
-INSERT INTO "public"."provider_pay" VALUES ('789e3a64-1dc2-445a-a9bd-ec221d388fc5', '9c542bda-d9b7-4903-9bcb-37eecca7720d', '0a5eff08-1b54-4987-8956-a46d6296bff5', 2026, 4, '2026-05-01', '2026-04-07 to 2026-04-06', '2026-04-30 01:27:57.49479-07', '2026-04-30 01:28:18.015-07', NULL, 1);
+INSERT INTO "public"."provider_pay" VALUES ('789e3a64-1dc2-445a-a9bd-ec221d388fc5', '9c542bda-d9b7-4903-9bcb-37eecca7720d', '0a5eff08-1b54-4987-8956-a46d6296bff5', 2026, 4, '2026-05-01', '2026-04-07 to 2026-04-06', '2026-04-30 01:27:57.49479-07', '2026-04-30 01:28:18.015-07', NULL, 1, false);
 
 -- ----------------------------
 -- Table structure for provider_pay_backups

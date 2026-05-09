@@ -1,9 +1,10 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useState, useRef, useCallback, useEffect, useMemo, type CSSProperties } from 'react'
+import { ChevronLeft, ChevronRight, Lock, Unlock } from 'lucide-react'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
 import type { Provider, StatusColor } from '@/types'
-import { fetchProviderPay, saveProviderPay } from '@/lib/providerPay'
+import { fetchProviderPay, saveProviderPay, updateProviderPayWholeSheetLocked } from '@/lib/providerPay'
+import { isPastPeriodFromMonthKey } from '@/lib/monthPeriodLock'
 
 export type IsLockProviderPay = {
   description?: boolean
@@ -84,6 +85,8 @@ export interface ProviderPayTabProps {
   /** List of providers in the clinic for the provider dropdown. When provided, a select is shown and the chosen provider is used for load/save. */
   providers?: Provider[]
   canEdit: boolean
+  /** Super-admin / admin: lock control for past months/periods on the pay sheet. */
+  canTogglePastMonthWholeSheetLock?: boolean
   isInSplitScreen?: boolean
   selectedMonth: Date
   onPreviousMonth: () => void
@@ -109,6 +112,7 @@ export default function ProviderPayTab({
   providerId: providerIdProp,
   providers = [],
   canEdit,
+  canTogglePastMonthWholeSheetLock = false,
   isInSplitScreen,
   selectedMonth,
   onPreviousMonth,
@@ -135,12 +139,20 @@ export default function ProviderPayTab({
   const [tableData, setTableData] = useState<string[][]>(() => INITIAL_TABLE_DATA.map(row => [...row]))
   const [providerPayDataVersion, setProviderPayDataVersion] = useState(0)
   const [sideNotes, setSideNotes] = useState('')
+  const [wholeSheetLocked, setWholeSheetLocked] = useState(false)
   const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(1)
   // Tracks which month/provider/payroll the in-memory form data belongs to.
   // Prevents autosave from writing stale data into a newly selected scope.
   const [hydratedScopeKey, setHydratedScopeKey] = useState('')
 
-  type CachedPay = { payDate: string; payPeriodFrom: string; payPeriodTo: string; sideNotes: string; tableData: string[][] }
+  type CachedPay = {
+    payDate: string
+    payPeriodFrom: string
+    payPeriodTo: string
+    sideNotes: string
+    tableData: string[][]
+    wholeSheetLocked: boolean
+  }
   const [providerPayCache, setProviderPayCache] = useState<Record<string, CachedPay>>({})
 
   /** Serialize pay period for DB (single string). */
@@ -152,6 +164,7 @@ export default function ProviderPayTab({
     providerIdProp ?? providers[0]?.id ?? ''
   )
   const [loading, setLoading] = useState(false)
+  const fetchGenerationRef = useRef(0)
   const hasLoadedOnceRef = useRef(false)
   const restoredPendingKeyRef = useRef<string | null>(null)
   const skipAutosaveOnceRef = useRef(false)
@@ -181,6 +194,16 @@ export default function ProviderPayTab({
     [providers, effectiveProviderId]
   )
   const payrollForCurrentScope = clinicPayroll === 2 ? selectedPayroll : 1
+  const providerPayMonthKey = useMemo(
+    () => (clinicPayroll === 2 ? `${year}-${month}-${payrollForCurrentScope}` : `${year}-${month}`),
+    [clinicPayroll, year, month, payrollForCurrentScope]
+  )
+  const payrollModeForLock = clinicPayroll === 2 ? 2 : 1
+  const isViewingPastPeriod = isPastPeriodFromMonthKey(providerPayMonthKey, payrollModeForLock)
+  const effectiveCanEdit = useMemo(() => {
+    if (!isViewingPastPeriod) return canEdit
+    return canEdit && !wholeSheetLocked
+  }, [canEdit, isViewingPastPeriod, wholeSheetLocked])
   const pendingStorageKey = useMemo(
     () =>
       clinicId && effectiveProviderId
@@ -216,6 +239,7 @@ export default function ProviderPayTab({
     }
     if (isViewingBackup) {
       setTableData(overrideTableData && overrideTableData.length > 0 ? overrideTableData.map((r) => [...r]) : INITIAL_TABLE_DATA.map((row) => [...row]))
+      setWholeSheetLocked(false)
       setLoading(false)
       return
     }
@@ -223,18 +247,28 @@ export default function ProviderPayTab({
     const cacheKey = `${year}-${month}-${effectiveProviderId}-${payrollForFetch}`
     logProviderPay('fetch started', { clinicId, effectiveProviderId, year, month, payrollForFetch, cacheKey })
 
-    const applyDataToState = (payDateVal: string, payPeriodFromVal: string, payPeriodToVal: string, notesVal: string, rows: string[][]) => {
+    const applyDataToState = (
+      payDateVal: string,
+      payPeriodFromVal: string,
+      payPeriodToVal: string,
+      notesVal: string,
+      rows: string[][],
+      wholeLocked: boolean
+    ) => {
       skipAutosaveOnceRef.current = true
       setPayDate(payDateVal)
       setPayPeriodFrom(payPeriodFromVal)
       setPayPeriodTo(payPeriodToVal)
       setSideNotes(notesVal)
       setTableData(rows)
+      setWholeSheetLocked(wholeLocked)
       setProviderPayDataVersion((v) => v + 1)
       setHydratedScopeKey(scopeKey)
     }
 
-    const processFetchResult = (data: { payDate: string; payPeriod: string; notes: string; rows: string[][] } | null): CachedPay => {
+    const processFetchResult = (
+      data: { payDate: string; payPeriod: string; notes: string; wholeSheetLocked: boolean; rows: string[][] } | null
+    ): CachedPay => {
       if (data) {
         let payPeriodFromVal = ''
         let payPeriodToVal = ''
@@ -261,7 +295,14 @@ export default function ProviderPayTab({
         for (const r of [1, 2, 3]) {
           if (rows[r]?.[1] != null && rows[r][1] !== '') rows[r][1] = formatAmount(rows[r][1])
         }
-        return { payDate: data.payDate, payPeriodFrom: payPeriodFromVal, payPeriodTo: payPeriodToVal, sideNotes: data.notes ?? '', tableData: rows }
+        return {
+          payDate: data.payDate,
+          payPeriodFrom: payPeriodFromVal,
+          payPeriodTo: payPeriodToVal,
+          sideNotes: data.notes ?? '',
+          wholeSheetLocked: data.wholeSheetLocked,
+          tableData: rows,
+        }
       }
       const initial = INITIAL_TABLE_DATA.map((r) => [...r])
       if (initial.length > ROW_TOTAL_PAYMENTS) {
@@ -273,7 +314,7 @@ export default function ProviderPayTab({
       for (const r of [1, 2, 3]) {
         if (initial[r]?.[1] != null && initial[r][1] !== '') initial[r][1] = formatAmount(initial[r][1])
       }
-      return { payDate: '', payPeriodFrom: '', payPeriodTo: '', sideNotes: '', tableData: initial }
+      return { payDate: '', payPeriodFrom: '', payPeriodTo: '', sideNotes: '', wholeSheetLocked: false, tableData: initial }
     }
 
     const cached = providerPayCache[cacheKey]
@@ -285,15 +326,24 @@ export default function ProviderPayTab({
         payPeriodFrom: cached.payPeriodFrom,
         payPeriodTo: cached.payPeriodTo,
       })
-      applyDataToState(cached.payDate, cached.payPeriodFrom, cached.payPeriodTo, cached.sideNotes, cached.tableData.map((r) => [...r]))
+      applyDataToState(
+        cached.payDate,
+        cached.payPeriodFrom,
+        cached.payPeriodTo,
+        cached.sideNotes,
+        cached.tableData.map((r) => [...r]),
+        cached.wholeSheetLocked ?? false
+      )
       setLoading(false)
     } else {
       // Only show full-page loading on very first load; when switching month, fetch in background without replacing content
       if (!hasLoadedOnceRef.current) setLoading(true)
     }
 
+    const fetchGen = ++fetchGenerationRef.current
     fetchProviderPay(clinicId, effectiveProviderId, year, month, payrollForFetch)
       .then((data) => {
+        if (fetchGen !== fetchGenerationRef.current) return
         logProviderPay('fetch resolved', {
           clinicId,
           effectiveProviderId,
@@ -306,7 +356,14 @@ export default function ProviderPayTab({
           payPeriod: data?.payPeriod ?? '',
         })
         const entry = processFetchResult(data)
-        applyDataToState(entry.payDate, entry.payPeriodFrom, entry.payPeriodTo, entry.sideNotes, entry.tableData.map((r) => [...r]))
+        applyDataToState(
+          entry.payDate,
+          entry.payPeriodFrom,
+          entry.payPeriodTo,
+          entry.sideNotes,
+          entry.tableData.map((r) => [...r]),
+          entry.wholeSheetLocked
+        )
         setProviderPayCache((prev) => ({ ...prev, [cacheKey]: entry }))
       })
       .catch((err) => console.error('[ProviderPayTab] fetchProviderPay error:', err))
@@ -375,6 +432,37 @@ export default function ProviderPayTab({
     [isViewingBackup, overrideTableData, tableData]
   )
 
+  const handleToggleWholeSheetLock = useCallback(async () => {
+    if (!clinicId || !effectiveProviderId || !canTogglePastMonthWholeSheetLock || !isViewingPastPeriod) return
+    const confirmMessage = wholeSheetLocked
+      ? 'Unlock this provider pay period?'
+      : 'Lock this provider pay period?'
+    if (!window.confirm(confirmMessage)) return
+    const next = !wholeSheetLocked
+    try {
+      await updateProviderPayWholeSheetLocked(clinicId, effectiveProviderId, year, month, payrollForCurrentScope, next)
+      setWholeSheetLocked(next)
+      const ck = `${year}-${month}-${effectiveProviderId}-${payrollForCurrentScope}`
+      setProviderPayCache((prev) => {
+        const cur = prev[ck]
+        if (!cur) return prev
+        return { ...prev, [ck]: { ...cur, wholeSheetLocked: next } }
+      })
+    } catch (e) {
+      console.error('[ProviderPayTab] toggle whole sheet lock', e)
+      alert('Failed to update sheet lock. Ensure the database migration for whole_sheet_locked has been applied.')
+    }
+  }, [
+    clinicId,
+    effectiveProviderId,
+    canTogglePastMonthWholeSheetLock,
+    isViewingPastPeriod,
+    wholeSheetLocked,
+    year,
+    month,
+    payrollForCurrentScope,
+  ])
+
   // Debounced save when payDate, payPeriod, tableData, or sideNotes change (only when effectiveProviderId is set and not loading).
   // Update cache on success so fetch effect re-runs don't overwrite state with stale cache. Flush on unmount and beforeunload.
   const runSave = useCallback((p: NonNullable<typeof savePayloadRef.current>) => {
@@ -401,6 +489,7 @@ export default function ProviderPayTab({
             payPeriodTo: p.payPeriodTo,
             sideNotes: p.sideNotes,
             tableData: p.tableData.map((r) => [...r]),
+            wholeSheetLocked: prev[cacheKey]?.wholeSheetLocked ?? false,
           },
         }))
         try {
@@ -414,7 +503,7 @@ export default function ProviderPayTab({
   }, [logProviderPay])
 
   useEffect(() => {
-    if (!clinicId || !effectiveProviderId || !canEdit || loading) return
+    if (!clinicId || !effectiveProviderId || !effectiveCanEdit || loading) return
     if (!scopeKey || hydratedScopeKey !== scopeKey) return
     if (skipAutosaveOnceRef.current) {
       skipAutosaveOnceRef.current = false
@@ -479,7 +568,7 @@ export default function ProviderPayTab({
         saveTimeoutRef.current = null
       }
     }
-  }, [clinicId, effectiveProviderId, year, month, canEdit, loading, payDate, payPeriod, payPeriodFrom, payPeriodTo, tableData, sideNotes, clinicPayroll, selectedPayroll, runSave, pendingStorageKey, logProviderPay, scopeKey, hydratedScopeKey])
+  }, [clinicId, effectiveProviderId, year, month, effectiveCanEdit, loading, payDate, payPeriod, payPeriodFrom, payPeriodTo, tableData, sideNotes, clinicPayroll, selectedPayroll, runSave, pendingStorageKey, logProviderPay, scopeKey, hydratedScopeKey])
 
   // Flush pending save when provider/month/payroll scope changes.
   useEffect(() => {
@@ -577,6 +666,42 @@ export default function ProviderPayTab({
     return { bgColor, textColor }
   }, [selectedMonth, getMonthColor])
 
+  /** Handsontable adds `htDimmed` to read-only cells (gray text in full.css). Re-apply header colors on every render so lock/unlock cannot leave row 0 looking black. */
+  const applyProviderPayHeaderVisuals = useCallback(
+    (hot: Handsontable) => {
+      const htRoot = hot.rootElement as HTMLElement | null
+      if (!htRoot) return
+      const { bgColor, textColor } = headerStyle
+      const varHost = (htRoot.closest('.provider-pay-table') as HTMLElement | null) ?? htRoot
+      varHost.style.setProperty('--provider-pay-header-bg', bgColor)
+      varHost.style.setProperty('--provider-pay-header-text', textColor)
+      htRoot.querySelectorAll('.ht_master thead th, .ht_clone_top thead th').forEach((th) => {
+        if (th instanceof HTMLElement) {
+          th.style.background = bgColor
+          th.style.color = textColor
+          th.style.fontWeight = 'bold'
+          th.style.borderColor = '#1e293b'
+        }
+      })
+      htRoot.querySelectorAll('.ht_master table.htCore tbody tr:first-child td').forEach((td) => {
+        if (td instanceof HTMLElement) {
+          td.style.background = bgColor
+          td.style.color = textColor
+          td.style.fontWeight = 'bold'
+          td.style.borderColor = 'rgba(0,0,0,0.2)'
+        }
+      })
+      htRoot.querySelectorAll('.ht_clone_left table.htCore tbody tr:first-child td').forEach((td) => {
+        if (td instanceof HTMLElement) {
+          td.style.background = bgColor
+          td.style.color = textColor
+          td.style.fontWeight = 'bold'
+        }
+      })
+    },
+    [headerStyle]
+  )
+
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -590,11 +715,14 @@ export default function ProviderPayTab({
     return () => ro.disconnect()
   }, [isInSplitScreen])
 
-  const getReadOnly = (columnName: keyof IsLockProviderPay): boolean => {
-    if (!canEdit) return true
-    if (!lockData) return false
-    return Boolean(lockData[columnName])
-  }
+  const getReadOnly = useCallback(
+    (columnName: keyof IsLockProviderPay): boolean => {
+      if (!effectiveCanEdit) return true
+      if (!lockData) return false
+      return Boolean(lockData[columnName])
+    },
+    [effectiveCanEdit, lockData]
+  )
 
   const columns = useMemo(
     () => [
@@ -610,17 +738,17 @@ export default function ProviderPayTab({
         title: 'Amount',
         type: 'numeric' as const,
         width: 120,
-        readOnly: !canEdit || getReadOnly('amount'),
+        readOnly: !effectiveCanEdit || getReadOnly('amount'),
       },
       {
         data: 2,
         title: 'Notes',
         type: 'text' as const,
         width: 200,
-        readOnly: !canEdit || getReadOnly('notes'),
+        readOnly: !effectiveCanEdit || getReadOnly('notes'),
       },
     ],
-    [canEdit, lockData]
+    [effectiveCanEdit, lockData, getReadOnly]
   )
 
   const cellsCallback = useCallback(
@@ -632,7 +760,7 @@ export default function ProviderPayTab({
         return props
       }
       if (col === 0) {
-        props.readOnly = row <= 6 ? true : !canEdit
+        props.readOnly = row <= 6 ? true : !effectiveCanEdit
       }
       // Total Payments amount is calculated from Patient + Insurance + A/R
       if (row === ROW_TOTAL_PAYMENTS && col === 1) {
@@ -644,12 +772,12 @@ export default function ProviderPayTab({
       }
       return props
     },
-    [canEdit]
+    [effectiveCanEdit]
   )
 
   const afterChange = useCallback(
     (changes: Handsontable.CellChange[] | null, _source?: Handsontable.ChangeSource) => {
-      if (!changes?.length || !canEdit) return
+      if (!changes?.length || !effectiveCanEdit) return
       logProviderPay('table afterChange', {
         changes: changes.length,
         source: String(_source ?? ''),
@@ -678,55 +806,8 @@ export default function ProviderPayTab({
       })
       setProviderPayDataVersion((v) => v + 1)
     },
-    [canEdit, providerCutPercent]
+    [effectiveCanEdit, providerCutPercent]
   )
-
-  // Apply header color to thead and to row 0 (first data row) via CSS variables
-  useEffect(() => {
-    const applyHeaderStyle = () => {
-      const root = document.querySelector('.handsontable-custom.provider-pay-table')
-      if (!root || !(root instanceof HTMLElement)) return
-      root.style.setProperty('--provider-pay-header-bg', headerStyle.bgColor)
-      root.style.setProperty('--provider-pay-header-text', headerStyle.textColor)
-      const thead = root.querySelector('.ht_master thead th, .ht_clone_top thead th')
-      if (thead) {
-        const ths = root.querySelectorAll('.ht_master thead th, .ht_clone_top thead th')
-        ths.forEach((th) => {
-          if (th instanceof HTMLElement) {
-            th.style.background = headerStyle.bgColor
-            th.style.color = headerStyle.textColor
-            th.style.fontWeight = 'bold'
-            th.style.borderColor = '#1e293b'
-          }
-        })
-      }
-      const core = root.querySelector('.ht_master table.htCore tbody tr:first-child td')
-      if (core) {
-        const firstRowCells = root.querySelectorAll('.ht_master table.htCore tbody tr:first-child td')
-        firstRowCells.forEach((td) => {
-          if (td instanceof HTMLElement) {
-            td.style.background = headerStyle.bgColor
-            td.style.color = headerStyle.textColor
-            td.style.fontWeight = 'bold'
-            td.style.borderColor = 'rgba(0,0,0,0.2)'
-          }
-        })
-      }
-      const cloneLeft = root.querySelector('.ht_clone_left table.htCore tbody tr:first-child td')
-      if (cloneLeft) {
-        const leftCells = root.querySelectorAll('.ht_clone_left table.htCore tbody tr:first-child td')
-        leftCells.forEach((td) => {
-          if (td instanceof HTMLElement) {
-            td.style.background = headerStyle.bgColor
-            td.style.color = headerStyle.textColor
-            td.style.fontWeight = 'bold'
-          }
-        })
-      }
-    }
-    const t = setTimeout(applyHeaderStyle, 100)
-    return () => clearTimeout(t)
-  }, [headerStyle, displayTableData])
 
   if (loading) {
     return (
@@ -785,6 +866,22 @@ export default function ProviderPayTab({
                 <ChevronLeft size={20} />
               </button>
               <div className="text-lg font-semibold min-w-[200px] text-center">{formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}</div>
+              {canTogglePastMonthWholeSheetLock && isViewingPastPeriod && (
+                <button
+                  type="button"
+                  onClick={handleToggleWholeSheetLock}
+                  className="absolute right-9 p-1.5 rounded-lg hover:opacity-80 transition-opacity"
+                  style={{ color: textColor }}
+                  title={
+                    wholeSheetLocked
+                      ? 'Unlock sheet — allow editing this period'
+                      : 'Lock sheet — make this period read-only for staff'
+                  }
+                  aria-label={wholeSheetLocked ? 'Unlock provider pay sheet' : 'Lock provider pay sheet'}
+                >
+                  {wholeSheetLocked ? <Lock size={18} strokeWidth={2.25} /> : <Unlock size={18} strokeWidth={2.25} />}
+                </button>
+              )}
               <button
                 onClick={onNextMonth}
                 className="absolute right-0 p-2 hover:opacity-80 rounded-lg transition-opacity"
@@ -838,6 +935,7 @@ export default function ProviderPayTab({
             type="date"
             value={payDate}
             onChange={(e) => setPayDate(e.target.value)}
+            disabled={!effectiveCanEdit}
             className={`flex-1 max-w-[12rem] bg-transparent border border-white/30 rounded px-2 py-1 outline-none text-inherit [color-scheme:dark] ${!payDate ? 'provider-pay-date-empty' : ''}`}
             style={{ color: headerStyle.textColor }}
           />
@@ -850,6 +948,7 @@ export default function ProviderPayTab({
               type="date"
               value={payPeriodFrom}
               onChange={(e) => setPayPeriodFrom(e.target.value)}
+              disabled={!effectiveCanEdit}
               className={`w-[8.5rem] bg-transparent border border-white/30 rounded px-1.5 py-1 text-sm outline-none text-inherit [color-scheme:dark] ${!payPeriodFrom ? 'provider-pay-date-empty' : ''}`}
               style={{ color: headerStyle.textColor }}
             />
@@ -860,6 +959,7 @@ export default function ProviderPayTab({
               type="date"
               value={payPeriodTo}
               onChange={(e) => setPayPeriodTo(e.target.value)}
+              disabled={!effectiveCanEdit}
               className={`w-[8.5rem] bg-transparent border border-white/30 rounded px-1.5 py-1 text-sm outline-none text-inherit [color-scheme:dark] ${!payPeriodTo ? 'provider-pay-date-empty' : ''}`}
               style={{ color: headerStyle.textColor }}
             />
@@ -871,17 +971,21 @@ export default function ProviderPayTab({
         <div
           ref={containerRef}
           className="table-container dark-theme flex-1"
-          style={{
-            height: isInSplitScreen ? undefined : '50vh',
-            maxHeight: isInSplitScreen ? undefined : '50vh',
-            flex: isInSplitScreen ? 1 : undefined,
-            minHeight: isInSplitScreen ? 0 : undefined,
-            overflow: 'hidden',
-            border: '1px solid rgba(0,0,0,0.2)',
-            borderTop: 'none',
-            borderRadius: '0 0 8px 8px',
-            backgroundColor: '#fff',
-          }}
+          style={
+            {
+              height: isInSplitScreen ? undefined : '50vh',
+              maxHeight: isInSplitScreen ? undefined : '50vh',
+              flex: isInSplitScreen ? 1 : undefined,
+              minHeight: isInSplitScreen ? 0 : undefined,
+              overflow: 'hidden',
+              border: '1px solid rgba(0,0,0,0.2)',
+              borderTop: 'none',
+              borderRadius: '0 0 8px 8px',
+              backgroundColor: '#fff',
+              '--provider-pay-header-bg': headerStyle.bgColor,
+              '--provider-pay-header-text': headerStyle.textColor,
+            } as CSSProperties
+          }
         >
           <HandsontableWrapper
             key={`provider-pay-${clinicId}-${effectiveProviderId}-${JSON.stringify(lockData)}`}
@@ -892,9 +996,10 @@ export default function ProviderPayTab({
             rowHeaders={false}
             width="100%"
             height={tableHeight}
-            readOnly={!canEdit}
+            readOnly={!effectiveCanEdit}
             afterChange={afterChange}
             cells={cellsCallback}
+            afterRenderCallback={applyProviderPayHeaderVisuals}
             style={{ backgroundColor: '#fff' }}
             className="handsontable-custom provider-pay-table"
             enableFormula={true}
@@ -904,7 +1009,8 @@ export default function ProviderPayTab({
       </div>
 
       <style>{`
-        .provider-pay-table .provider-pay-table-header-row {
+        .provider-pay-table .provider-pay-table-header-row,
+        .provider-pay-table td.provider-pay-table-header-row.htDimmed {
           background: var(--provider-pay-header-bg, rgba(30, 41, 59, 0.95)) !important;
           color: var(--provider-pay-header-text, #fff) !important;
           font-weight: bold !important;

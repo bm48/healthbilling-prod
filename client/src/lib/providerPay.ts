@@ -12,10 +12,10 @@ export async function fetchProviderPay(
   year: number,
   month: number,
   payroll: number = 1
-): Promise<{ payDate: string; payPeriod: string; notes: string; rows: string[][] } | null> {
+): Promise<{ payDate: string; payPeriod: string; notes: string; wholeSheetLocked: boolean; rows: string[][] } | null> {
   const { data: header, error: headerError } = await apiClient
     .from('provider_pay')
-    .select('id, pay_date, pay_period, notes')
+    .select('id, pay_date, pay_period, notes, whole_sheet_locked')
     .eq('clinic_id', clinicId)
     .eq('provider_id', providerId)
     .eq('year', year)
@@ -41,6 +41,7 @@ export async function fetchProviderPay(
       payDate: header.pay_date ?? '',
       payPeriod: header.pay_period ?? '',
       notes: header.notes ?? '',
+      wholeSheetLocked: Boolean((header as { whole_sheet_locked?: boolean }).whole_sheet_locked),
       rows: buildEmptyRows(),
     }
   }
@@ -50,8 +51,58 @@ export async function fetchProviderPay(
     payDate: header.pay_date ?? '',
     payPeriod: header.pay_period ?? '',
     notes: header.notes ?? '',
+    wholeSheetLocked: Boolean((header as { whole_sheet_locked?: boolean }).whole_sheet_locked),
     rows,
   }
+}
+
+/**
+ * Set whole-sheet lock for a provider pay header (past periods). Creates a header row if none exists.
+ */
+export async function updateProviderPayWholeSheetLocked(
+  clinicId: string,
+  providerId: string,
+  year: number,
+  month: number,
+  payroll: number,
+  locked: boolean
+): Promise<void> {
+  const { data: existing, error: fetchError } = await apiClient
+    .from('provider_pay')
+    .select('id')
+    .eq('clinic_id', clinicId)
+    .eq('provider_id', providerId)
+    .eq('year', year)
+    .eq('month', month)
+    .eq('payroll', payroll)
+    .maybeSingle()
+
+  if (fetchError) {
+    console.error('[updateProviderPayWholeSheetLocked] fetch error:', fetchError)
+    throw fetchError
+  }
+
+  if (existing) {
+    const { error: updateError } = await apiClient
+      .from('provider_pay')
+      .update({ whole_sheet_locked: locked, updated_at: new Date().toISOString() })
+      .eq('id', existing.id)
+    if (updateError) throw updateError
+    return
+  }
+
+  const { error: insertError } = await apiClient.from('provider_pay').insert({
+    clinic_id: clinicId,
+    provider_id: providerId,
+    year,
+    month,
+    payroll,
+    pay_date: null,
+    pay_period: null,
+    notes: null,
+    whole_sheet_locked: locked,
+  })
+  if (insertError) throw insertError
 }
 
 /**
@@ -110,6 +161,7 @@ export async function saveProviderPay(
         pay_date: payDate || null,
         pay_period: payPeriod || null,
         notes: notes || null,
+        whole_sheet_locked: false,
       })
       .select('id')
       .single()

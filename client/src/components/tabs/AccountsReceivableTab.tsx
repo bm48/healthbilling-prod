@@ -4,9 +4,10 @@ import { AccountsReceivable, ARType, StatusColor, IsLockAccountsReceivable } fro
 import { useAuth } from '@/contexts/AuthContext'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
-import { createBubbleDropdownRenderer } from '@/lib/handsontableCustomRenderers'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
-import { toDisplayValue, toDisplayDate, toStoredString } from '@/lib/utils'
+import { createBubbleDropdownRenderer, DateOfServiceEditor } from '@/lib/handsontableCustomRenderers'
+import { ChevronLeft, ChevronRight, Lock, Unlock } from 'lucide-react'
+import { isPastPeriodFromMonthKey } from '@/lib/monthPeriodLock'
+import { toDisplayValue, toDisplayDate, toStoredString, parseDateOfServiceInput } from '@/lib/utils'
 
 function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
   let max = -1
@@ -21,20 +22,109 @@ function isHandsontableUndoRedoSource(source?: string) {
   return source === 'UndoRedo.undo' || source === 'UndoRedo.redo'
 }
 
+/** DB-backed row fingerprint — only dirty rows are saved (same idea as PatientsTab lastSavedSnapshotRef). */
+type LastSavedARSnapshot = {
+  ar_id: string
+  name: string | null
+  date_of_service: string | null
+  date_recorded: string | null
+  amount: number | null
+  type: ARType | null
+  notes: string | null
+}
+
+function coerceARAmount(amount: AccountsReceivable['amount']): number | null {
+  if (amount == null || (amount as unknown) === 'null') return null
+  if (typeof amount === 'number') return Number.isNaN(amount) ? null : amount
+  const n = parseFloat(String(amount))
+  return Number.isNaN(n) ? null : n
+}
+
+function normalizeARForSnapshot(ar: AccountsReceivable): LastSavedARSnapshot {
+  return {
+    ar_id: ar.ar_id ?? '',
+    name: (ar.name != null && ar.name !== 'null') ? ar.name : null,
+    date_of_service: (ar.date_of_service != null && ar.date_of_service !== 'null') ? ar.date_of_service : null,
+    date_recorded: (ar.date_recorded != null && ar.date_recorded !== 'null') ? ar.date_recorded : null,
+    amount: coerceARAmount(ar.amount),
+    type: (ar.type != null && (ar.type as unknown) !== 'null') ? ar.type : null,
+    notes: (ar.notes != null && ar.notes !== 'null') ? ar.notes : null,
+  }
+}
+
+function amountsSnapshotEqual(a: number | null, b: number | null): boolean {
+  if (a == null && b == null) return true
+  if (a == null || b == null) return false
+  return Math.abs(a - b) < 1e-6
+}
+
+function arSnapshotsEqual(a: LastSavedARSnapshot, b: LastSavedARSnapshot): boolean {
+  return (
+    a.ar_id === b.ar_id &&
+    a.name === b.name &&
+    a.date_of_service === b.date_of_service &&
+    a.date_recorded === b.date_recorded &&
+    amountsSnapshotEqual(a.amount, b.amount) &&
+    a.type === b.type &&
+    a.notes === b.notes
+  )
+}
+
+/** After save: apply DB ids/timestamps without clobbering in-flight cell edits (PatientsTab pattern). */
+function mergeDisplayedARAfterSave(
+  prev: AccountsReceivable[],
+  savedARMap: Map<string, AccountsReceivable>
+): AccountsReceivable[] {
+  const byNewId = new Map<string, AccountsReceivable>()
+  savedARMap.forEach((saved, oldId) => {
+    byNewId.set(saved.id, saved)
+    if (oldId !== saved.id) byNewId.set(oldId, saved)
+  })
+  return prev.map((row) => {
+    const saved = savedARMap.get(row.id) ?? byNewId.get(row.id)
+    if (!saved) return row
+    const normalized: AccountsReceivable = {
+      ...saved,
+      name: (saved.name != null && saved.name !== 'null') ? saved.name : null,
+      date_of_service: (saved.date_of_service != null && saved.date_of_service !== 'null') ? saved.date_of_service : null,
+      date_recorded: (saved.date_recorded != null && saved.date_recorded !== 'null') ? saved.date_recorded : null,
+      type: (saved.type != null && (saved.type as unknown) !== 'null') ? saved.type : null,
+      notes: (saved.notes != null && saved.notes !== 'null') ? saved.notes : null,
+    }
+    return {
+      ...row,
+      id: normalized.id,
+      clinic_id: normalized.clinic_id,
+      payroll: normalized.payroll,
+      created_at: normalized.created_at,
+      updated_at: normalized.updated_at,
+      ar_id: row.ar_id !== undefined ? row.ar_id : normalized.ar_id,
+      name: row.name !== undefined ? row.name : normalized.name,
+      date_of_service: row.date_of_service !== undefined ? row.date_of_service : normalized.date_of_service,
+      date_recorded: row.date_recorded !== undefined ? row.date_recorded : normalized.date_recorded,
+      amount: row.amount !== undefined ? row.amount : normalized.amount,
+      type: row.type !== undefined ? row.type : normalized.type,
+      notes: row.notes !== undefined ? row.notes : normalized.notes,
+    }
+  })
+}
+
 function mergeARFromGridRow(
   ar: AccountsReceivable,
   row: (string | number | null | undefined)[]
 ): AccountsReceivable {
   const ar_id = row[0] === '' || row[0] == null || row[0] === 'null' ? '' : String(row[0])
   const name = toStoredString(String(row[1] ?? ''))
-  const date_of_service = toStoredString(String(row[2] ?? ''))
+  const date_of_service =
+    row[2] === '' || row[2] == null || row[2] === 'null' ? null : parseDateOfServiceInput(String(row[2]))
   const amount =
     row[3] === '' || row[3] == null || row[3] === 'null'
       ? null
       : typeof row[3] === 'number'
         ? row[3]
         : parseFloat(String(row[3])) || null
-  const date_recorded = toStoredString(String(row[4] ?? ''))
+  const date_recorded =
+    row[4] === '' || row[4] == null || row[4] === 'null' ? null : parseDateOfServiceInput(String(row[4]))
   const typeStr = toStoredString(String(row[5] ?? ''))
   const type: ARType | null =
     typeStr === 'Patient' || typeStr === 'Insurance' || typeStr === 'Admin' ? typeStr : null
@@ -56,6 +146,10 @@ interface AccountsReceivableTabProps {
   /** 1 = default; 2 = clinic has two pay periods, show Payroll 1/2 selector */
   clinicPayroll?: 1 | 2
   canEdit: boolean
+  /** Super-admin / admin: show lock control for past months/periods only. */
+  canTogglePastMonthWholeSheetLock?: boolean
+  wholeSheetLocked?: boolean
+  onTogglePastMonthWholeSheetLock?: () => void
   onDelete?: (arId: string) => void
   isLockAccountsReceivable?: IsLockAccountsReceivable | null
   onLockColumn?: (columnName: string) => void
@@ -70,11 +164,31 @@ interface AccountsReceivableTabProps {
   onLocksMonthKeyChange?: (monthKey: string) => void
 }
 
-export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, canEdit, onDelete, isLockAccountsReceivable, onLockColumn, isColumnLocked, isInSplitScreen, overrideFullAR = null, isViewingBackup = false, backupVersionKey = 0, onLocksMonthKeyChange }: AccountsReceivableTabProps) {
+export default function AccountsReceivableTab({
+  clinicId,
+  clinicPayroll = 1,
+  canEdit,
+  canTogglePastMonthWholeSheetLock = false,
+  wholeSheetLocked = false,
+  onTogglePastMonthWholeSheetLock,
+  onDelete,
+  isLockAccountsReceivable,
+  onLockColumn,
+  isColumnLocked,
+  isInSplitScreen,
+  overrideFullAR = null,
+  isViewingBackup = false,
+  backupVersionKey = 0,
+  onLocksMonthKeyChange,
+}: AccountsReceivableTabProps) {
   const { userProfile } = useAuth()
   const [statusColors, setStatusColors] = useState<StatusColor[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedMonth, setSelectedMonth] = useState<Date>(() => new Date())
+  const selectedMonthRef = useRef(selectedMonth)
+  useEffect(() => {
+    selectedMonthRef.current = selectedMonth
+  }, [selectedMonth])
   const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(1)
   const fetchIdRef = useRef(0)
   /** Full list (all months) for save and month switching - like Patients has one list, we keep "all" in ref */
@@ -86,11 +200,33 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
   /** Stable temporary new- id per row (by current row id) so multiple cell edits on one row insert one record, not one per edit - same as Patients pendingPatientIdByRowIdRef */
   const pendingNewIdByRowIdRef = useRef<Map<string, string>>(new Map())
   const saveARTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Same as PatientsTab: only persist rows that differ from last successful save (avoids re-saving entire clinic on every keystroke). */
+  const lastSavedSnapshotRef = useRef<Map<string, LastSavedARSnapshot>>(new Map())
+  const saveInProgressRef = useRef(false)
+  const savePendingRef = useRef(false)
+  const [runPendingSaveTrigger, setRunPendingSaveTrigger] = useState(0)
+  const saveAccountsReceivableRef = useRef<(rows: AccountsReceivable[]) => Promise<void>>(null as any)
   const tableContainerRef = useRef<HTMLDivElement>(null)
   const [tableHeight, setTableHeight] = useState(600)
   const [structureVersion, setStructureVersion] = useState(0)
   const scrollToRowAfterUpdateRef = useRef<number | null>(null)
   const hotRef = useRef<Handsontable | null>(null)
+  /** Handsontable row index can be visual when sorting exists; AR array is physical order (PatientsTab pattern). */
+  const physicalRowFromHot = useCallback((visualRow: number) => {
+    const hot = hotRef.current
+    if (!hot || (hot as { isDestroyed?: boolean }).isDestroyed) return visualRow
+    try {
+      const p = hot.toPhysicalRow(visualRow)
+      if (typeof p === 'number' && !Number.isNaN(p) && p >= 0) return p
+    } catch {
+      /* ignore */
+    }
+    return visualRow
+  }, [])
+  const lastEditedRowRef = useRef<number | null>(null)
+  const lastSelectedRowRef = useRef<number | null>(null)
+  const pendingRowLeaveSaveRef = useRef(false)
+  const pendingRowLeaveSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [highlightedCells, setHighlightedCells] = useState<Set<string>>(new Set())
 
   /** When clinicPayroll=2 and payroll is passed, show "March 1st Half 2025"; otherwise "March 2025". */
@@ -139,6 +275,22 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
   useEffect(() => {
     onLocksMonthKeyChange?.(arLocksMonthKeyForView)
   }, [arLocksMonthKeyForView, onLocksMonthKeyChange])
+
+  const payrollMode = clinicPayroll === 2 ? 2 : 1
+  const isViewingPastPeriod = isPastPeriodFromMonthKey(arLocksMonthKeyForView, payrollMode)
+  const effectiveCanEdit = useMemo(() => {
+    if (!isViewingPastPeriod) return canEdit
+    return canEdit && !wholeSheetLocked
+  }, [canEdit, isViewingPastPeriod, wholeSheetLocked])
+
+  const confirmAndTogglePastMonthWholeSheetLock = useCallback(() => {
+    if (!onTogglePastMonthWholeSheetLock) return
+    const message = wholeSheetLocked
+      ? 'Unlock this accounts receivable period?'
+      : 'Lock this accounts receivable period?'
+    if (!window.confirm(message)) return
+    onTogglePastMonthWholeSheetLock()
+  }, [wholeSheetLocked, onTogglePastMonthWholeSheetLock])
 
   /** Build displayed list (200 rows) for selected month from a full list. Used for both live (fullListRef) and backup override. */
   const buildDisplayedFromList = useCallback((list: AccountsReceivable[]): AccountsReceivable[] => {
@@ -279,7 +431,13 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
         )
         fullListRef.current = [...updated, ...newEmptyRows]
       }
-      setDisplayedAR(buildDisplayedFromFull())
+      fullListRef.current.forEach((ar) => {
+        if (!ar.id.startsWith('empty-') && !ar.id.startsWith('new-') && !ar.id.startsWith('placeholder-')) {
+          lastSavedSnapshotRef.current.set(ar.id, normalizeARForSnapshot(ar))
+        }
+      })
+      const nextDisplayed = buildDisplayedFromFull()
+      setDisplayedAR(nextDisplayed)
     } catch (error) {
       console.error('Error fetching accounts receivable:', error)
     } finally {
@@ -325,29 +483,39 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
     const otherMonths = fullListRef.current.filter(ar => !isARInMonth(ar, selectedMonth))
     const currentMonthRows = displayedARRef.current.filter(ar => !ar.id.startsWith('empty-'))
     fullListRef.current = [...otherMonths, ...currentMonthRows]
-    setDisplayedAR(buildDisplayedFromFull())
+    const rebuilt = buildDisplayedFromFull()
+    setDisplayedAR(rebuilt)
   }, [selectedMonth.getTime(), buildDisplayedFromFull, isARInMonth])
 
   const saveAccountsReceivable = useCallback(async (arToSave: AccountsReceivable[]) => {
     if (!clinicId || !userProfile) {
-      console.warn('[saveAR] early return: no clinicId or userProfile')
+      return
+    }
+    if (!effectiveCanEdit) {
       return
     }
 
-    const arToProcess = arToSave.filter(ar => {
-      const hasData = ar.ar_id || ar.name || ar.date_of_service || ar.amount !== null || ar.date_recorded || ar.type || ar.notes
-      if (ar.id.startsWith('empty-')) {
-        return hasData
-      }
-      return hasData
+    const arToProcess = arToSave.filter((ar) => {
+      const hasData = !!(ar.ar_id || ar.name || ar.date_of_service || ar.amount !== null || ar.date_recorded || ar.type || ar.notes)
+      if (!hasData) return false
+      if (ar.id.startsWith('placeholder-')) return false
+      if (ar.id.startsWith('empty-') || ar.id.startsWith('new-')) return true
+      const snap = lastSavedSnapshotRef.current.get(ar.id)
+      const current = normalizeARForSnapshot(ar)
+      if (!snap) return true
+      return !arSnapshotsEqual(snap, current)
     })
 
-    console.log('[saveAR] start arToSave.length=', arToSave.length, 'arToProcess.length=', arToProcess.length)
     if (arToProcess.length === 0) {
-      console.log('[saveAR] nothing to process, return')
       return
     }
 
+    if (saveInProgressRef.current) {
+      savePendingRef.current = true
+      return
+    }
+
+    saveInProgressRef.current = true
     try {
       const savedARMap = new Map<string, AccountsReceivable>()
 
@@ -387,6 +555,16 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
             savedAR = updateData[0] as AccountsReceivable
             savedARMap.set(oldId, savedAR)
             pendingNewIdByRowIdRef.current.delete(oldId)
+            const norm: AccountsReceivable = {
+              ...savedAR,
+              name: (savedAR.name != null && savedAR.name !== 'null') ? savedAR.name : null,
+              date_of_service: (savedAR.date_of_service != null && savedAR.date_of_service !== 'null') ? savedAR.date_of_service : null,
+              date_recorded: (savedAR.date_recorded != null && savedAR.date_recorded !== 'null') ? savedAR.date_recorded : null,
+              type: (savedAR.type != null && (savedAR.type as unknown) !== 'null') ? savedAR.type : null,
+              notes: (savedAR.notes != null && savedAR.notes !== 'null') ? savedAR.notes : null,
+            }
+            lastSavedSnapshotRef.current.set(norm.id, normalizeARForSnapshot(norm))
+            if (oldId !== norm.id) lastSavedSnapshotRef.current.delete(oldId)
             continue
           }
         }
@@ -406,12 +584,20 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
           savedAR = insertedAR as AccountsReceivable
           savedARMap.set(oldId, savedAR)
           pendingNewIdByRowIdRef.current.delete(oldId)
+          const norm: AccountsReceivable = {
+            ...savedAR,
+            name: (savedAR.name != null && savedAR.name !== 'null') ? savedAR.name : null,
+            date_of_service: (savedAR.date_of_service != null && savedAR.date_of_service !== 'null') ? savedAR.date_of_service : null,
+            date_recorded: (savedAR.date_recorded != null && savedAR.date_recorded !== 'null') ? savedAR.date_recorded : null,
+            type: (savedAR.type != null && (savedAR.type as unknown) !== 'null') ? savedAR.type : null,
+            notes: (savedAR.notes != null && savedAR.notes !== 'null') ? savedAR.notes : null,
+          }
+          lastSavedSnapshotRef.current.set(norm.id, normalizeARForSnapshot(norm))
+          if (oldId !== norm.id) lastSavedSnapshotRef.current.delete(oldId)
         }
       }
 
-      console.log('[saveAR] loop done savedARMap.size=', savedARMap.size, 'applying update in place')
-      // Update full list in place (like PatientsTab), then refresh displayed list
-      fullListRef.current = fullListRef.current.map(ar => {
+      fullListRef.current = fullListRef.current.map((ar) => {
         const savedAR = savedARMap.get(ar.id)
         if (savedAR) {
           return {
@@ -425,15 +611,34 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
         }
         return ar
       })
-      setDisplayedAR(buildDisplayedFromFull())
-      console.log('[saveAR] success complete')
+
+      setDisplayedAR((prev) => {
+        const merged = mergeDisplayedARAfterSave(prev, savedARMap)
+        displayedARRef.current = merged
+        return merged
+      })
     } catch (error: any) {
       console.error('[saveAR] catch error=', error, 'message=', error?.message, 'code=', error?.code, 'details=', error?.details)
       if (error?.message) console.error('[saveAR] full error message:', error.message)
       if (error?.stack) console.error('[saveAR] stack:', error.stack)
       alert(error?.message || 'Failed to save accounts receivable. Please try again.')
+    } finally {
+      saveInProgressRef.current = false
+      if (savePendingRef.current) {
+        savePendingRef.current = false
+        setRunPendingSaveTrigger((t) => t + 1)
+      }
     }
-  }, [clinicId, userProfile, clinicPayroll, selectedPayroll, buildDisplayedFromFull])
+  }, [clinicId, userProfile, clinicPayroll, selectedPayroll, effectiveCanEdit])
+
+  saveAccountsReceivableRef.current = saveAccountsReceivable
+
+  useEffect(() => {
+    if (runPendingSaveTrigger === 0) return
+    saveAccountsReceivableRef.current(fullListRef.current).catch((err) => {
+      console.error('[AccountsReceivableTab] Error in pending save:', err)
+    })
+  }, [runPendingSaveTrigger])
 
   // Flush pending save when tab is left so data isn't lost on switch (same as PatientsTab)
   useEffect(() => {
@@ -442,17 +647,21 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
         clearTimeout(saveARTimeoutRef.current)
         saveARTimeoutRef.current = null
         const displayed = displayedARRef.current
-        const otherMonths = fullListRef.current.filter(ar => !isARInMonth(ar, selectedMonth))
-        const currentMonthRows = displayed.filter(ar => !ar.id.startsWith('placeholder-'))
+        const month = selectedMonthRef.current
+        const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, month))
+        const currentMonthRows = displayed.filter((ar) => !ar.id.startsWith('placeholder-'))
         fullListRef.current = [...otherMonths, ...currentMonthRows]
-        saveAccountsReceivable(fullListRef.current).catch(err => {
+        saveAccountsReceivableRef.current?.(fullListRef.current)?.catch((err) => {
           console.error('[AccountsReceivableTab unmount] Error flushing save:', err)
         })
       }
     }
-  }, [saveAccountsReceivable, selectedMonth, isARInMonth])
+  }, [])
 
   const handleDeleteAR = useCallback(async (arId: string) => {
+    if (!effectiveCanEdit && !arId.startsWith('new-')) {
+      return
+    }
     if (arId.startsWith('new-')) {
       const next = displayedARRef.current.filter(a => a.id !== arId)
       const emptyNeeded = Math.max(0, 200 - next.length)
@@ -477,6 +686,7 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
         .eq('id', arId)
 
       if (error) throw error
+      lastSavedSnapshotRef.current.delete(arId)
       await fetchAccountsReceivable()
       setStructureVersion(v => v + 1)
       if (onDelete) onDelete(arId)
@@ -484,7 +694,7 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
       console.error('Error deleting accounts receivable:', error)
       alert('Failed to delete accounts receivable record. Please try again.')
     }
-  }, [fetchAccountsReceivable, onDelete, createEmptyAR, isARInMonth, selectedMonth])
+  }, [fetchAccountsReceivable, onDelete, createEmptyAR, isARInMonth, selectedMonth, effectiveCanEdit])
 
   const syncARFullListFromDisplay = useCallback(
     (toDisplay: AccountsReceivable[]) => {
@@ -517,20 +727,26 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
   const syncDisplayedARFromHotAfterUndoRedo = useCallback(() => {
     const hot = hotRef.current
     if (!hot || (hot as any).isDestroyed) return
-    if (!canEdit) return
+    if (!effectiveCanEdit) return
     const firstDay = `${selectedMonth.getFullYear()}-${String(selectedMonth.getMonth() + 1).padStart(2, '0')}-01`
     try {
       const grid = hot.getData() as (string | number | null | undefined)[][]
       const prev = displayedARRef.current
-      const next: AccountsReceivable[] = []
-      for (let i = 0; i < grid.length; i++) {
-        const row = grid[i]
-        let p = prev[i]
+      const next = [...prev]
+      for (let v = 0; v < grid.length; v++) {
+        const phys = physicalRowFromHot(v)
+        if (phys < 0) continue
+        const row = grid[v]
+        while (next.length <= phys) {
+          const existingEmptyCount = next.filter((a) => a.id.startsWith('empty-')).length
+          next.push({ ...createEmptyAR(existingEmptyCount), date_of_service: firstDay })
+        }
+        let p = next[phys]
         if (!p) {
           const existingEmptyCount = next.filter((a) => a.id.startsWith('empty-')).length
           p = { ...createEmptyAR(existingEmptyCount), date_of_service: firstDay }
         }
-        next.push(mergeARFromGridRow(p, row))
+        next[phys] = mergeARFromGridRow(p, row)
       }
       const padded = padARDisplayedTo200(next)
       displayedARRef.current = padded
@@ -542,18 +758,19 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
     } catch (e) {
       console.error('syncDisplayedARFromHotAfterUndoRedo', e)
     }
-  }, [canEdit, selectedMonth, createEmptyAR, padARDisplayedTo200, syncARFullListFromDisplay, saveAccountsReceivable])
+  }, [effectiveCanEdit, selectedMonth, createEmptyAR, padARDisplayedTo200, syncARFullListFromDisplay, physicalRowFromHot, saveAccountsReceivable])
 
   const handleAfterCreateRow = useCallback(
     (index: number, amount: number, source?: string) => {
-      if (!canEdit) return
+      if (!effectiveCanEdit) return
       if (source === 'loadData' || source === 'updateData') return
       if (isHandsontableUndoRedoSource(source)) return
+      const physIndex = physicalRowFromHot(index)
       setDisplayedAR((prev) => {
         const next = [...prev]
         const base = nextEmptyNumericIdSuffix(next)
         for (let i = 0; i < amount; i++) {
-          next.splice(index + i, 0, createEmptyAR(base + i))
+          next.splice(physIndex + i, 0, createEmptyAR(base + i))
         }
         const padded = padARDisplayedTo200(next)
         displayedARRef.current = padded
@@ -567,12 +784,12 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
         )
       })
     },
-    [canEdit, createEmptyAR, padARDisplayedTo200, syncARFullListFromDisplay, saveAccountsReceivable]
+    [effectiveCanEdit, createEmptyAR, padARDisplayedTo200, syncARFullListFromDisplay, physicalRowFromHot, saveAccountsReceivable]
   )
 
   const handleAfterRemoveRow = useCallback(
     (_index: number, _amount: number, physicalRows: number[], source?: string) => {
-      if (!canEdit) return
+      if (!effectiveCanEdit) return
       if (source === 'loadData' || source === 'updateData') return
       if (isHandsontableUndoRedoSource(source)) return
       const snap = [...displayedARRef.current]
@@ -595,7 +812,7 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
         )
       })
     },
-    [canEdit, handleDeleteAR, padARDisplayedTo200, syncARFullListFromDisplay, saveAccountsReceivable]
+    [effectiveCanEdit, handleDeleteAR, padARDisplayedTo200, syncARFullListFromDisplay, saveAccountsReceivable]
   )
 
   // Type color mapping
@@ -766,11 +983,14 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
     }
   }, [canEdit, onLockColumn, isColumnLocked, columnFields, columnTitles, isLockAccountsReceivable])
 
-  const getReadOnly = (columnName: keyof IsLockAccountsReceivable): boolean => {
-    if (!canEdit) return true
-    if (!lockData) return false
-    return Boolean(lockData[columnName])
-  }
+  const getReadOnly = useCallback(
+    (columnName: keyof IsLockAccountsReceivable): boolean => {
+      if (!effectiveCanEdit) return true
+      if (!lockData) return false
+      return Boolean(lockData[columnName])
+    },
+    [effectiveCanEdit, lockData]
+  )
 
   // Create columns with custom renderers
   const arColumns = useMemo(() => [
@@ -779,22 +999,22 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
       title: 'ID #', 
       type: 'text' as const, 
       width: 80,
-      readOnly: !canEdit || getReadOnly('ar_id')
+      readOnly: !effectiveCanEdit || getReadOnly('ar_id')
     },
     { 
       data: 1, 
       title: 'Name', 
       type: 'text' as const, 
       width: 120,
-      readOnly: !canEdit || getReadOnly('name')
+      readOnly: !effectiveCanEdit || getReadOnly('name')
     },
-    { 
-      data: 2, 
-      title: 'Date of Service', 
-      type: 'date' as const, 
-      width: 120,
-      format: 'YYYY-MM-DD',
-      readOnly: !canEdit || getReadOnly('date_of_service')
+    {
+      data: 2,
+      title: 'Date of Service',
+      type: 'text' as const,
+      width: 90,
+      editor: DateOfServiceEditor,
+      readOnly: !effectiveCanEdit || getReadOnly('date_of_service'),
     },
     { 
       data: 3, 
@@ -805,15 +1025,15 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
         pattern: '0.00',
         culture: 'en-US'
       },
-      readOnly: !canEdit || getReadOnly('amount')
+      readOnly: !effectiveCanEdit || getReadOnly('amount')
     },
-    { 
-      data: 4, 
-      title: 'Date Recorded', 
-      type: 'date' as const, 
-      width: 120,
-      format: 'YYYY-MM-DD',
-      readOnly: !canEdit || getReadOnly('date_recorded')
+    {
+      data: 4,
+      title: 'Date Recorded',
+      type: 'text' as const,
+      width: 90,
+      editor: DateOfServiceEditor,
+      readOnly: !effectiveCanEdit || getReadOnly('date_recorded'),
     },
     { 
       data: 5, 
@@ -822,41 +1042,41 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
       width: 120,
       selectOptions: ['Patient', 'Insurance', 'Admin'],
       renderer: createBubbleDropdownRenderer(getTypeColor) as any,
-      readOnly: !canEdit || getReadOnly('type')
+      readOnly: !effectiveCanEdit || getReadOnly('type')
     },
     { 
       data: 6, 
       title: 'Notes', 
       type: 'text' as const, 
       width: 200,
-      readOnly: !canEdit || getReadOnly('notes')
+      readOnly: !effectiveCanEdit || getReadOnly('notes')
     },
-  ], [canEdit, lockData, getTypeColor])
+  ], [effectiveCanEdit, lockData, getTypeColor, getReadOnly])
 
   const arCellsCallback = useCallback(
     (row: number, col: number) => {
-      const ar = displayAR[row]
+      const ar = displayAR[physicalRowFromHot(row)]
       const colKey = columnFields[col]
       if (!colKey) return {}
       const key = `${ar?.id ?? `row-${row}`}:${colKey}`
       return highlightedCells.has(key) ? { className: 'cell-highlight-yellow' } : {}
     },
-    [displayAR, columnFields, highlightedCells]
+    [displayAR, columnFields, highlightedCells, physicalRowFromHot]
   )
 
   const getCellIsHighlighted = useCallback(
     (row: number, col: number) => {
-      const ar = displayAR[row]
+      const ar = displayAR[physicalRowFromHot(row)]
       const colKey = columnFields[col]
       if (!colKey) return false
       const key = `${ar?.id ?? `row-${row}`}:${colKey}`
       return highlightedCells.has(key)
     },
-    [displayAR, columnFields, highlightedCells]
+    [displayAR, columnFields, highlightedCells, physicalRowFromHot]
   )
 
   const handleCellHighlight = useCallback((row: number, col: number) => {
-    const ar = displayAR[row]
+    const ar = displayAR[physicalRowFromHot(row)]
     const colKey = columnFields[col]
     if (!colKey) return
     const key = `${ar?.id ?? `row-${row}`}:${colKey}`
@@ -866,13 +1086,14 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
       else next.add(key)
       return next
     })
-  }, [displayAR, columnFields])
+  }, [displayAR, columnFields, physicalRowFromHot])
 
   const firstDayOfSelectedMonth = useMemo(() => {
     return `${selectedMonth.getFullYear()}-${String(selectedMonth.getMonth() + 1).padStart(2, '0')}-01`
   }, [selectedMonth])
 
   const handleARRowMove = useCallback((movedRows: number[], finalIndex: number) => {
+    if (!effectiveCanEdit) return
     const arr = [...(displayedARRef.current.length > 0 ? displayedARRef.current : displayedAR)]
     const toMove = movedRows.map(i => arr[i])
     movedRows.sort((a, b) => b - a).forEach(i => arr.splice(i, 1))
@@ -897,30 +1118,86 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
       ).catch(err => console.error('Failed to persist AR order', err))
     }
     setStructureVersion(v => v + 1)
-  }, [displayedAR, selectedMonth, isARInMonth])
+  }, [displayedAR, selectedMonth, isARInMonth, effectiveCanEdit])
 
-  /** Same as PatientsTab: grid row index = array index, ref = source of truth, then merge into full list and save */
+  const handleARAfterSelection = useCallback(
+    (r: number, _c: number, _r2: number, _c2: number) => {
+      const physR = physicalRowFromHot(r)
+      const prev = lastSelectedRowRef.current
+      if (prev !== null && physR !== prev && !saveInProgressRef.current) {
+        pendingRowLeaveSaveRef.current = true
+        if (pendingRowLeaveSaveTimeoutRef.current) clearTimeout(pendingRowLeaveSaveTimeoutRef.current)
+        const FALLBACK_MS = 800
+        pendingRowLeaveSaveTimeoutRef.current = setTimeout(() => {
+          pendingRowLeaveSaveTimeoutRef.current = null
+          if (!pendingRowLeaveSaveRef.current) return
+          pendingRowLeaveSaveRef.current = false
+          if (saveARTimeoutRef.current) {
+            clearTimeout(saveARTimeoutRef.current)
+            saveARTimeoutRef.current = null
+          }
+          if (!saveInProgressRef.current) {
+            saveAccountsReceivable(fullListRef.current).catch((err) =>
+              console.error('[AR] Error flushing save on selection change (fallback):', err)
+            )
+          } else {
+            savePendingRef.current = true
+          }
+        }, FALLBACK_MS)
+      }
+      lastSelectedRowRef.current = physR
+    },
+    [physicalRowFromHot, saveAccountsReceivable]
+  )
+
+  const handleARAfterDeselect = useCallback(() => {
+    if (saveInProgressRef.current) return
+    if (lastSelectedRowRef.current === null) return
+    if (pendingRowLeaveSaveTimeoutRef.current) {
+      clearTimeout(pendingRowLeaveSaveTimeoutRef.current)
+      pendingRowLeaveSaveTimeoutRef.current = null
+    }
+    pendingRowLeaveSaveRef.current = false
+    if (saveARTimeoutRef.current) {
+      clearTimeout(saveARTimeoutRef.current)
+      saveARTimeoutRef.current = null
+    }
+    if (!saveInProgressRef.current) {
+      saveAccountsReceivable(fullListRef.current).catch((err) =>
+        console.error('[AR] Error flushing save on deselect (click outside):', err)
+      )
+    } else {
+      savePendingRef.current = true
+    }
+  }, [saveAccountsReceivable])
+
+  /** Same as PatientsTab: physical row index, ref + state, dirty-only save, row-leave flush, 500ms debounce with pending re-run while save in flight */
   const handleARHandsontableChange = useCallback((changes: Handsontable.CellChange[] | null, source: Handsontable.ChangeSource) => {
     if (!changes || source === 'loadData') return
 
     const fields: Array<keyof AccountsReceivable> = ['ar_id', 'name', 'date_of_service', 'amount', 'date_recorded', 'type', 'notes']
     const hadDateColumnEdit = changes.some(([, col]) => col === 2 || col === 4)
 
+    const rowsInChange = [...new Set(changes.map(([r]) => physicalRowFromHot(typeof r === 'number' ? r : 0)))]
+    const primaryRow = rowsInChange[0] ?? null
+    const prevRow = lastEditedRowRef.current
+    const didLeaveRow = prevRow !== null && primaryRow !== null && !rowsInChange.includes(prevRow)
+
     const currentDisplayed = displayedARRef.current.length > 0 ? displayedARRef.current : displayedAR
     const updatedDisplayed = [...currentDisplayed]
 
     changes.forEach(([row, col, , newValue]) => {
-      const rowNum = typeof row === 'number' ? row : 0
-      const colNum = typeof col === 'number' ? col : 0
-      while (updatedDisplayed.length <= rowNum) {
-        const existingEmptyCount = updatedDisplayed.filter(ar => ar.id.startsWith('empty-')).length
+      const phys = physicalRowFromHot(typeof row === 'number' ? row : 0)
+      while (updatedDisplayed.length <= phys) {
+        const existingEmptyCount = updatedDisplayed.filter((ar) => ar.id.startsWith('empty-')).length
         updatedDisplayed.push({
           ...createEmptyAR(existingEmptyCount),
           date_of_service: firstDayOfSelectedMonth,
         })
       }
-      const ar = updatedDisplayed[rowNum]
+      const ar = updatedDisplayed[phys]
       if (!ar) return
+      const colNum = typeof col === 'number' ? col : 0
       const field = fields[colNum]
       const needsNewId = ar.id.startsWith('empty-') || ar.id.startsWith('placeholder-')
       let newId: string
@@ -929,7 +1206,7 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
         if (existing) {
           newId = existing
         } else {
-          newId = `new-${Date.now()}-${rowNum}-${Math.random()}`
+          newId = `new-${Date.now()}-${phys}-${Math.random()}`
           pendingNewIdByRowIdRef.current.set(ar.id, newId)
         }
       } else {
@@ -938,44 +1215,96 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
 
       if (field === 'amount') {
         const numValue = (newValue === '' || newValue === null || newValue === 'null') ? null : (typeof newValue === 'number' ? newValue : parseFloat(String(newValue)) || null)
-        updatedDisplayed[rowNum] = { ...ar, id: newId, [field]: numValue, updated_at: new Date().toISOString() } as AccountsReceivable
-      } else if (field === 'date_of_service' || field === 'date_recorded' || field === 'type' || field === 'notes') {
+        updatedDisplayed[phys] = { ...ar, id: newId, [field]: numValue, updated_at: new Date().toISOString() } as AccountsReceivable
+      } else if (field === 'date_of_service' || field === 'date_recorded') {
+        const value =
+          newValue === '' || newValue === null || newValue === 'null' ? null : parseDateOfServiceInput(String(newValue))
+        updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
+      } else if (field === 'type' || field === 'notes') {
         const value = toStoredString(String(newValue ?? ''))
-        updatedDisplayed[rowNum] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
+        updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
       } else if (field === 'ar_id') {
         const value = (newValue === '' || newValue === 'null') ? '' : String(newValue)
-        updatedDisplayed[rowNum] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
+        updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
       } else if (field) {
         const value = toStoredString(String(newValue ?? ''))
-        updatedDisplayed[rowNum] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
+        updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
       }
     })
 
     if (updatedDisplayed.length < 200) {
       const emptyRowsNeeded = 200 - updatedDisplayed.length
-      const existingEmptyCount = updatedDisplayed.filter(ar => ar.id.startsWith('empty-')).length
-      updatedDisplayed.push(...Array.from({ length: emptyRowsNeeded }, (_, i) =>
-        createEmptyAR(existingEmptyCount + i)
-      ))
+      const existingEmptyCount = updatedDisplayed.filter((ar) => ar.id.startsWith('empty-')).length
+      updatedDisplayed.push(
+        ...Array.from({ length: emptyRowsNeeded }, (_, i) => createEmptyAR(existingEmptyCount + i))
+      )
     }
+
+    lastEditedRowRef.current = primaryRow
+    if (primaryRow !== null) lastSelectedRowRef.current = primaryRow
 
     displayedARRef.current = updatedDisplayed
     setDisplayedAR(updatedDisplayed)
 
-    const otherMonths = fullListRef.current.filter(ar => !isARInMonth(ar, selectedMonth))
-    const currentMonthRows = updatedDisplayed.filter(ar => !ar.id.startsWith('placeholder-'))
+    const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, selectedMonth))
+    const currentMonthRows = updatedDisplayed.filter((ar) => !ar.id.startsWith('placeholder-'))
     fullListRef.current = [...otherMonths, ...currentMonthRows]
+
+    if (didLeaveRow) {
+      if (saveARTimeoutRef.current) {
+        clearTimeout(saveARTimeoutRef.current)
+        saveARTimeoutRef.current = null
+      }
+      if (!saveInProgressRef.current) {
+        saveAccountsReceivable(fullListRef.current).catch((err) =>
+          console.error('[AR] Error flushing save on row leave:', err)
+        )
+      } else {
+        savePendingRef.current = true
+      }
+    }
+
+    if (pendingRowLeaveSaveRef.current) {
+      pendingRowLeaveSaveRef.current = false
+      if (pendingRowLeaveSaveTimeoutRef.current) {
+        clearTimeout(pendingRowLeaveSaveTimeoutRef.current)
+        pendingRowLeaveSaveTimeoutRef.current = null
+      }
+      if (saveARTimeoutRef.current) {
+        clearTimeout(saveARTimeoutRef.current)
+        saveARTimeoutRef.current = null
+      }
+      if (!saveInProgressRef.current) {
+        saveAccountsReceivable(fullListRef.current).catch((err) =>
+          console.error('[AR] Error flushing save (pending row leave):', err)
+        )
+      } else {
+        savePendingRef.current = true
+      }
+    }
 
     if (saveARTimeoutRef.current) clearTimeout(saveARTimeoutRef.current)
     saveARTimeoutRef.current = setTimeout(() => {
       saveARTimeoutRef.current = null
-      saveAccountsReceivable(fullListRef.current).catch(err => {
+      if (saveInProgressRef.current) {
+        savePendingRef.current = true
+        return
+      }
+      saveAccountsReceivable(fullListRef.current).catch((err) => {
         console.error('[handleARHandsontableChange] Error in saveAccountsReceivable:', err)
       })
-    }, 250)
+    }, 500)
 
     if (hadDateColumnEdit) setStructureVersion((v) => v + 1)
-  }, [displayedAR, saveAccountsReceivable, selectedMonth, isARInMonth, createEmptyAR, firstDayOfSelectedMonth, clinicId, clinicPayroll, selectedPayroll])
+  }, [
+    displayedAR,
+    saveAccountsReceivable,
+    selectedMonth,
+    isARInMonth,
+    createEmptyAR,
+    firstDayOfSelectedMonth,
+    physicalRowFromHot,
+  ])
 
   // ResizeObserver for split screen: fill table height (must run before any early return)
   useEffect(() => {
@@ -1042,6 +1371,22 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
             <div className="text-lg font-semibold min-w-[200px] text-center">
               {formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}
             </div>
+            {canTogglePastMonthWholeSheetLock && isViewingPastPeriod && onTogglePastMonthWholeSheetLock && (
+              <button
+                type="button"
+                onClick={confirmAndTogglePastMonthWholeSheetLock}
+                className="absolute right-9 p-1.5 rounded-lg hover:opacity-80 transition-opacity"
+                style={{ color: textColor }}
+                title={
+                  wholeSheetLocked
+                    ? 'Unlock sheet — allow editing this period'
+                    : 'Lock sheet — make this period read-only for staff'
+                }
+                aria-label={wholeSheetLocked ? 'Unlock accounts receivable sheet' : 'Lock accounts receivable sheet'}
+              >
+                {wholeSheetLocked ? <Lock size={18} strokeWidth={2.25} /> : <Unlock size={18} strokeWidth={2.25} />}
+              </button>
+            )}
             <button
               onClick={() => {
                 if (clinicPayroll === 2) {
@@ -1078,7 +1423,7 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
         }}
       >
         <HandsontableWrapper
-          key={`ar-${selectedMonth.getTime()}-${selectedPayroll}-${JSON.stringify(lockData)}`}
+          key={`ar-${selectedMonth.getTime()}-${selectedPayroll}-${JSON.stringify(lockData)}-${wholeSheetLocked ? '1' : '0'}`}
           data={getARHandsontableData()}
           dataVersion={structureVersion + (isViewingBackup ? 1000000 + backupVersionKey : 0)}
           scrollToRowAfterUpdateRef={scrollToRowAfterUpdateRef}
@@ -1090,6 +1435,8 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
           width="100%"
           height={isInSplitScreen ? tableHeight : 600}
           afterChange={handleARHandsontableChange}
+          afterSelection={handleARAfterSelection}
+          afterDeselect={handleARAfterDeselect}
           onAfterRowMove={handleARRowMove}
           afterCreateRow={handleAfterCreateRow}
           afterRemoveRow={handleAfterRemoveRow}
@@ -1100,7 +1447,7 @@ export default function AccountsReceivableTab({ clinicId, clinicPayroll = 1, can
           getCellIsHighlighted={getCellIsHighlighted}
           cells={arCellsCallback}
           enableFormula={true}
-          readOnly={!canEdit}
+          readOnly={!effectiveCanEdit}
           style={{ backgroundColor: '#d2dbe5' }}
           className="handsontable-custom ar-handsontable"
         />

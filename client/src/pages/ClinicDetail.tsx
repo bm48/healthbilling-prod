@@ -69,6 +69,7 @@ function newARLockRowPayload(clinicId: string, monthKey: string) {
     date_recorded: false,
     type: false,
     notes: false,
+    whole_sheet_locked: false,
   }
 }
 
@@ -238,11 +239,11 @@ export default function ClinicDetail() {
   useEffect(() => {
     // Prefer currentProvider (set by fetchProviderSheetData on single-provider route) so the title
     // updates without waiting for the full providers list to load. Include session fallback so the name
-    // survives navigating to AR / Provider Pay on the generic /clinic/:id/:tab route (different mount).
+    // survives navigating to Patient Info / Billing To-Do / AR / Provider Pay on generic /clinic/:id/:tab routes.
     const id = providerId ?? getLastSelectedProviderId()
     const target = currentProvider ?? (id ? providers.find((p) => p.id === id) : null)
     if (target) setFullName(`${target.first_name} ${target.last_name}`)
-  }, [providers, currentProvider, providerId, clinicId])
+  }, [providers, currentProvider, providerId, clinicId, activeTab])
 
   /** Prefer currentProvider; fall back to providers list so Visit Type column matches DB if currentProvider was cleared mid-fetch. */
   const providersTabShowVisitTypeColumn = useMemo(() => {
@@ -376,21 +377,26 @@ export default function ClinicDetail() {
     loading,
   ])
 
-  // Hydrate header / split-screen name when AR or Provider Pay is open on a provider-scoped URL (billing fetch may not run for those tabs alone).
+  // Hydrate header when Patient Info / Billing To-Do / AR / Provider Pay have no provider-scoped billing fetch
+  // (patients & todo never call fetchProviders(); AR/PP may be on generic URL). Uses URL providerId or session last sheet.
   useEffect(() => {
-    if (!clinicId || !providerId || (activeTab !== 'accounts_receivable' && activeTab !== 'provider_pay')) return
-    if (currentProvider?.id === providerId) return
+    if (!clinicId) return
+    const headerHydrateTabs: TabType[] = ['patients', 'todo', 'accounts_receivable', 'provider_pay']
+    if (!headerHydrateTabs.includes(activeTab)) return
+    const scopePid = providerId ?? getLastSelectedProviderId()
+    if (!scopePid) return
+    if (currentProvider?.id === scopePid) return
     let cancelled = false
     void apiClient
       .from('providers')
       .select('*')
-      .eq('id', providerId)
+      .eq('id', scopePid)
       .maybeSingle()
       .then(({ data, error }) => {
         if (cancelled || error || !data) return
         setCurrentProvider(data as Provider)
         setProviders((curr) => {
-          const idx = curr.findIndex((p) => p.id === providerId)
+          const idx = curr.findIndex((p) => p.id === scopePid)
           if (idx < 0) {
             const next = [...curr, data as Provider]
             providersRef.current = next
@@ -459,6 +465,8 @@ export default function ClinicDetail() {
   const lastProviderSheetsFetchMonthKeyRef = useRef<string | null>(null)
   /** (providerId, monthKey) for the single-provider sheet fetch; only set loading false when that fetch completes. */
   const lastProviderSheetDataFetchRef = useRef<{ providerId: string; monthKey: string } | null>(null)
+  /** After the latest single-provider billing sheet fetch attempt finishes (success or error), matches "providerId|monthKey" so pageReady can pass even if rows were never written (stale fetch, missing provider). */
+  const singleProviderBillingSheetFetchFinishedKeyRef = useRef<string | null>(null)
   /** Deduplicate concurrent clinic-wide provider sheet loads (e.g. fetchData + month effect racing). */
   const providerSheetsInFlightRef = useRef<Map<string, Promise<unknown>>>(new Map())
   /** Deduplicate concurrent single-provider sheet loads. */
@@ -519,11 +527,19 @@ export default function ClinicDetail() {
       // does not treat clinic-wide { providerId: null } or a null ref as a "provider change" and
       // clear currentProvider while fetchProviderSheetData is still in flight.
       lastProviderSheetContextRef.current = { clinicId, providerId, monthKey }
+      const capture = { providerId, monthKey: selectedMonthKey }
       ;(async () => {
         try {
           await fetchProviderSheetData(isMonthChangeOnly, false)
           if (activeTab === 'providers' && selectedMonthKey) await fetchIsLockProviders(selectedMonthKey)
         } finally {
+          // Only record completion for the fetch this run started (avoids stale async clearing loading / pageReady for a newer navigation).
+          if (
+            lastProviderSheetDataFetchRef.current?.providerId === capture.providerId &&
+            lastProviderSheetDataFetchRef.current?.monthKey === capture.monthKey
+          ) {
+            singleProviderBillingSheetFetchFinishedKeyRef.current = `${capture.providerId}|${capture.monthKey}`
+          }
           // fetchProviderSheetData(..., false) intentionally skips setLoading in its own finally so locks can load first
           setLoading(false)
         }
@@ -1279,6 +1295,30 @@ export default function ClinicDetail() {
     void fetchIsLockAccountsReceivable(arLocksMonthKey)
   }, [arLocksMonthKey, activeTab, splitScreen, clinicId])
 
+  const handleToggleARWholeSheetLock = async () => {
+    if (!clinicId || !arLocksMonthKey) return
+    const monthKey = arLocksMonthKey
+    const nextLocked = !Boolean(isLockAccountsReceivable?.whole_sheet_locked)
+    try {
+      if (isLockAccountsReceivable?.id) {
+        const { error } = await apiClient
+          .from('is_lock_accounts_receivable')
+          .update({ whole_sheet_locked: nextLocked, updated_at: new Date().toISOString() })
+          .eq('id', isLockAccountsReceivable.id)
+        if (error) throw error
+      } else {
+        const { error } = await apiClient
+          .from('is_lock_accounts_receivable')
+          .insert({ ...newARLockRowPayload(clinicId, monthKey), whole_sheet_locked: nextLocked })
+        if (error) throw error
+      }
+      await fetchIsLockAccountsReceivable(monthKey)
+    } catch (error) {
+      console.error('Error toggling AR whole-sheet lock:', error)
+      alert('Failed to update sheet lock. Ensure the database migration for whole_sheet_locked has been applied.')
+    }
+  }
+
   const handleToggleARColumnLock = async (columnName: keyof IsLockAccountsReceivable, isLocked: boolean, comment?: string) => {
     if (!clinicId || !userProfile?.id) return
     const effectiveArLockMonthKey = arLocksMonthKey ?? selectedMonthKey
@@ -1335,6 +1375,7 @@ export default function ClinicDetail() {
           date_recorded: columnName === 'date_recorded' ? isLocked : false,
           type: columnName === 'type' ? isLocked : false,
           notes: columnName === 'notes' ? isLocked : false,
+          whole_sheet_locked: false,
           updated_at: new Date().toISOString(),
         }
         if (comment !== undefined && comment !== null && comment !== '') {
@@ -3165,6 +3206,9 @@ export default function ClinicDetail() {
               clinicId={clinicId!}
               clinicPayroll={clinic?.payroll ?? 1}
               canEdit={canEdit && !backupOverrideAR}
+              canTogglePastMonthWholeSheetLock={canLockColumns}
+              wholeSheetLocked={Boolean(isLockAccountsReceivable?.whole_sheet_locked)}
+              onTogglePastMonthWholeSheetLock={handleToggleARWholeSheetLock}
               isInSplitScreen={!!splitScreen}
               onLocksMonthKeyChange={setArLocksMonthKey}
               isLockAccountsReceivable={isLockAccountsReceivable}
@@ -3251,6 +3295,7 @@ export default function ClinicDetail() {
               providerId={providerId ?? undefined}
               providers={providers}
               canEdit={canEdit && !backupOverrideProviderPayByKey}
+              canTogglePastMonthWholeSheetLock={canLockColumns}
               isInSplitScreen={!!splitScreen}
               selectedMonth={selectedMonthProviderPay}
               onPreviousMonth={handlePreviousMonthProviderPay}
@@ -3574,11 +3619,17 @@ export default function ClinicDetail() {
   }
 
   const isProvidersOrPayTab = activeTab === 'providers' || activeTab === 'provider_pay'
+  /** Provider Pay loads its own data; requiring billing-sheet rows here caused infinite page spinner when that fetch skipped rows (races, early return). */
+  const singleProviderRouteBillingFinished =
+    !!providerId &&
+    singleProviderBillingSheetFetchFinishedKeyRef.current === `${providerId}|${selectedMonthKey}`
   const hasProviderSheetData = !isProvidersOrPayTab || (
-    providerId
-      ? (providerSheetRows[providerId]?.length ?? 0) > 0
-      : Object.keys(providerSheets).length > 0 ||
-        (lastProviderSheetContextRef.current?.monthKey === selectedMonthKey && lastProviderSheetContextRef.current?.clinicId === clinicId)
+    activeTab === 'provider_pay'
+      ? true
+      : providerId
+        ? (providerSheetRows[providerId]?.length ?? 0) > 0 || singleProviderRouteBillingFinished
+        : Object.keys(providerSheets).length > 0 ||
+          (lastProviderSheetContextRef.current?.monthKey === selectedMonthKey && lastProviderSheetContextRef.current?.clinicId === clinicId)
   )
   const pageReady = !loading && (!isProvidersOrPayTab || hasProviderSheetData)
 
