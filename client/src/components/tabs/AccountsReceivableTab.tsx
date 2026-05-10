@@ -1368,8 +1368,8 @@ export default function AccountsReceivableTab({
             >
               <ChevronLeft size={20} />
             </button>
-            <div className="text-lg font-semibold min-w-[200px] text-center">
-              {formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}
+            <div className="text-lg font-semibold min-w-[200px] text-center px-2">
+              A-R for {formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}
             </div>
             {canTogglePastMonthWholeSheetLock && isViewingPastPeriod && onTogglePastMonthWholeSheetLock && (
               <button

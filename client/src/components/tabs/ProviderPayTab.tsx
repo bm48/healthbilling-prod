@@ -852,7 +852,7 @@ export default function ProviderPayTab({
               style={{
                 backgroundColor: bgColor,
                 color: textColor,
-                width: '25rem',
+                width: 'min(100%, 32rem)',
                 // margin: 'auto',
                 // marginBottom: '10px',
               }}
@@ -865,7 +865,9 @@ export default function ProviderPayTab({
               >
                 <ChevronLeft size={20} />
               </button>
-              <div className="text-lg font-semibold min-w-[200px] text-center">{formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}</div>
+              <div className="text-lg font-semibold min-w-[200px] text-center px-2">
+                Provider Pay for {formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}
+              </div>
               {canTogglePastMonthWholeSheetLock && isViewingPastPeriod && (
                 <button
                   type="button"

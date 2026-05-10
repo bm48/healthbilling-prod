@@ -2337,8 +2337,8 @@ export default function ProvidersTab({
             >
               <ChevronLeft size={20} />
             </button>
-            <div className="text-lg font-semibold min-w-[200px] text-center">
-              {formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}
+            <div className="text-lg font-semibold min-w-[200px] text-center px-2">
+              Billing sheet for {formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}
             </div>
             <button
               onClick={onNextMonth}
