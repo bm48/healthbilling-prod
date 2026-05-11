@@ -7,7 +7,23 @@ import Handsontable from 'handsontable'
 import { createBubbleDropdownRenderer, DateOfServiceEditor } from '@/lib/handsontableCustomRenderers'
 import { ChevronLeft, ChevronRight, Lock, Unlock } from 'lucide-react'
 import { isPastPeriodFromMonthKey } from '@/lib/monthPeriodLock'
-import { toDisplayValue, toDisplayDate, toStoredString, parseDateOfServiceInput } from '@/lib/utils'
+import {
+  toDisplayValue,
+  toDisplayDate,
+  toStoredString,
+  parseDateOfServiceInput,
+  getYearMonthFromStoredDate,
+} from '@/lib/utils'
+
+/** Set localStorage HB_DEBUG_AR=1 and reload for verbose per-cell logs. */
+const AR_VERBOSE =
+  typeof window !== 'undefined' &&
+  typeof localStorage !== 'undefined' &&
+  localStorage.getItem('HB_DEBUG_AR') === '1'
+
+function arDebug(...args: unknown[]) {
+  console.log('[AR-debug]', ...args)
+}
 
 function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
   let max = -1
@@ -70,7 +86,11 @@ function arSnapshotsEqual(a: LastSavedARSnapshot, b: LastSavedARSnapshot): boole
   )
 }
 
-/** After save: apply DB ids/timestamps without clobbering in-flight cell edits (PatientsTab pattern). */
+/**
+ * After save: replace each saved row with the API response.
+ * Do not blend prior grid `row` fields — Handsontable keeps `''` for many cells (still `!== undefined`),
+ * which was overwriting freshly persisted name/amount/notes/dates with empty values after every save.
+ */
 function mergeDisplayedARAfterSave(
   prev: AccountsReceivable[],
   savedARMap: Map<string, AccountsReceivable>
@@ -83,28 +103,13 @@ function mergeDisplayedARAfterSave(
   return prev.map((row) => {
     const saved = savedARMap.get(row.id) ?? byNewId.get(row.id)
     if (!saved) return row
-    const normalized: AccountsReceivable = {
+    return {
       ...saved,
       name: (saved.name != null && saved.name !== 'null') ? saved.name : null,
       date_of_service: (saved.date_of_service != null && saved.date_of_service !== 'null') ? saved.date_of_service : null,
       date_recorded: (saved.date_recorded != null && saved.date_recorded !== 'null') ? saved.date_recorded : null,
       type: (saved.type != null && (saved.type as unknown) !== 'null') ? saved.type : null,
       notes: (saved.notes != null && saved.notes !== 'null') ? saved.notes : null,
-    }
-    return {
-      ...row,
-      id: normalized.id,
-      clinic_id: normalized.clinic_id,
-      payroll: normalized.payroll,
-      created_at: normalized.created_at,
-      updated_at: normalized.updated_at,
-      ar_id: row.ar_id !== undefined ? row.ar_id : normalized.ar_id,
-      name: row.name !== undefined ? row.name : normalized.name,
-      date_of_service: row.date_of_service !== undefined ? row.date_of_service : normalized.date_of_service,
-      date_recorded: row.date_recorded !== undefined ? row.date_recorded : normalized.date_recorded,
-      amount: row.amount !== undefined ? row.amount : normalized.amount,
-      type: row.type !== undefined ? row.type : normalized.type,
-      notes: row.notes !== undefined ? row.notes : normalized.notes,
     }
   })
 }
@@ -162,6 +167,8 @@ interface AccountsReceivableTabProps {
   backupVersionKey?: number
   /** Notifies parent of the month key used for AR data (and column locks): "Y-M" or "Y-M-P" when payroll=2. */
   onLocksMonthKeyChange?: (monthKey: string) => void
+  /** Register a flush function the parent calls before switching away from this tab (so pending save completes). */
+  onRegisterFlushBeforeTabLeave?: (flush: () => Promise<void>) => void
 }
 
 export default function AccountsReceivableTab({
@@ -180,6 +187,7 @@ export default function AccountsReceivableTab({
   isViewingBackup = false,
   backupVersionKey = 0,
   onLocksMonthKeyChange,
+  onRegisterFlushBeforeTabLeave,
 }: AccountsReceivableTabProps) {
   const { userProfile } = useAuth()
   const [statusColors, setStatusColors] = useState<StatusColor[]>([])
@@ -204,7 +212,10 @@ export default function AccountsReceivableTab({
   const lastSavedSnapshotRef = useRef<Map<string, LastSavedARSnapshot>>(new Map())
   const saveInProgressRef = useRef(false)
   const savePendingRef = useRef(false)
-  const [runPendingSaveTrigger, setRunPendingSaveTrigger] = useState(0)
+  /** Resolves when the in-flight save finishes; flush() awaits this before running a final save. */
+  const saveCompletePromiseRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null)
+  /** True whenever there is data the user typed that hasn't been persisted yet (gates beforeunload + unmount flush). */
+  const unsavedChangesRef = useRef(false)
   const saveAccountsReceivableRef = useRef<(rows: AccountsReceivable[]) => Promise<void>>(null as any)
   const tableContainerRef = useRef<HTMLDivElement>(null)
   const [tableHeight, setTableHeight] = useState(600)
@@ -240,17 +251,16 @@ export default function AccountsReceivableTab({
   }, [clinicPayroll])
 
   const isARInMonth = useCallback((ar: AccountsReceivable, monthDate: Date): boolean => {
-    const month = monthDate.getMonth()
-    const year = monthDate.getFullYear()
+    const targetMonth = monthDate.getMonth() + 1 // 1–12
+    const targetYear = monthDate.getFullYear()
     const now = new Date()
-    const isCurrentMonth = month === now.getMonth() && year === now.getFullYear()
+    const isCurrentMonth = monthDate.getMonth() === now.getMonth() && targetYear === now.getFullYear()
     if (ar.id.startsWith('empty-') || ar.id.startsWith('new-')) {
       const hasDate = !!(ar.date_of_service || ar.date_recorded)
       if (hasDate) {
         const d = ar.date_of_service || ar.date_recorded
-        const parsed = d ? new Date(String(d)) : null
-        if (parsed && !isNaN(parsed.getTime()))
-          return parsed.getMonth() === month && parsed.getFullYear() === year
+        const ym = getYearMonthFromStoredDate(d ? String(d) : null)
+        if (ym) return ym.year === targetYear && ym.month === targetMonth
         return false
       }
       // No date: show in the month being viewed (selected month), so add-row places it in the right view
@@ -258,9 +268,9 @@ export default function AccountsReceivableTab({
     }
     const dateStr = ar.date_of_service || ar.date_recorded
     if (!dateStr) return isCurrentMonth
-    const parsed = new Date(String(dateStr))
-    if (isNaN(parsed.getTime())) return isCurrentMonth
-    return parsed.getMonth() === month && parsed.getFullYear() === year
+    const ym = getYearMonthFromStoredDate(String(dateStr))
+    if (!ym) return isCurrentMonth
+    return ym.year === targetYear && ym.month === targetMonth
   }, [])
 
   // Use isLockAccountsReceivable from props directly - it will update when parent refreshes
@@ -355,6 +365,12 @@ export default function AccountsReceivableTab({
   const fetchAccountsReceivable = useCallback(async () => {
     const payrollFilter = clinicPayroll === 2 ? selectedPayroll : 1
     const thisFetchId = ++fetchIdRef.current
+    arDebug('fetchAccountsReceivable start', {
+      fetchId: thisFetchId,
+      clinicId,
+      payrollFilter,
+      clinicPayroll,
+    })
     try {
       const { data, error } = await apiClient
         .from('accounts_receivables')
@@ -370,7 +386,10 @@ export default function AccountsReceivableTab({
       }
 
       // Only apply if no newer fetch started (user may have switched payroll before we completed)
-      if (fetchIdRef.current !== thisFetchId) return
+      if (fetchIdRef.current !== thisFetchId) {
+        arDebug('fetchAccountsReceivable stale (newer fetch started)', { fetchId: thisFetchId })
+        return
+      }
 
       const fetchedARMap = new Map<string, AccountsReceivable>()
       fetchedAR.forEach((ar: AccountsReceivable) => {
@@ -438,6 +457,15 @@ export default function AccountsReceivableTab({
       })
       const nextDisplayed = buildDisplayedFromFull()
       setDisplayedAR(nextDisplayed)
+      const realCount = fullListRef.current.filter(
+        (r) => !r.id.startsWith('empty-') && !r.id.startsWith('placeholder-') && !r.id.startsWith('new-')
+      ).length
+      arDebug('fetchAccountsReceivable applied', {
+        fetchId: thisFetchId,
+        serverRowCount: newFetchedAR.length,
+        fullListRealRowCount: realCount,
+        payrollMergeMode: clinicPayroll === 1 ? 'preserve-new-empty-order' : 'replace-from-server',
+      })
     } catch (error) {
       console.error('Error fetching accounts receivable:', error)
     } finally {
@@ -489,9 +517,17 @@ export default function AccountsReceivableTab({
 
   const saveAccountsReceivable = useCallback(async (arToSave: AccountsReceivable[]) => {
     if (!clinicId || !userProfile) {
+      arDebug('saveAccountsReceivable early exit: missing clinicId or userProfile', {
+        hasClinicId: Boolean(clinicId),
+        hasUserProfile: Boolean(userProfile),
+      })
       return
     }
     if (!effectiveCanEdit) {
+      arDebug('saveAccountsReceivable early exit: effectiveCanEdit is false (locked or read-only)', {
+        canEdit,
+        wholeSheetLocked,
+      })
       return
     }
 
@@ -507,15 +543,32 @@ export default function AccountsReceivableTab({
     })
 
     if (arToProcess.length === 0) {
+      arDebug('saveAccountsReceivable skip: nothing to process (no dirty rows vs snapshot)', {
+        inputRowCount: arToSave.length,
+        newOrEmptyInInput: arToSave.filter((r) => r.id.startsWith('new-') || r.id.startsWith('empty-')).length,
+      })
+      unsavedChangesRef.current = false
       return
     }
 
+    arDebug('saveAccountsReceivable run', {
+      toProcessCount: arToProcess.length,
+      ids: arToProcess.map((r) => r.id).slice(0, 15),
+      debouncePending: saveARTimeoutRef.current != null,
+      saveInProgress: saveInProgressRef.current,
+    })
+
     if (saveInProgressRef.current) {
       savePendingRef.current = true
+      arDebug('saveAccountsReceivable: save already in flight, queued pending')
       return
     }
 
     saveInProgressRef.current = true
+    let resolveSaveComplete!: () => void
+    const saveCompletePromise = new Promise<void>((r) => { resolveSaveComplete = r })
+    saveCompletePromiseRef.current = { promise: saveCompletePromise, resolve: resolveSaveComplete }
+    let saveSucceeded = false
     try {
       const savedARMap = new Map<string, AccountsReceivable>()
 
@@ -529,13 +582,17 @@ export default function AccountsReceivableTab({
         }
 
         const payrollValue = clinicPayroll === 2 ? selectedPayroll : 1
+        const rawDos =
+          ar.date_of_service != null && ar.date_of_service !== 'null' ? String(ar.date_of_service) : null
+        const rawDr =
+          ar.date_recorded != null && ar.date_recorded !== 'null' ? String(ar.date_recorded) : null
         const arData: any = {
           clinic_id: clinicId,
           ar_id: finalArId.trim(),
           name: (ar.name != null && ar.name !== 'null') ? ar.name : null,
-          date_of_service: (ar.date_of_service != null && ar.date_of_service !== 'null') ? ar.date_of_service : null,
+          date_of_service: parseDateOfServiceInput(rawDos),
           amount: (ar.amount != null && (ar.amount as unknown) !== 'null') ? ar.amount : null,
-          date_recorded: (ar.date_recorded != null && ar.date_recorded !== 'null') ? ar.date_recorded : null,
+          date_recorded: parseDateOfServiceInput(rawDr),
           type: (ar.type != null && (ar.type as unknown) !== 'null') ? ar.type : null,
           notes: (ar.notes != null && ar.notes !== 'null') ? ar.notes : null,
           payroll: payrollValue,
@@ -551,8 +608,17 @@ export default function AccountsReceivableTab({
             .eq('id', ar.id)
             .select()
 
+          if (updateError || !updateData?.length) {
+            arDebug('save row UPDATE no match or error; will try INSERT', {
+              oldId: ar.id,
+              message: updateError?.message,
+              rowsReturned: updateData?.length ?? 0,
+            })
+          }
+
           if (!updateError && updateData && updateData.length > 0) {
             savedAR = updateData[0] as AccountsReceivable
+            arDebug('save row UPDATE ok', { oldId, dbId: savedAR.id, ar_id: savedAR.ar_id })
             savedARMap.set(oldId, savedAR)
             pendingNewIdByRowIdRef.current.delete(oldId)
             const norm: AccountsReceivable = {
@@ -580,8 +646,13 @@ export default function AccountsReceivableTab({
           throw insertError
         }
 
+        if (!insertedAR) {
+          arDebug('save row INSERT: server returned no row (insertedAR null)', { oldId, arData })
+        }
+
         if (insertedAR) {
           savedAR = insertedAR as AccountsReceivable
+          arDebug('save row INSERT ok', { oldId, dbId: savedAR.id, ar_id: savedAR.ar_id })
           savedARMap.set(oldId, savedAR)
           pendingNewIdByRowIdRef.current.delete(oldId)
           const norm: AccountsReceivable = {
@@ -617,6 +688,11 @@ export default function AccountsReceivableTab({
         displayedARRef.current = merged
         return merged
       })
+      saveSucceeded = true
+      arDebug('saveAccountsReceivable finished OK', {
+        savedMapSize: savedARMap.size,
+        unsavedFlagCleared: !savePendingRef.current,
+      })
     } catch (error: any) {
       console.error('[saveAR] catch error=', error, 'message=', error?.message, 'code=', error?.code, 'details=', error?.details)
       if (error?.message) console.error('[saveAR] full error message:', error.message)
@@ -624,39 +700,138 @@ export default function AccountsReceivableTab({
       alert(error?.message || 'Failed to save accounts receivable. Please try again.')
     } finally {
       saveInProgressRef.current = false
+      saveCompletePromiseRef.current?.resolve()
+      saveCompletePromiseRef.current = null
+      if (saveSucceeded && !savePendingRef.current) {
+        unsavedChangesRef.current = false
+      }
       if (savePendingRef.current) {
         savePendingRef.current = false
-        setRunPendingSaveTrigger((t) => t + 1)
+        arDebug('saveAccountsReceivable finally: chaining queued pending save')
+        // Call directly via ref (no setState/useEffect hop), so the queued save still runs after unmount.
+        void saveAccountsReceivableRef.current?.(fullListRef.current).catch((err) => {
+          console.error('[AccountsReceivableTab] Error in pending save:', err)
+        })
       }
     }
-  }, [clinicId, userProfile, clinicPayroll, selectedPayroll, effectiveCanEdit])
+  }, [clinicId, userProfile, clinicPayroll, selectedPayroll, effectiveCanEdit, canEdit, wholeSheetLocked])
 
   saveAccountsReceivableRef.current = saveAccountsReceivable
 
-  useEffect(() => {
-    if (runPendingSaveTrigger === 0) return
-    saveAccountsReceivableRef.current(fullListRef.current).catch((err) => {
-      console.error('[AccountsReceivableTab] Error in pending save:', err)
+  /**
+   * Commits any open cell editor (so the typed value reaches state), then runs the save pipeline,
+   * awaiting an in-flight save first. Mirrors PatientsTab's flush so the parent can call this
+   * from `handleTabChange` before unmounting us.
+   */
+  const flushARSave = useCallback(async () => {
+    arDebug('flushARSave start', {
+      unsavedChanges: unsavedChangesRef.current,
+      saveInProgress: saveInProgressRef.current,
+      savePending: savePendingRef.current,
+      debounceActive: saveARTimeoutRef.current != null,
     })
-  }, [runPendingSaveTrigger])
+    const hot = hotRef.current
+    try {
+      const anyHot = hot as unknown as { isEditing?: () => boolean; getActiveEditor?: () => { finishEditing?: () => void } | null }
+      if (anyHot?.isEditing?.()) {
+        const editor = anyHot.getActiveEditor?.() ?? null
+        editor?.finishEditing?.()
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      ;(hot as unknown as { deselectCell?: () => void })?.deselectCell?.()
+    } catch {
+      /* ignore */
+    }
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    )
 
-  // Flush pending save when tab is left so data isn't lost on switch (same as PatientsTab)
+    if (saveARTimeoutRef.current) {
+      clearTimeout(saveARTimeoutRef.current)
+      saveARTimeoutRef.current = null
+    }
+
+    const month = selectedMonthRef.current
+    const displayed = displayedARRef.current
+    const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, month))
+    const currentMonthRows = displayed.filter((ar) => !ar.id.startsWith('placeholder-'))
+    fullListRef.current = [...otherMonths, ...currentMonthRows]
+
+    if (saveInProgressRef.current && saveCompletePromiseRef.current) {
+      await saveCompletePromiseRef.current.promise
+    }
+    await saveAccountsReceivableRef.current?.(fullListRef.current)
+
+    while (savePendingRef.current || saveInProgressRef.current) {
+      if (saveInProgressRef.current && saveCompletePromiseRef.current) {
+        await saveCompletePromiseRef.current.promise
+      } else {
+        await new Promise<void>((r) => setTimeout(r, 0))
+      }
+    }
+    arDebug('flushARSave done', {
+      unsavedChanges: unsavedChangesRef.current,
+      saveInProgress: saveInProgressRef.current,
+      savePending: savePendingRef.current,
+    })
+  }, [isARInMonth])
+
+  useEffect(() => {
+    if (!onRegisterFlushBeforeTabLeave) return
+    arDebug('register flushARSave with ClinicDetail')
+    onRegisterFlushBeforeTabLeave(flushARSave)
+  }, [onRegisterFlushBeforeTabLeave, flushARSave])
+
+  // Warn user if they try to reload / close the tab while a save is queued or in flight.
+  // Browsers can't be told to wait for an async fetch, so this is the only reliable way to avoid losing data on reload.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      const dirty =
+        unsavedChangesRef.current ||
+        saveARTimeoutRef.current !== null ||
+        saveInProgressRef.current ||
+        savePendingRef.current
+      if (!dirty) return
+      arDebug('beforeunload: blocking navigation (unsaved / pending save)', {
+        unsavedChanges: unsavedChangesRef.current,
+        debounceActive: saveARTimeoutRef.current !== null,
+        saveInProgress: saveInProgressRef.current,
+        savePending: savePendingRef.current,
+      })
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
+
+  // Last-resort flush when component unmounts without the parent calling flushARSave first.
+  // We can't await here, but starting the fetch ensures the row is persisted server-side
+  // even though we won't be able to update local state.
   useEffect(() => {
     return () => {
       if (saveARTimeoutRef.current) {
         clearTimeout(saveARTimeoutRef.current)
         saveARTimeoutRef.current = null
-        const displayed = displayedARRef.current
-        const month = selectedMonthRef.current
-        const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, month))
-        const currentMonthRows = displayed.filter((ar) => !ar.id.startsWith('placeholder-'))
-        fullListRef.current = [...otherMonths, ...currentMonthRows]
-        saveAccountsReceivableRef.current?.(fullListRef.current)?.catch((err) => {
-          console.error('[AccountsReceivableTab unmount] Error flushing save:', err)
-        })
       }
+      if (!unsavedChangesRef.current && !savePendingRef.current) return
+      arDebug('unmount: last-chance save (timeout cleared or dirty flag)', {
+        unsavedChanges: unsavedChangesRef.current,
+        savePending: savePendingRef.current,
+      })
+      const displayed = displayedARRef.current
+      const month = selectedMonthRef.current
+      const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, month))
+      const currentMonthRows = displayed.filter((ar) => !ar.id.startsWith('placeholder-'))
+      fullListRef.current = [...otherMonths, ...currentMonthRows]
+      void saveAccountsReceivableRef.current?.(fullListRef.current)?.catch((err) => {
+        console.error('[AccountsReceivableTab unmount] Error flushing save:', err)
+      })
     }
-  }, [])
+  }, [isARInMonth])
 
   const handleDeleteAR = useCallback(async (arId: string) => {
     if (!effectiveCanEdit && !arId.startsWith('new-')) {
@@ -1243,6 +1418,10 @@ export default function AccountsReceivableTab({
     lastEditedRowRef.current = primaryRow
     if (primaryRow !== null) lastSelectedRowRef.current = primaryRow
 
+    unsavedChangesRef.current = true
+    if (AR_VERBOSE) {
+      arDebug('cell change', { source, rows: rowsInChange, hadDateColumnEdit })
+    }
     displayedARRef.current = updatedDisplayed
     setDisplayedAR(updatedDisplayed)
 

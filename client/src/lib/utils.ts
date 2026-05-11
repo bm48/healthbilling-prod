@@ -82,31 +82,73 @@ export function formatDateOfServiceAsYouType(input: string | null | undefined): 
   return parts.join('-')
 }
 
-/** Parse MM-DD-YY or MM-DD-YYYY to YYYY-MM-DD for storage. Returns null for empty/invalid. */
+/** Calendar check in UTC so YYYY-MM-DD parses consistently (no local-TZ drift). */
+function isValidCalendarYmd(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false
+  const t = Date.UTC(year, month - 1, day)
+  const dt = new Date(t)
+  return dt.getUTCFullYear() === year && dt.getUTCMonth() === month - 1 && dt.getUTCDate() === day
+}
+
+/**
+ * Parse user/table input to YYYY-MM-DD for Postgres `date` columns.
+ * Accepts YYYY-MM-DD, MM-DD-YY, MM-DD-YYYY (slashes OK: normalized to dashes).
+ * Returns null for empty input, partial typing ("11", "03-11"), garbage, or impossible dates.
+ */
 export function parseDateOfServiceInput(value: string | null | undefined): string | null {
   if (value == null || value === '' || value === 'null') return null
-  const s = String(value).trim()
+  let s = String(value).trim()
   if (!s) return null
-  // Already ISO-like (YYYY-MM-DD)?
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  // MM-DD-YY or MM-DD-YYYY
+  s = s.replace(/\//g, '-')
+
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (iso) {
+    const y = parseInt(iso[1]!, 10)
+    const mo = parseInt(iso[2]!, 10)
+    const d = parseInt(iso[3]!, 10)
+    if (!isValidCalendarYmd(y, mo, d)) return null
+    return s
+  }
+
+  // MM-DD-YY or MM-DD-YYYY (full date only — never pass through partial strings)
   const match = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2}|\d{4})$/)
-  if (!match) return s
-  const [, mm, dd, yyPart] = match
-  const month = parseInt(mm!, 10)
-  const day = parseInt(dd!, 10)
+  if (!match) return null
+
+  const month = parseInt(match[1]!, 10)
+  const day = parseInt(match[2]!, 10)
+  const yyPart = match[3]!
   let year: number
-  if (yyPart!.length === 2) {
-    const y = parseInt(yyPart!, 10)
+  if (yyPart.length === 2) {
+    const y = parseInt(yyPart, 10)
     year = y >= 0 && y <= 99 ? 2000 + y : y
   } else {
-    year = parseInt(yyPart!, 10)
+    year = parseInt(yyPart, 10)
   }
-  if (month < 1 || month > 12 || day < 1 || day > 31) return s
+
+  if (!isValidCalendarYmd(year, month, day)) return null
   const yyyy = String(year)
   const m = String(month).padStart(2, '0')
   const d = String(day).padStart(2, '0')
   return `${yyyy}-${m}-${d}`
+}
+
+/**
+ * Calendar year + month (1–12) from a stored DB/date string, without UTC midnight shift on `YYYY-MM-DD`.
+ * Use for month bucketing (e.g. AR tab filters); avoids `new Date('2021-11-11')` showing as prior day in US TZ.
+ */
+export function getYearMonthFromStoredDate(dateStr: string | null | undefined): { year: number; month: number } | null {
+  if (dateStr == null || dateStr === '' || dateStr === 'null') return null
+  const s = String(dateStr).trim()
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (iso) {
+    const year = parseInt(iso[1]!, 10)
+    const month = parseInt(iso[2]!, 10)
+    if (month < 1 || month > 12) return null
+    return { year, month }
+  }
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return null
+  return { year: d.getFullYear(), month: d.getMonth() + 1 }
 }
 
 /** Use for table cell display: never show the literal "null" or null/undefined. */

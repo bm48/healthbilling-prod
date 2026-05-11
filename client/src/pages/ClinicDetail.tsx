@@ -47,6 +47,20 @@ function initialTabFromPath(
   return 'patients'
 }
 
+/** True when the browser URL is the Accounts Receivable screen (provider-scoped or /clinic/:id/accounts_receivable). */
+function pathnameIsAccountsReceivableRoute(
+  pathname: string,
+  clinicId: string | undefined,
+  providerIdFromRoute: string | undefined,
+): boolean {
+  if (!clinicId) return false
+  if (providerIdFromRoute) {
+    const base = `/clinic/${clinicId}/providers/${providerIdFromRoute}`
+    if (pathname === `${base}/accounts_receivable`) return true
+  }
+  return pathname === `/clinic/${clinicId}/accounts_receivable`
+}
+
 /** Pre-migration `is_lock_providers` rows use this month_key; first open of a calendar month clones them into that month. */
 const IS_LOCK_PROVIDERS_LEGACY_MONTH_KEY = 'legacy'
 
@@ -204,6 +218,13 @@ export default function ClinicDetail() {
   const billingTodoTabFlushRef = useRef<(() => Promise<void>) | null>(null)
   /** Flush Providers save before switching tab; registered by ProvidersTab */
   const providersTabFlushRef = useRef<(() => Promise<void>) | null>(null)
+  /** Flush Accounts Receivable save before switching tab; registered by AccountsReceivableTab */
+  const accountsReceivableTabFlushRef = useRef<(() => Promise<void>) | null>(null)
+  /** Previous pathname — used to detect leaving AR via URL (sidebar / browser) without handleTabChange flush. */
+  const prevPathnameForArFlushRef = useRef<string>(location.pathname)
+  useEffect(() => {
+    prevPathnameForArFlushRef.current = location.pathname
+  }, [clinicId])
 
   // Month filter for provider tab (and pay-period half when clinic has payroll=2)
   const [selectedMonth, setSelectedMonth] = useState<Date>(new Date())
@@ -312,9 +333,31 @@ export default function ClinicDetail() {
     }
   }, [clinicId, userProfile, isBillingStaff, isOfficialStaff, navigate])
 
+  // Flush AR when the URL leaves the AR route (sidebar / browser / deep link) — must run BEFORE the tab-sync effect
+  // below, which would otherwise switch activeTab and unmount AR before we persist.
+  const isProvidersRoute = !!(clinicId && location.pathname.startsWith(`/clinic/${clinicId}/providers`))
+  useEffect(() => {
+    const prev = prevPathnameForArFlushRef.current
+    prevPathnameForArFlushRef.current = location.pathname
+    if (loading) return
+    const wasAr = pathnameIsAccountsReceivableRoute(prev, clinicId, providerId)
+    const nowAr = pathnameIsAccountsReceivableRoute(location.pathname, clinicId, providerId)
+    if (!wasAr || nowAr) return
+    const flush = accountsReceivableTabFlushRef.current
+    console.log('[AR-debug] ClinicDetail pathname left AR route; flushing save', {
+      prev,
+      next: location.pathname,
+      hasFlushFn: Boolean(flush),
+    })
+    if (!flush) return
+    setLoading(true)
+    void flush()
+      .catch((err) => console.error('[AR-debug] ClinicDetail URL-leave AR flush failed:', err))
+      .finally(() => setLoading(false))
+  }, [location.pathname, loading, clinicId, providerId])
+
   // Sync activeTab with URL parameter
   // When URL is /clinic/:clinicId/providers (or nested /providers/:id/…), match providers routes; "tab" param is undefined — derive tab from pathname.
-  const isProvidersRoute = !!(clinicId && location.pathname.startsWith(`/clinic/${clinicId}/providers`))
   useEffect(() => {
     // Don't sync tab from URL while flushing before tab leave (loading), so flush-triggered re-render doesn't overwrite activeTab before navigate()
     if (loading) return
@@ -3032,7 +3075,15 @@ export default function ClinicDetail() {
             ? billingTodoTabFlushRef.current
             : activeTab === 'providers' && tab !== 'providers'
               ? providersTabFlushRef.current
-            : null
+              : activeTab === 'accounts_receivable' && tab !== 'accounts_receivable'
+                ? accountsReceivableTabFlushRef.current
+                : null
+      if (activeTab === 'accounts_receivable' && tab !== 'accounts_receivable') {
+        console.log('[AR-debug] ClinicDetail handleTabChange leaving AR', {
+          toTab: tab,
+          hasFlushFn: Boolean(flushBeforeTabLeave),
+        })
+      }
       if (flushBeforeTabLeave) {
         setLoading(true)
         flushBeforeTabLeave().then(() => {
@@ -3224,6 +3275,7 @@ export default function ClinicDetail() {
               overrideFullAR={backupOverrideAR}
               isViewingBackup={!!selectedBackupVersionAR}
               backupVersionKey={backupViewKeyAR}
+              onRegisterFlushBeforeTabLeave={(flush) => { accountsReceivableTabFlushRef.current = flush }}
             />
           </>
         )
@@ -3537,7 +3589,21 @@ export default function ClinicDetail() {
   }
   
   // Exit split screen
-  const handleExitSplitScreen = () => {
+  const handleExitSplitScreen = async () => {
+    if (splitScreen?.left === 'accounts_receivable' || splitScreen?.right === 'accounts_receivable') {
+      const flush = accountsReceivableTabFlushRef.current
+      console.log('[AR-debug] ClinicDetail exit split while AR visible; flushing', { hasFlushFn: Boolean(flush) })
+      if (flush) {
+        try {
+          setLoading(true)
+          await flush()
+        } catch (err) {
+          console.error('[AR-debug] ClinicDetail split-exit AR flush failed:', err)
+        } finally {
+          setLoading(false)
+        }
+      }
+    }
     let restore = splitScreenExitRestoreRef.current
     splitScreenExitRestoreRef.current = null
     if (!restore && clinicId) {
@@ -3909,7 +3975,7 @@ export default function ClinicDetail() {
                   </button>
                   <button
                     type="button"
-                    onClick={handleExitSplitScreen}
+                    onClick={() => void handleExitSplitScreen()}
                     className="text-white/70 hover:text-white text-sm px-2"
                     title="Exit split screen"
                   >
