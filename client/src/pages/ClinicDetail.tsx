@@ -3633,6 +3633,14 @@ export default function ClinicDetail() {
   )
   const pageReady = !loading && (!isProvidersOrPayTab || hasProviderSheetData)
 
+  /** Patient Info and Billing To-Do are clinic-wide; omit provider name from the page title there. */
+  const clinicPageTitle =
+    !splitScreen && (activeTab === 'patients' || activeTab === 'todo')
+      ? (clinic?.name ?? '')
+      : fullName.trim()
+        ? `${fullName} - ${clinic?.name ?? ''}`
+        : (clinic?.name ?? '')
+
   if (!pageReady) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -3645,7 +3653,7 @@ export default function ClinicDetail() {
     <div>
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-white mb-2">{`${fullName} - ${clinic?.name}`}</h1>
+          <h1 className="text-xl font-bold text-white mb-2">{clinicPageTitle}</h1>
         </div>
         {((!providerId || userProfile?.role !== 'office_staff') || userProfile?.role === 'office_staff') && (showPatientTab || showBillingTodoTab || !splitScreen) && (
           <div className="flex items-center gap-2 shrink-0">

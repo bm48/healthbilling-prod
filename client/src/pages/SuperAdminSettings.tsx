@@ -881,7 +881,7 @@ export default function SuperAdminSettings() {
   ]
   const tabs =
     variant === 'super_admin'
-      ? [...baseTabs, { id: 'unlock' as const, label: 'Locked Sheets', icon: Unlock }, { id: 'change-password' as const, label: 'Change Password', icon: Key }]
+      ? [...baseTabs,  { id: 'change-password' as const, label: 'Change Password', icon: Key }]
       // : variant === 'admin'
       //   ? [...baseTabs, { id: 'month-close' as const, label: 'Month Close', icon: Calendar }]
         : baseTabs
