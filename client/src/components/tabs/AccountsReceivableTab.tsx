@@ -15,16 +15,6 @@ import {
   getYearMonthFromStoredDate,
 } from '@/lib/utils'
 
-/** Set localStorage HB_DEBUG_AR=1 and reload for verbose per-cell logs. */
-const AR_VERBOSE =
-  typeof window !== 'undefined' &&
-  typeof localStorage !== 'undefined' &&
-  localStorage.getItem('HB_DEBUG_AR') === '1'
-
-function arDebug(...args: unknown[]) {
-  console.log('[AR-debug]', ...args)
-}
-
 function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
   let max = -1
   for (const r of rows) {
@@ -365,12 +355,6 @@ export default function AccountsReceivableTab({
   const fetchAccountsReceivable = useCallback(async () => {
     const payrollFilter = clinicPayroll === 2 ? selectedPayroll : 1
     const thisFetchId = ++fetchIdRef.current
-    arDebug('fetchAccountsReceivable start', {
-      fetchId: thisFetchId,
-      clinicId,
-      payrollFilter,
-      clinicPayroll,
-    })
     try {
       const { data, error } = await apiClient
         .from('accounts_receivables')
@@ -387,7 +371,6 @@ export default function AccountsReceivableTab({
 
       // Only apply if no newer fetch started (user may have switched payroll before we completed)
       if (fetchIdRef.current !== thisFetchId) {
-        arDebug('fetchAccountsReceivable stale (newer fetch started)', { fetchId: thisFetchId })
         return
       }
 
@@ -457,15 +440,6 @@ export default function AccountsReceivableTab({
       })
       const nextDisplayed = buildDisplayedFromFull()
       setDisplayedAR(nextDisplayed)
-      const realCount = fullListRef.current.filter(
-        (r) => !r.id.startsWith('empty-') && !r.id.startsWith('placeholder-') && !r.id.startsWith('new-')
-      ).length
-      arDebug('fetchAccountsReceivable applied', {
-        fetchId: thisFetchId,
-        serverRowCount: newFetchedAR.length,
-        fullListRealRowCount: realCount,
-        payrollMergeMode: clinicPayroll === 1 ? 'preserve-new-empty-order' : 'replace-from-server',
-      })
     } catch (error) {
       console.error('Error fetching accounts receivable:', error)
     } finally {
@@ -517,17 +491,9 @@ export default function AccountsReceivableTab({
 
   const saveAccountsReceivable = useCallback(async (arToSave: AccountsReceivable[]) => {
     if (!clinicId || !userProfile) {
-      arDebug('saveAccountsReceivable early exit: missing clinicId or userProfile', {
-        hasClinicId: Boolean(clinicId),
-        hasUserProfile: Boolean(userProfile),
-      })
       return
     }
     if (!effectiveCanEdit) {
-      arDebug('saveAccountsReceivable early exit: effectiveCanEdit is false (locked or read-only)', {
-        canEdit,
-        wholeSheetLocked,
-      })
       return
     }
 
@@ -543,24 +509,12 @@ export default function AccountsReceivableTab({
     })
 
     if (arToProcess.length === 0) {
-      arDebug('saveAccountsReceivable skip: nothing to process (no dirty rows vs snapshot)', {
-        inputRowCount: arToSave.length,
-        newOrEmptyInInput: arToSave.filter((r) => r.id.startsWith('new-') || r.id.startsWith('empty-')).length,
-      })
       unsavedChangesRef.current = false
       return
     }
 
-    arDebug('saveAccountsReceivable run', {
-      toProcessCount: arToProcess.length,
-      ids: arToProcess.map((r) => r.id).slice(0, 15),
-      debouncePending: saveARTimeoutRef.current != null,
-      saveInProgress: saveInProgressRef.current,
-    })
-
     if (saveInProgressRef.current) {
       savePendingRef.current = true
-      arDebug('saveAccountsReceivable: save already in flight, queued pending')
       return
     }
 
@@ -608,17 +562,8 @@ export default function AccountsReceivableTab({
             .eq('id', ar.id)
             .select()
 
-          if (updateError || !updateData?.length) {
-            arDebug('save row UPDATE no match or error; will try INSERT', {
-              oldId: ar.id,
-              message: updateError?.message,
-              rowsReturned: updateData?.length ?? 0,
-            })
-          }
-
           if (!updateError && updateData && updateData.length > 0) {
             savedAR = updateData[0] as AccountsReceivable
-            arDebug('save row UPDATE ok', { oldId, dbId: savedAR.id, ar_id: savedAR.ar_id })
             savedARMap.set(oldId, savedAR)
             pendingNewIdByRowIdRef.current.delete(oldId)
             const norm: AccountsReceivable = {
@@ -646,13 +591,8 @@ export default function AccountsReceivableTab({
           throw insertError
         }
 
-        if (!insertedAR) {
-          arDebug('save row INSERT: server returned no row (insertedAR null)', { oldId, arData })
-        }
-
         if (insertedAR) {
           savedAR = insertedAR as AccountsReceivable
-          arDebug('save row INSERT ok', { oldId, dbId: savedAR.id, ar_id: savedAR.ar_id })
           savedARMap.set(oldId, savedAR)
           pendingNewIdByRowIdRef.current.delete(oldId)
           const norm: AccountsReceivable = {
@@ -689,10 +629,6 @@ export default function AccountsReceivableTab({
         return merged
       })
       saveSucceeded = true
-      arDebug('saveAccountsReceivable finished OK', {
-        savedMapSize: savedARMap.size,
-        unsavedFlagCleared: !savePendingRef.current,
-      })
     } catch (error: any) {
       console.error('[saveAR] catch error=', error, 'message=', error?.message, 'code=', error?.code, 'details=', error?.details)
       if (error?.message) console.error('[saveAR] full error message:', error.message)
@@ -707,14 +643,13 @@ export default function AccountsReceivableTab({
       }
       if (savePendingRef.current) {
         savePendingRef.current = false
-        arDebug('saveAccountsReceivable finally: chaining queued pending save')
         // Call directly via ref (no setState/useEffect hop), so the queued save still runs after unmount.
         void saveAccountsReceivableRef.current?.(fullListRef.current).catch((err) => {
           console.error('[AccountsReceivableTab] Error in pending save:', err)
         })
       }
     }
-  }, [clinicId, userProfile, clinicPayroll, selectedPayroll, effectiveCanEdit, canEdit, wholeSheetLocked])
+  }, [clinicId, userProfile, clinicPayroll, selectedPayroll, effectiveCanEdit])
 
   saveAccountsReceivableRef.current = saveAccountsReceivable
 
@@ -724,12 +659,6 @@ export default function AccountsReceivableTab({
    * from `handleTabChange` before unmounting us.
    */
   const flushARSave = useCallback(async () => {
-    arDebug('flushARSave start', {
-      unsavedChanges: unsavedChangesRef.current,
-      saveInProgress: saveInProgressRef.current,
-      savePending: savePendingRef.current,
-      debounceActive: saveARTimeoutRef.current != null,
-    })
     const hot = hotRef.current
     try {
       const anyHot = hot as unknown as { isEditing?: () => boolean; getActiveEditor?: () => { finishEditing?: () => void } | null }
@@ -772,16 +701,10 @@ export default function AccountsReceivableTab({
         await new Promise<void>((r) => setTimeout(r, 0))
       }
     }
-    arDebug('flushARSave done', {
-      unsavedChanges: unsavedChangesRef.current,
-      saveInProgress: saveInProgressRef.current,
-      savePending: savePendingRef.current,
-    })
   }, [isARInMonth])
 
   useEffect(() => {
     if (!onRegisterFlushBeforeTabLeave) return
-    arDebug('register flushARSave with ClinicDetail')
     onRegisterFlushBeforeTabLeave(flushARSave)
   }, [onRegisterFlushBeforeTabLeave, flushARSave])
 
@@ -795,12 +718,6 @@ export default function AccountsReceivableTab({
         saveInProgressRef.current ||
         savePendingRef.current
       if (!dirty) return
-      arDebug('beforeunload: blocking navigation (unsaved / pending save)', {
-        unsavedChanges: unsavedChangesRef.current,
-        debounceActive: saveARTimeoutRef.current !== null,
-        saveInProgress: saveInProgressRef.current,
-        savePending: savePendingRef.current,
-      })
       e.preventDefault()
       e.returnValue = ''
     }
@@ -818,10 +735,6 @@ export default function AccountsReceivableTab({
         saveARTimeoutRef.current = null
       }
       if (!unsavedChangesRef.current && !savePendingRef.current) return
-      arDebug('unmount: last-chance save (timeout cleared or dirty flag)', {
-        unsavedChanges: unsavedChangesRef.current,
-        savePending: savePendingRef.current,
-      })
       const displayed = displayedARRef.current
       const month = selectedMonthRef.current
       const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, month))
@@ -1419,9 +1332,6 @@ export default function AccountsReceivableTab({
     if (primaryRow !== null) lastSelectedRowRef.current = primaryRow
 
     unsavedChangesRef.current = true
-    if (AR_VERBOSE) {
-      arDebug('cell change', { source, rows: rowsInChange, hadDateColumnEdit })
-    }
     displayedARRef.current = updatedDisplayed
     setDisplayedAR(updatedDisplayed)
 

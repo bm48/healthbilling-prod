@@ -344,15 +344,10 @@ export default function ClinicDetail() {
     const nowAr = pathnameIsAccountsReceivableRoute(location.pathname, clinicId, providerId)
     if (!wasAr || nowAr) return
     const flush = accountsReceivableTabFlushRef.current
-    console.log('[AR-debug] ClinicDetail pathname left AR route; flushing save', {
-      prev,
-      next: location.pathname,
-      hasFlushFn: Boolean(flush),
-    })
     if (!flush) return
     setLoading(true)
     void flush()
-      .catch((err) => console.error('[AR-debug] ClinicDetail URL-leave AR flush failed:', err))
+      .catch((err) => console.error('[ClinicDetail] URL-leave AR flush failed:', err))
       .finally(() => setLoading(false))
   }, [location.pathname, loading, clinicId, providerId])
 
@@ -3078,12 +3073,6 @@ export default function ClinicDetail() {
               : activeTab === 'accounts_receivable' && tab !== 'accounts_receivable'
                 ? accountsReceivableTabFlushRef.current
                 : null
-      if (activeTab === 'accounts_receivable' && tab !== 'accounts_receivable') {
-        console.log('[AR-debug] ClinicDetail handleTabChange leaving AR', {
-          toTab: tab,
-          hasFlushFn: Boolean(flushBeforeTabLeave),
-        })
-      }
       if (flushBeforeTabLeave) {
         setLoading(true)
         flushBeforeTabLeave().then(() => {
@@ -3592,13 +3581,12 @@ export default function ClinicDetail() {
   const handleExitSplitScreen = async () => {
     if (splitScreen?.left === 'accounts_receivable' || splitScreen?.right === 'accounts_receivable') {
       const flush = accountsReceivableTabFlushRef.current
-      console.log('[AR-debug] ClinicDetail exit split while AR visible; flushing', { hasFlushFn: Boolean(flush) })
       if (flush) {
         try {
           setLoading(true)
           await flush()
         } catch (err) {
-          console.error('[AR-debug] ClinicDetail split-exit AR flush failed:', err)
+          console.error('[ClinicDetail] split-exit AR flush failed:', err)
         } finally {
           setLoading(false)
         }
