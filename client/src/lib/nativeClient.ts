@@ -167,6 +167,20 @@ function writePersistedSession(storageKey: string, session: AppSession | null): 
   localStorage.setItem(storageKey, JSON.stringify(blob))
 }
 
+/** JWT `exp` (seconds) when persisted session omits `expires_at` (older clients). */
+function accessTokenExpSecondsFromJwt(accessToken: string): number | null {
+  try {
+    const parts = accessToken.split('.')
+    if (parts.length < 2) return null
+    const b64 = parts[1]!.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = b64 + '=='.slice((b64.length + 3) % 4)
+    const payload = JSON.parse(atob(padded)) as { exp?: number }
+    return typeof payload.exp === 'number' ? payload.exp : null
+  } catch {
+    return null
+  }
+}
+
 type AuthListener = (event: string, session: AppSession | null) => void
 
 export class PostgrestBuilder implements Promise<PostgrestResponse> {
@@ -188,6 +202,7 @@ export class PostgrestBuilder implements Promise<PostgrestResponse> {
 
   constructor(
     private readonly getAccessToken: () => string | null,
+    private readonly preflightSession: () => Promise<void>,
     _storageKey: string,
     table: string,
   ) {
@@ -310,6 +325,7 @@ export class PostgrestBuilder implements Promise<PostgrestResponse> {
   }
 
   private async run(): Promise<PostgrestResponse> {
+    await this.preflightSession()
     const allDbg = hbDebugAllDbQueries()
     const traceTable = allDbg
     if (traceTable && typeof window !== 'undefined') {
@@ -541,6 +557,9 @@ class StorageBucket {
 }
 
 export class NativeClient {
+  /** Single in-flight refresh so parallel /api/db/query calls do not rotate the refresh token twice (second refresh would fail and clear the session). */
+  private refreshInFlight: Promise<void> | null = null
+
   readonly auth: {
     getSession: () => Promise<{ data: { session: AppSession | null }; error: ApiError | null }>
     signInWithPassword: (creds: {
@@ -569,6 +588,31 @@ export class NativeClient {
   }
 
   private listeners = new Set<AuthListener>()
+
+  /** Refresh access token when missing expiry data or within 2 minutes of JWT expiry (server uses 1h access tokens). */
+  private async refreshAccessTokenIfStale(): Promise<void> {
+    if (this.refreshInFlight) {
+      await this.refreshInFlight
+      return
+    }
+    const s = readPersistedSession(this.storageKey)
+    if (!s?.refresh_token) return
+    const nowSec = Math.floor(Date.now() / 1000)
+    const expSec = s.expires_at ?? accessTokenExpSecondsFromJwt(s.access_token)
+    if (expSec != null && nowSec < expSec - 120) return
+
+    const flight = (async () => {
+      await this.auth.refreshSession()
+    })()
+    this.refreshInFlight = flight
+    try {
+      await flight
+    } finally {
+      if (this.refreshInFlight === flight) {
+        this.refreshInFlight = null
+      }
+    }
+  }
 
   constructor(private readonly storageKey: string) {
     const emit = (event: string, session: AppSession | null) => {
@@ -762,7 +806,12 @@ export class NativeClient {
   }
 
   from(table: string): PostgrestBuilder {
-    return new PostgrestBuilder(() => this.getAccessToken(), this.storageKey, table)
+    return new PostgrestBuilder(
+      () => this.getAccessToken(),
+      () => this.refreshAccessTokenIfStale(),
+      this.storageKey,
+      table,
+    )
   }
 
   /** After sign-in, records a provider_login row when the user matches a provider by email. */

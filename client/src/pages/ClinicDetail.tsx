@@ -225,6 +225,15 @@ export default function ClinicDetail() {
   useEffect(() => {
     prevPathnameForArFlushRef.current = location.pathname
   }, [clinicId])
+  /**
+   * When leaving AR via URL change, we flush save while pathname is already the next route.
+   * Block the URL→activeTab sync effect until flush finishes so AR (and Handsontable) stay mounted.
+   * Never use global `loading` for this: `pageReady` is `!loading`, so setLoading(true) would unmount
+   * all tab content and destroy HOT before finishEditing / rAF — Patient Info / To-Do looked fine because
+   * refs were often already synced; AR’s flush merges from HOT after rAF and was losing edits + DB writes.
+   */
+  const blockUrlTabSyncDuringFlushRef = useRef(false)
+  const [urlSyncRetryNonce, setUrlSyncRetryNonce] = useState(0)
 
   // Month filter for provider tab (and pay-period half when clinic has payroll=2)
   const [selectedMonth, setSelectedMonth] = useState<Date>(new Date())
@@ -345,17 +354,21 @@ export default function ClinicDetail() {
     if (!wasAr || nowAr) return
     const flush = accountsReceivableTabFlushRef.current
     if (!flush) return
-    setLoading(true)
+    blockUrlTabSyncDuringFlushRef.current = true
     void flush()
       .catch((err) => console.error('[ClinicDetail] URL-leave AR flush failed:', err))
-      .finally(() => setLoading(false))
+      .finally(() => {
+        blockUrlTabSyncDuringFlushRef.current = false
+        setUrlSyncRetryNonce((n) => n + 1)
+      })
   }, [location.pathname, loading, clinicId, providerId])
 
   // Sync activeTab with URL parameter
   // When URL is /clinic/:clinicId/providers (or nested /providers/:id/…), match providers routes; "tab" param is undefined — derive tab from pathname.
   useEffect(() => {
-    // Don't sync tab from URL while flushing before tab leave (loading), so flush-triggered re-render doesn't overwrite activeTab before navigate()
-    if (loading) return
+    // Don't sync tab from URL while initial clinic load (loading) or while AR URL-leave flush runs
+    // (blockUrlTabSyncDuringFlushRef), so we don't unmount AR before persist. See blockUrlTabSyncDuringFlushRef.
+    if (loading || blockUrlTabSyncDuringFlushRef.current) return
     const scopedBase =
       clinicId && providerId ? `/clinic/${clinicId}/providers/${providerId}` : null
     const onProviderFinanceAR = scopedBase && location.pathname === `${scopedBase}/accounts_receivable`
@@ -413,6 +426,7 @@ export default function ClinicDetail() {
     isBillingStaff,
     isOfficialStaff,
     loading,
+    urlSyncRetryNonce,
   ])
 
   // Hydrate header when Patient Info / Billing To-Do / AR / Provider Pay have no provider-scoped billing fetch
@@ -3074,7 +3088,8 @@ export default function ClinicDetail() {
                 ? accountsReceivableTabFlushRef.current
                 : null
       if (flushBeforeTabLeave) {
-        setLoading(true)
+        // Do not setLoading(true) here: pageReady is !loading, so a full-page spinner would unmount the
+        // tab being flushed and destroy Handsontable before finishEditing + save (especially AR).
         flushBeforeTabLeave().then(() => {
           setActiveTab(tab)
           const scopePid = providerId ?? getLastSelectedProviderId()
@@ -3087,10 +3102,8 @@ export default function ClinicDetail() {
                   ? `/clinic/${clinicId}/providers/${scopePid}/provider_pay`
                   : `/clinic/${clinicId}/${tab}`
           navigate(path, { replace: true })
-          setLoading(false)
         }).catch(err => {
           console.error('[ClinicDetail] Flush before tab leave failed:', err)
-          setLoading(false)
           setActiveTab(tab)
           const scopePid = providerId ?? getLastSelectedProviderId()
           const path =
@@ -3583,12 +3596,9 @@ export default function ClinicDetail() {
       const flush = accountsReceivableTabFlushRef.current
       if (flush) {
         try {
-          setLoading(true)
           await flush()
         } catch (err) {
           console.error('[ClinicDetail] split-exit AR flush failed:', err)
-        } finally {
-          setLoading(false)
         }
       }
     }

@@ -43,8 +43,8 @@ export function formatDateTime(date: string | null | undefined): string {
 export function toDisplayDate(value: string | null | undefined): string {
   if (value == null || value === '' || value === 'null') return ''
   const s = String(value).trim()
-  // Parse YYYY-MM-DD as date-only (no timezone): avoid new Date() which treats it as UTC and shifts day in local TZ
-  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  // YYYY-MM-DD or PostgREST ISO (`YYYY-MM-DDTHH:mm:ss.sssZ`) — use calendar date part only (no TZ shift)
+  const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ].*)?$/.exec(s)
   if (iso) {
     const [, yyyy, mm, dd] = iso
     if (mm && dd) return `${mm}-${dd}-${yyyy!.slice(-2)}`
@@ -92,7 +92,8 @@ function isValidCalendarYmd(year: number, month: number, day: number): boolean {
 
 /**
  * Parse user/table input to YYYY-MM-DD for Postgres `date` columns.
- * Accepts YYYY-MM-DD, MM-DD-YY, MM-DD-YYYY (slashes OK: normalized to dashes).
+ * Accepts YYYY-MM-DD (optional `T…` / time suffix from PostgREST), MM-DD-YY, MM-DD-YYYY (slashes OK: normalized to dashes).
+ * Dashed US form requires two-digit month and day (MM-DD-YY / MM-DD-YYYY).
  * Returns null for empty input, partial typing ("11", "03-11"), garbage, or impossible dates.
  */
 export function parseDateOfServiceInput(value: string | null | undefined): string | null {
@@ -101,17 +102,17 @@ export function parseDateOfServiceInput(value: string | null | undefined): strin
   if (!s) return null
   s = s.replace(/\//g, '-')
 
-  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ].*)?$/.exec(s)
   if (iso) {
     const y = parseInt(iso[1]!, 10)
     const mo = parseInt(iso[2]!, 10)
     const d = parseInt(iso[3]!, 10)
     if (!isValidCalendarYmd(y, mo, d)) return null
-    return s
+    return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`
   }
 
-  // MM-DD-YY or MM-DD-YYYY (full date only — never pass through partial strings)
-  const match = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2}|\d{4})$/)
+  // MM-DD-YY or MM-DD-YYYY (two-digit month and day — not "3-5-25")
+  const match = s.match(/^(\d{2})-(\d{2})-(\d{2}|\d{4})$/)
   if (!match) return null
 
   const month = parseInt(match[1]!, 10)
@@ -134,15 +135,18 @@ export function parseDateOfServiceInput(value: string | null | undefined): strin
 
 /**
  * Calendar year + month (1–12) from a stored DB/date string, without UTC midnight shift on `YYYY-MM-DD`.
+ * Also handles PostgREST ISO datetimes (`YYYY-MM-DDTHH:mm:ss.sssZ`) using the **date** part only.
  * Use for month bucketing (e.g. AR tab filters); avoids `new Date('2021-11-11')` showing as prior day in US TZ.
  */
 export function getYearMonthFromStoredDate(dateStr: string | null | undefined): { year: number; month: number } | null {
   if (dateStr == null || dateStr === '' || dateStr === 'null') return null
   const s = String(dateStr).trim()
-  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ].*)?$/.exec(s)
   if (iso) {
     const year = parseInt(iso[1]!, 10)
     const month = parseInt(iso[2]!, 10)
+    const day = parseInt(iso[3]!, 10)
+    if (!isValidCalendarYmd(year, month, day)) return null
     if (month < 1 || month > 12) return null
     return { year, month }
   }

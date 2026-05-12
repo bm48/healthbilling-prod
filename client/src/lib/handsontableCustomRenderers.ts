@@ -1,5 +1,5 @@
 import Handsontable from 'handsontable'
-import { formatDateOfServiceAsYouType, toDisplayDate } from '@/lib/utils'
+import { formatDateOfServiceAsYouType, parseDateOfServiceInput, toDisplayDate } from '@/lib/utils'
 
 /**
  * Renders a numeric value as currency ($10.00). Empty/null shows blank.
@@ -511,6 +511,16 @@ export class DateOfServiceEditor extends Handsontable.editors.TextEditor {
     const raw = (initialValue != null && initialValue !== '') ? String(initialValue) : input.value
     const display = toDisplayDate(raw)
     if (display) input.value = display
+  }
+
+  /** Invalid or partial dates must not commit to the grid — store empty until the user enters a full valid MM-DD-YY (or YYYY-MM-DD). */
+  getValue(): string {
+    const input = this.TEXTAREA as HTMLInputElement | undefined
+    const v = input?.value?.trim() ?? ''
+    if (!v) return ''
+    const parsed = parseDateOfServiceInput(v)
+    if (parsed == null) return ''
+    return toDisplayDate(parsed) || ''
   }
 }
 

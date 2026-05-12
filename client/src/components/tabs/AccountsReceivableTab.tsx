@@ -76,31 +76,57 @@ function arSnapshotsEqual(a: LastSavedARSnapshot, b: LastSavedARSnapshot): boole
   )
 }
 
-/**
- * After save: replace each saved row with the API response.
- * Do not blend prior grid `row` fields — Handsontable keeps `''` for many cells (still `!== undefined`),
- * which was overwriting freshly persisted name/amount/notes/dates with empty values after every save.
- */
-function mergeDisplayedARAfterSave(
-  prev: AccountsReceivable[],
-  savedARMap: Map<string, AccountsReceivable>
-): AccountsReceivable[] {
+function normalizeARFromDb(saved: AccountsReceivable): AccountsReceivable {
+  return {
+    ...saved,
+    ar_id: saved.ar_id != null && String(saved.ar_id) !== 'null' ? String(saved.ar_id) : '',
+    name: (saved.name != null && saved.name !== 'null') ? saved.name : null,
+    date_of_service: (saved.date_of_service != null && saved.date_of_service !== 'null') ? saved.date_of_service : null,
+    date_recorded: (saved.date_recorded != null && saved.date_recorded !== 'null') ? saved.date_recorded : null,
+    type: (saved.type != null && (saved.type as unknown) !== 'null') ? saved.type : null,
+    notes: (saved.notes != null && saved.notes !== 'null') ? saved.notes : null,
+  }
+}
+
+/** Same merge idea as PatientsTab after save + BillingTodoTab `setTodos`: keep in-flight grid edits; apply id/timestamps/clinic from DB; `ar_id` always from DB like `patient_id`. */
+function mergeARRowAfterSave(row: AccountsReceivable, saved: AccountsReceivable): AccountsReceivable {
+  const normalized = normalizeARFromDb(saved)
+  const merged: AccountsReceivable = {
+    ...row,
+    id: normalized.id,
+    created_at: normalized.created_at,
+    updated_at: normalized.updated_at,
+    clinic_id: normalized.clinic_id,
+    payroll: normalized.payroll,
+    ar_id: normalized.ar_id,
+    name: row.name !== undefined ? row.name : normalized.name,
+    date_of_service: row.date_of_service !== undefined ? row.date_of_service : normalized.date_of_service,
+    amount: row.amount !== undefined ? row.amount : normalized.amount,
+    date_recorded: row.date_recorded !== undefined ? row.date_recorded : normalized.date_recorded,
+    type: row.type !== undefined ? row.type : normalized.type,
+    notes: row.notes !== undefined ? row.notes : normalized.notes,
+  }
+  return merged
+}
+
+function buildSavedARLookup(savedARMap: Map<string, AccountsReceivable>) {
   const byNewId = new Map<string, AccountsReceivable>()
   savedARMap.forEach((saved, oldId) => {
     byNewId.set(saved.id, saved)
     if (oldId !== saved.id) byNewId.set(oldId, saved)
   })
+  return byNewId
+}
+
+function mergeDisplayedARAfterSave(
+  prev: AccountsReceivable[],
+  savedARMap: Map<string, AccountsReceivable>
+): AccountsReceivable[] {
+  const byNewId = buildSavedARLookup(savedARMap)
   return prev.map((row) => {
     const saved = savedARMap.get(row.id) ?? byNewId.get(row.id)
     if (!saved) return row
-    return {
-      ...saved,
-      name: (saved.name != null && saved.name !== 'null') ? saved.name : null,
-      date_of_service: (saved.date_of_service != null && saved.date_of_service !== 'null') ? saved.date_of_service : null,
-      date_recorded: (saved.date_recorded != null && saved.date_recorded !== 'null') ? saved.date_recorded : null,
-      type: (saved.type != null && (saved.type as unknown) !== 'null') ? saved.type : null,
-      notes: (saved.notes != null && saved.notes !== 'null') ? saved.notes : null,
-    }
+    return mergeARRowAfterSave(row, saved)
   })
 }
 
@@ -202,6 +228,7 @@ export default function AccountsReceivableTab({
   const lastSavedSnapshotRef = useRef<Map<string, LastSavedARSnapshot>>(new Map())
   const saveInProgressRef = useRef(false)
   const savePendingRef = useRef(false)
+  const [runPendingSaveTrigger, setRunPendingSaveTrigger] = useState(0)
   /** Resolves when the in-flight save finishes; flush() awaits this before running a final save. */
   const saveCompletePromiseRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null)
   /** True whenever there is data the user typed that hasn't been persisted yet (gates beforeunload + unmount flush). */
@@ -256,6 +283,13 @@ export default function AccountsReceivableTab({
       // No date: show in the month being viewed (selected month), so add-row places it in the right view
       return true
     }
+    // Persisted rows: include when created_at is in the selected month (DOS/DR may be another month or null)
+    const createdYm = getYearMonthFromStoredDate(
+      ar.created_at != null && ar.created_at !== '' && ar.created_at !== 'null' ? String(ar.created_at) : null
+    )
+    if (createdYm && createdYm.year === targetYear && createdYm.month === targetMonth) {
+      return true
+    }
     const dateStr = ar.date_of_service || ar.date_recorded
     if (!dateStr) return isCurrentMonth
     const ym = getYearMonthFromStoredDate(String(dateStr))
@@ -294,9 +328,9 @@ export default function AccountsReceivableTab({
 
   /** Build displayed list (200 rows) for selected month from a full list. Used for both live (fullListRef) and backup override. */
   const buildDisplayedFromList = useCallback((list: AccountsReceivable[]): AccountsReceivable[] => {
-    let filtered = list.filter(ar => isARInMonth(ar, selectedMonth))
+    let filtered = list.filter((ar) => isARInMonth(ar, selectedMonth))
     if (clinicPayroll === 2) {
-      filtered = filtered.filter(ar => (ar.payroll ?? 1) === selectedPayroll)
+      filtered = filtered.filter((ar) => (ar.payroll ?? 1) === selectedPayroll)
     }
     if (filtered.length >= 200) return filtered
     const need = 200 - filtered.length
@@ -608,18 +642,10 @@ export default function AccountsReceivableTab({
         }
       }
 
+      const byNewId = buildSavedARLookup(savedARMap)
       fullListRef.current = fullListRef.current.map((ar) => {
-        const savedAR = savedARMap.get(ar.id)
-        if (savedAR) {
-          return {
-            ...savedAR,
-            name: (savedAR.name != null && savedAR.name !== 'null') ? savedAR.name : null,
-            date_of_service: (savedAR.date_of_service != null && savedAR.date_of_service !== 'null') ? savedAR.date_of_service : null,
-            date_recorded: (savedAR.date_recorded != null && savedAR.date_recorded !== 'null') ? savedAR.date_recorded : null,
-            type: (savedAR.type != null && (savedAR.type as unknown) !== 'null') ? savedAR.type : null,
-            notes: (savedAR.notes != null && savedAR.notes !== 'null') ? savedAR.notes : null,
-          }
-        }
+        const savedAR = savedARMap.get(ar.id) ?? byNewId.get(ar.id)
+        if (savedAR) return mergeARRowAfterSave(ar, savedAR)
         return ar
       })
 
@@ -633,7 +659,11 @@ export default function AccountsReceivableTab({
       console.error('[saveAR] catch error=', error, 'message=', error?.message, 'code=', error?.code, 'details=', error?.details)
       if (error?.message) console.error('[saveAR] full error message:', error.message)
       if (error?.stack) console.error('[saveAR] stack:', error.stack)
-      alert(error?.message || 'Failed to save accounts receivable. Please try again.')
+      const msg =
+        error?.code === '401' || String(error?.message ?? '').toLowerCase().includes('unauthorized')
+          ? 'Your session has expired. Refresh the page or sign in again, then save your Accounts Receivable changes.'
+          : error?.message || 'Failed to save accounts receivable. Please try again.'
+      alert(msg)
     } finally {
       saveInProgressRef.current = false
       saveCompletePromiseRef.current?.resolve()
@@ -643,15 +673,19 @@ export default function AccountsReceivableTab({
       }
       if (savePendingRef.current) {
         savePendingRef.current = false
-        // Call directly via ref (no setState/useEffect hop), so the queued save still runs after unmount.
-        void saveAccountsReceivableRef.current?.(fullListRef.current).catch((err) => {
-          console.error('[AccountsReceivableTab] Error in pending save:', err)
-        })
+        setRunPendingSaveTrigger((t) => t + 1)
       }
     }
   }, [clinicId, userProfile, clinicPayroll, selectedPayroll, effectiveCanEdit])
 
   saveAccountsReceivableRef.current = saveAccountsReceivable
+
+  useEffect(() => {
+    if (runPendingSaveTrigger === 0) return
+    saveAccountsReceivableRef.current(fullListRef.current).catch((err) => {
+      console.error('[AccountsReceivableTab] Error in pending save:', err)
+    })
+  }, [runPendingSaveTrigger])
 
   /**
    * Commits any open cell editor (so the typed value reaches state), then runs the save pipeline,
@@ -834,7 +868,8 @@ export default function AccountsReceivableTab({
           const existingEmptyCount = next.filter((a) => a.id.startsWith('empty-')).length
           p = { ...createEmptyAR(existingEmptyCount), date_of_service: firstDay }
         }
-        next[phys] = mergeARFromGridRow(p, row)
+        const merged = mergeARFromGridRow(p, row)
+        next[phys] = merged
       }
       const padded = padARDisplayedTo200(next)
       displayedARRef.current = padded
@@ -1264,7 +1299,6 @@ export default function AccountsReceivableTab({
     if (!changes || source === 'loadData') return
 
     const fields: Array<keyof AccountsReceivable> = ['ar_id', 'name', 'date_of_service', 'amount', 'date_recorded', 'type', 'notes']
-    const hadDateColumnEdit = changes.some(([, col]) => col === 2 || col === 4)
 
     const rowsInChange = [...new Set(changes.map(([r]) => physicalRowFromHot(typeof r === 'number' ? r : 0)))]
     const primaryRow = rowsInChange[0] ?? null
@@ -1273,6 +1307,7 @@ export default function AccountsReceivableTab({
 
     const currentDisplayed = displayedARRef.current.length > 0 ? displayedARRef.current : displayedAR
     const updatedDisplayed = [...currentDisplayed]
+    const invalidDateCells: { row: number; col: number }[] = []
 
     changes.forEach(([row, col, , newValue]) => {
       const phys = physicalRowFromHot(typeof row === 'number' ? row : 0)
@@ -1305,9 +1340,13 @@ export default function AccountsReceivableTab({
         const numValue = (newValue === '' || newValue === null || newValue === 'null') ? null : (typeof newValue === 'number' ? newValue : parseFloat(String(newValue)) || null)
         updatedDisplayed[phys] = { ...ar, id: newId, [field]: numValue, updated_at: new Date().toISOString() } as AccountsReceivable
       } else if (field === 'date_of_service' || field === 'date_recorded') {
-        const value =
-          newValue === '' || newValue === null || newValue === 'null' ? null : parseDateOfServiceInput(String(newValue))
+        const str =
+          newValue === '' || newValue === null || newValue === 'null' ? '' : String(newValue).trim()
+        const value = str === '' ? null : parseDateOfServiceInput(str)
         updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
+        if (value == null && str !== '' && typeof row === 'number') {
+          invalidDateCells.push({ row, col: colNum })
+        }
       } else if (field === 'type' || field === 'notes') {
         const value = toStoredString(String(newValue ?? ''))
         updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
@@ -1334,6 +1373,16 @@ export default function AccountsReceivableTab({
     unsavedChangesRef.current = true
     displayedARRef.current = updatedDisplayed
     setDisplayedAR(updatedDisplayed)
+
+    if (invalidDateCells.length > 0) {
+      queueMicrotask(() => {
+        const hot = hotRef.current
+        if (!hot) return
+        for (const { row, col } of invalidDateCells) {
+          hot.setDataAtCell(row, col, '', 'loadData')
+        }
+      })
+    }
 
     const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, selectedMonth))
     const currentMonthRows = updatedDisplayed.filter((ar) => !ar.id.startsWith('placeholder-'))
@@ -1384,7 +1433,8 @@ export default function AccountsReceivableTab({
       })
     }, 500)
 
-    if (hadDateColumnEdit) setStructureVersion((v) => v + 1)
+    // Do not bump structureVersion on routine cell edits or after each save (same as Patients / Billing To-Do):
+    // a full HOT data reload (dataVersion++) would wipe in-flight / adjacent cell state.
   }, [
     displayedAR,
     saveAccountsReceivable,
