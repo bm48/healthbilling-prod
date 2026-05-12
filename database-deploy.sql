@@ -8310,11 +8310,6 @@ CREATE INDEX "idx_accounts_receivables_payroll" ON "public"."accounts_receivable
 );
 
 -- ----------------------------
--- Uniques structure for table accounts_receivables
--- ----------------------------
-ALTER TABLE "public"."accounts_receivables" ADD CONSTRAINT "accounts_receivables_clinic_id_ar_id_key" UNIQUE ("clinic_id", "ar_id");
-
--- ----------------------------
 -- Checks structure for table accounts_receivables
 -- ----------------------------
 ALTER TABLE "public"."accounts_receivables" ADD CONSTRAINT "accounts_receivables_payroll_check" CHECK (payroll = ANY (ARRAY[1, 2]));
