@@ -1,4 +1,4 @@
-import { Provider, SheetRow, BillingCode, StatusColor, Patient, IsLockProviders } from '@/types'
+import { Provider, SheetRow, BillingCode, StatusColor, Patient, IsLockProviders, AccountsReceivable } from '@/types'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
@@ -9,6 +9,7 @@ import { apiClient } from '@/lib/apiClient'
 import { useAuth } from '@/contexts/AuthContext'
 import { parseDateOfServiceInput, toStoredString } from '@/lib/utils'
 import { computeBillingMetrics } from '@/lib/billingMetrics'
+import { isAccountsReceivableRowInMonth } from '@/lib/accountsReceivableInMonth'
 import {
   sheetRowsToUiMatrix,
   providerSheetUiExportHeaders,
@@ -656,41 +657,45 @@ export default function ProvidersTab({
     return { insPay, collectedFromPt, arTotal, total }
   }, [activeProviderRows])
 
-  // Accounts receivable total from accounts_receivables table for the selected month (clinic-level)
+  // AR total: same rows/amounts as Accounts Receivable tab (month + payroll), not date_recorded-only range query
   useEffect(() => {
     if (!clinicId) {
       setArSumFromDb(null)
       return
     }
-    const y = selectedMonth.getFullYear()
-    const m = selectedMonth.getMonth()
-    const firstDay = `${y}-${String(m + 1).padStart(2, '0')}-01`
-    const lastDay = new Date(y, m + 1, 0)
-    const lastDayStr = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
-
+    const payrollFilter = clinicPayroll === 2 ? (selectedPayroll ?? 1) : 1
     let cancelled = false
     setArSumFromDb(null)
-    providersDebugTab('useEffect[clinicId, selectedMonth] → accounts_receivables sum for month', {
+    providersDebugTab('useEffect[clinicId, selectedMonth, payroll] → accounts_receivables sum (A-R tab rules)', {
       clinicId,
-      firstDay,
-      lastDayStr,
+      payrollFilter,
+      month: selectedMonth.toISOString(),
     })
     apiClient
       .from('accounts_receivables')
-      .select('amount')
+      .select('id, amount, created_at, date_of_service, date_recorded, payroll')
       .eq('clinic_id', clinicId)
-      .gte('date_recorded', firstDay)
-      .lte('date_recorded', lastDayStr)
+      .eq('payroll', payrollFilter)
+      .order('created_at', { ascending: false })
       .then(({ data, error }) => {
         if (cancelled || error) {
           if (!cancelled && error) console.error('Fetch accounts_receivables sum:', error)
           return
         }
-        const sum = (data || []).reduce((acc, row) => acc + (Number(row?.amount) || 0), 0)
+        const rows = (data || []) as AccountsReceivable[]
+        const inMonth = rows.filter((row) => isAccountsReceivableRowInMonth(row, selectedMonth))
+        const sum = inMonth.reduce((acc, row) => {
+          const raw = row.amount
+          if (raw == null || (raw as unknown) === 'null') return acc
+          const n = typeof raw === 'number' ? raw : parseFloat(String(raw))
+          return acc + (Number.isFinite(n) ? n : 0)
+        }, 0)
         if (!cancelled) setArSumFromDb(sum)
       })
-    return () => { cancelled = true }
-  }, [clinicId, selectedMonth])
+    return () => {
+      cancelled = true
+    }
+  }, [clinicId, selectedMonth, clinicPayroll, selectedPayroll])
 
   // Billing metrics (visits, no shows, paid claims, etc.) for the selected month – admin/billing only
   const billingMetrics = useMemo(() => {

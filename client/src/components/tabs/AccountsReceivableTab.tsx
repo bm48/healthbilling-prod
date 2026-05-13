@@ -12,8 +12,8 @@ import {
   toDisplayDate,
   toStoredString,
   parseDateOfServiceInput,
-  getYearMonthFromStoredDate,
 } from '@/lib/utils'
+import { isAccountsReceivableRowInMonth } from '@/lib/accountsReceivableInMonth'
 
 function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
   let max = -1
@@ -267,36 +267,6 @@ export default function AccountsReceivableTab({
     return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
   }, [clinicPayroll])
 
-  const isARInMonth = useCallback((ar: AccountsReceivable, monthDate: Date): boolean => {
-    const targetMonth = monthDate.getMonth() + 1 // 1–12
-    const targetYear = monthDate.getFullYear()
-    const now = new Date()
-    const isCurrentMonth = monthDate.getMonth() === now.getMonth() && targetYear === now.getFullYear()
-    if (ar.id.startsWith('empty-') || ar.id.startsWith('new-')) {
-      const hasDate = !!(ar.date_of_service || ar.date_recorded)
-      if (hasDate) {
-        const d = ar.date_of_service || ar.date_recorded
-        const ym = getYearMonthFromStoredDate(d ? String(d) : null)
-        if (ym) return ym.year === targetYear && ym.month === targetMonth
-        return false
-      }
-      // No date: show in the month being viewed (selected month), so add-row places it in the right view
-      return true
-    }
-    // Persisted rows: include when created_at is in the selected month (DOS/DR may be another month or null)
-    const createdYm = getYearMonthFromStoredDate(
-      ar.created_at != null && ar.created_at !== '' && ar.created_at !== 'null' ? String(ar.created_at) : null
-    )
-    if (createdYm && createdYm.year === targetYear && createdYm.month === targetMonth) {
-      return true
-    }
-    const dateStr = ar.date_of_service || ar.date_recorded
-    if (!dateStr) return isCurrentMonth
-    const ym = getYearMonthFromStoredDate(String(dateStr))
-    if (!ym) return isCurrentMonth
-    return ym.year === targetYear && ym.month === targetMonth
-  }, [])
-
   // Use isLockAccountsReceivable from props directly - it will update when parent refreshes
   const lockData = isLockAccountsReceivable || null
 
@@ -328,7 +298,7 @@ export default function AccountsReceivableTab({
 
   /** Build displayed list (200 rows) for selected month from a full list. Used for both live (fullListRef) and backup override. */
   const buildDisplayedFromList = useCallback((list: AccountsReceivable[]): AccountsReceivable[] => {
-    let filtered = list.filter((ar) => isARInMonth(ar, selectedMonth))
+    let filtered = list.filter((ar) => isAccountsReceivableRowInMonth(ar, selectedMonth))
     if (clinicPayroll === 2) {
       filtered = filtered.filter((ar) => (ar.payroll ?? 1) === selectedPayroll)
     }
@@ -350,7 +320,7 @@ export default function AccountsReceivableTab({
       updated_at: new Date().toISOString(),
     }))
     return [...filtered, ...placeholders]
-  }, [selectedMonth, clinicPayroll, selectedPayroll, clinicId, isARInMonth])
+  }, [selectedMonth, clinicPayroll, selectedPayroll, clinicId])
 
   const buildDisplayedFromFull = useCallback((): AccountsReceivable[] => {
     return buildDisplayedFromList(fullListRef.current)
@@ -516,12 +486,12 @@ export default function AccountsReceivableTab({
     const currentMonthKey = selectedMonth.getTime()
     if (prevSelectedMonthRef.current === currentMonthKey) return
     prevSelectedMonthRef.current = currentMonthKey
-    const otherMonths = fullListRef.current.filter(ar => !isARInMonth(ar, selectedMonth))
+    const otherMonths = fullListRef.current.filter(ar => !isAccountsReceivableRowInMonth(ar, selectedMonth))
     const currentMonthRows = displayedARRef.current.filter(ar => !ar.id.startsWith('empty-'))
     fullListRef.current = [...otherMonths, ...currentMonthRows]
     const rebuilt = buildDisplayedFromFull()
     setDisplayedAR(rebuilt)
-  }, [selectedMonth.getTime(), buildDisplayedFromFull, isARInMonth])
+  }, [selectedMonth.getTime(), buildDisplayedFromFull])
 
   const saveAccountsReceivable = useCallback(async (arToSave: AccountsReceivable[]) => {
     if (!clinicId || !userProfile) {
@@ -719,7 +689,7 @@ export default function AccountsReceivableTab({
 
     const month = selectedMonthRef.current
     const displayed = displayedARRef.current
-    const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, month))
+    const otherMonths = fullListRef.current.filter((ar) => !isAccountsReceivableRowInMonth(ar, month))
     const currentMonthRows = displayed.filter((ar) => !ar.id.startsWith('placeholder-'))
     fullListRef.current = [...otherMonths, ...currentMonthRows]
 
@@ -735,7 +705,7 @@ export default function AccountsReceivableTab({
         await new Promise<void>((r) => setTimeout(r, 0))
       }
     }
-  }, [isARInMonth])
+  }, [])
 
   useEffect(() => {
     if (!onRegisterFlushBeforeTabLeave) return
@@ -771,14 +741,14 @@ export default function AccountsReceivableTab({
       if (!unsavedChangesRef.current && !savePendingRef.current) return
       const displayed = displayedARRef.current
       const month = selectedMonthRef.current
-      const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, month))
+      const otherMonths = fullListRef.current.filter((ar) => !isAccountsReceivableRowInMonth(ar, month))
       const currentMonthRows = displayed.filter((ar) => !ar.id.startsWith('placeholder-'))
       fullListRef.current = [...otherMonths, ...currentMonthRows]
       void saveAccountsReceivableRef.current?.(fullListRef.current)?.catch((err) => {
         console.error('[AccountsReceivableTab unmount] Error flushing save:', err)
       })
     }
-  }, [isARInMonth])
+  }, [])
 
   const handleDeleteAR = useCallback(async (arId: string) => {
     if (!effectiveCanEdit && !arId.startsWith('new-')) {
@@ -794,7 +764,7 @@ export default function AccountsReceivableTab({
       displayedARRef.current = toDisplay
       setDisplayedAR(toDisplay)
       fullListRef.current = [
-        ...fullListRef.current.filter(a => !isARInMonth(a, selectedMonth)),
+        ...fullListRef.current.filter(a => !isAccountsReceivableRowInMonth(a, selectedMonth)),
         ...toDisplay.filter(a => !a.id.startsWith('empty-')),
       ]
       setStructureVersion(v => v + 1)
@@ -816,16 +786,16 @@ export default function AccountsReceivableTab({
       console.error('Error deleting accounts receivable:', error)
       alert('Failed to delete accounts receivable record. Please try again.')
     }
-  }, [fetchAccountsReceivable, onDelete, createEmptyAR, isARInMonth, selectedMonth, effectiveCanEdit])
+  }, [fetchAccountsReceivable, onDelete, createEmptyAR, selectedMonth, effectiveCanEdit])
 
   const syncARFullListFromDisplay = useCallback(
     (toDisplay: AccountsReceivable[]) => {
       fullListRef.current = [
-        ...fullListRef.current.filter((a) => !isARInMonth(a, selectedMonth)),
+        ...fullListRef.current.filter((a) => !isAccountsReceivableRowInMonth(a, selectedMonth)),
         ...toDisplay.filter((a) => !a.id.startsWith('empty-')),
       ]
     },
-    [isARInMonth, selectedMonth]
+    [selectedMonth]
   )
 
   const padARDisplayedTo200 = useCallback(
@@ -976,6 +946,24 @@ export default function AccountsReceivableTab({
       toDisplayValue(ar.notes),
     ])
   }, [displayAR])
+
+  const totalARAmount = useMemo(() => {
+    let sum = 0
+    for (const ar of displayAR) {
+      const n = coerceARAmount(ar.amount)
+      if (n != null) sum += n
+    }
+    return sum
+  }, [displayAR])
+
+  const totalARAmountFormatted = useMemo(
+    () =>
+      new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(totalARAmount),
+    [totalARAmount]
+  )
 
   // Column field names mapping to is_lock_accounts_receivable table columns
   const columnFields: Array<keyof IsLockAccountsReceivable> = ['ar_id', 'name', 'date_of_service', 'amount', 'date_recorded', 'type', 'notes']
@@ -1225,7 +1213,7 @@ export default function AccountsReceivableTab({
     displayedARRef.current = arr
     setDisplayedAR(arr)
     fullListRef.current = [
-      ...fullListRef.current.filter(ar => !isARInMonth(ar, selectedMonth)),
+      ...fullListRef.current.filter(ar => !isAccountsReceivableRowInMonth(ar, selectedMonth)),
       ...arr.filter(ar => !ar.id.startsWith('empty-')),
     ]
     const realAR = arr.filter(ar => !ar.id.startsWith('new-') && !ar.id.startsWith('empty-'))
@@ -1241,7 +1229,7 @@ export default function AccountsReceivableTab({
       ).catch(err => console.error('Failed to persist AR order', err))
     }
     setStructureVersion(v => v + 1)
-  }, [displayedAR, selectedMonth, isARInMonth, effectiveCanEdit])
+  }, [displayedAR, selectedMonth, effectiveCanEdit])
 
   const handleARAfterSelection = useCallback(
     (r: number, _c: number, _r2: number, _c2: number) => {
@@ -1384,7 +1372,7 @@ export default function AccountsReceivableTab({
       })
     }
 
-    const otherMonths = fullListRef.current.filter((ar) => !isARInMonth(ar, selectedMonth))
+    const otherMonths = fullListRef.current.filter((ar) => !isAccountsReceivableRowInMonth(ar, selectedMonth))
     const currentMonthRows = updatedDisplayed.filter((ar) => !ar.id.startsWith('placeholder-'))
     fullListRef.current = [...otherMonths, ...currentMonthRows]
 
@@ -1439,7 +1427,6 @@ export default function AccountsReceivableTab({
     displayedAR,
     saveAccountsReceivable,
     selectedMonth,
-    isARInMonth,
     createEmptyAR,
     firstDayOfSelectedMonth,
     physicalRowFromHot,
@@ -1470,7 +1457,11 @@ export default function AccountsReceivableTab({
   return (
     <div 
       className="p-6" 
-      style={isInSplitScreen ? { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 } : {}}
+      style={
+        isInSplitScreen
+          ? { width: '100%', overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }
+          : {}
+      }
     >
       {!isInSplitScreen && (
         <div className="mb-4 flex justify-between items-center">
@@ -1558,7 +1549,9 @@ export default function AccountsReceivableTab({
           overflow: 'hidden',
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: '8px',
-          backgroundColor: '#d2dbe5'
+          backgroundColor: '#d2dbe5',
+          width: '100%',
+          maxWidth: '100%',
         }}
       >
         <HandsontableWrapper
@@ -1590,6 +1583,22 @@ export default function AccountsReceivableTab({
           style={{ backgroundColor: '#d2dbe5' }}
           className="handsontable-custom ar-handsontable"
         />
+      </div>
+
+      {/* Sum bar — same placement and chrome as billing sheet (ProvidersTab) */}
+      <div
+        className="mt-3 flex flex-col gap-2 px-4 py-3 rounded-lg border border-white/20 bg-slate-800/80 text-white"
+        style={{ width: '100%', maxWidth: '100%' }}
+        role="status"
+        aria-live="polite"
+      >
+        <div className="flex items-center gap-6 flex-wrap">
+          <span className="font-medium text-red-500">Sums:</span>
+          <span className="ml-2">
+            <strong>Total amount:</strong>{' '}
+            <span className="tabular-nums">{totalARAmountFormatted}</span>
+          </span>
+        </div>
       </div>
     </div>
   )
