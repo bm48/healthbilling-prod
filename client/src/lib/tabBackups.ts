@@ -1,4 +1,5 @@
 import type { AccountsReceivable, Patient } from '@/types'
+import { inferAccountsReceivableSheetYearMonth } from '@/lib/accountsReceivableInMonth'
 import type { NativeClient } from '@/lib/nativeClient'
 
 const BUCKET = 'tab-backups'
@@ -136,6 +137,21 @@ export async function fetchBackupCsvAsAR(
     const type = (row.type ?? null) as 'Insurance' | 'Patient' | 'Admin' | null
     const notes = (row.notes ?? null) as string | null
     const id = isLegacyFormat ? ((row.id as string) || `backup-ar-${i}`) : `backup-ar-${i}`
+    const created_at = (row.created_at as string) ?? iso
+    const updated_at = (row.updated_at as string) ?? iso
+    const period = inferAccountsReceivableSheetYearMonth({
+      created_at,
+      date_of_service: date_of_service ?? null,
+      date_recorded: date_recorded ?? null,
+    })
+    const ar_year =
+      row.ar_year != null && row.ar_year !== '' && Number.isFinite(Number(row.ar_year))
+        ? Math.trunc(Number(row.ar_year))
+        : period?.year ?? new Date().getFullYear()
+    const ar_month =
+      row.ar_month != null && row.ar_month !== '' && Number.isFinite(Number(row.ar_month))
+        ? Math.trunc(Number(row.ar_month))
+        : period?.month ?? new Date().getMonth() + 1
     list.push({
       id,
       clinic_id: (row.clinic_id as string) ?? clinicId ?? '',
@@ -146,9 +162,11 @@ export async function fetchBackupCsvAsAR(
       date_recorded: date_recorded ?? null,
       type: type ?? null,
       notes: notes ?? null,
+      ar_year,
+      ar_month,
       payroll: row.payroll != null && Number(row.payroll) === 2 ? 2 : 1,
-      created_at: (row.created_at as string) ?? iso,
-      updated_at: (row.updated_at as string) ?? iso,
+      created_at,
+      updated_at,
     })
   }
   return list
@@ -268,6 +286,7 @@ export function padARTo200(list: AccountsReceivable[], clinicId: string): Accoun
   if (list.length >= AR_PLACEHOLDER_ROWS) return list
   const iso = new Date().toISOString()
   const need = AR_PLACEHOLDER_ROWS - list.length
+  const now = new Date()
   const placeholders: AccountsReceivable[] = Array.from({ length: need }, (_, i) => ({
     id: `empty-backup-ar-${list.length + i}`,
     clinic_id: clinicId,
@@ -278,6 +297,8 @@ export function padARTo200(list: AccountsReceivable[], clinicId: string): Accoun
     date_recorded: null,
     type: null,
     notes: null,
+    ar_year: now.getFullYear(),
+    ar_month: now.getMonth() + 1,
     payroll: 1,
     created_at: iso,
     updated_at: iso,

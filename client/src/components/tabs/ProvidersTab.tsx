@@ -673,7 +673,7 @@ export default function ProvidersTab({
     })
     apiClient
       .from('accounts_receivables')
-      .select('id, amount, created_at, date_of_service, date_recorded, payroll')
+      .select('id, amount, ar_year, ar_month, payroll, created_at, date_of_service, date_recorded')
       .eq('clinic_id', clinicId)
       .eq('payroll', payrollFilter)
       .order('created_at', { ascending: false })

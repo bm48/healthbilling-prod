@@ -13,7 +13,10 @@ import {
   toStoredString,
   parseDateOfServiceInput,
 } from '@/lib/utils'
-import { isAccountsReceivableRowInMonth } from '@/lib/accountsReceivableInMonth'
+import {
+  inferAccountsReceivableSheetYearMonth,
+  isAccountsReceivableRowInMonth,
+} from '@/lib/accountsReceivableInMonth'
 
 function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
   let max = -1
@@ -53,6 +56,8 @@ type LastSavedARSnapshot = {
   amount: number | null
   type: ARType | null
   notes: string | null
+  ar_year: number
+  ar_month: number
 }
 
 function coerceARAmount(amount: AccountsReceivable['amount']): number | null {
@@ -71,6 +76,8 @@ function normalizeARForSnapshot(ar: AccountsReceivable): LastSavedARSnapshot {
     amount: coerceARAmount(ar.amount),
     type: (ar.type != null && (ar.type as unknown) !== 'null') ? ar.type : null,
     notes: (ar.notes != null && ar.notes !== 'null') ? ar.notes : null,
+    ar_year: Number.isFinite(Number(ar.ar_year)) ? Math.trunc(Number(ar.ar_year)) : 0,
+    ar_month: Number.isFinite(Number(ar.ar_month)) ? Math.trunc(Number(ar.ar_month)) : 0,
   }
 }
 
@@ -88,11 +95,22 @@ function arSnapshotsEqual(a: LastSavedARSnapshot, b: LastSavedARSnapshot): boole
     a.date_recorded === b.date_recorded &&
     amountsSnapshotEqual(a.amount, b.amount) &&
     a.type === b.type &&
-    a.notes === b.notes
+    a.notes === b.notes &&
+    a.ar_year === b.ar_year &&
+    a.ar_month === b.ar_month
   )
 }
 
 function normalizeARFromDb(saved: AccountsReceivable): AccountsReceivable {
+  const inferred = inferAccountsReceivableSheetYearMonth(saved)
+  const yRaw = (saved as { ar_year?: unknown }).ar_year
+  const mRaw = (saved as { ar_month?: unknown }).ar_month
+  const ar_year =
+    yRaw != null && Number.isFinite(Number(yRaw)) ? Math.trunc(Number(yRaw)) : inferred?.year ?? new Date().getFullYear()
+  const ar_month =
+    mRaw != null && Number.isFinite(Number(mRaw))
+      ? Math.trunc(Number(mRaw))
+      : inferred?.month ?? new Date().getMonth() + 1
   return {
     ...saved,
     ar_id: saved.ar_id != null && String(saved.ar_id) !== 'null' ? String(saved.ar_id) : '',
@@ -101,6 +119,8 @@ function normalizeARFromDb(saved: AccountsReceivable): AccountsReceivable {
     date_recorded: (saved.date_recorded != null && saved.date_recorded !== 'null') ? saved.date_recorded : null,
     type: (saved.type != null && (saved.type as unknown) !== 'null') ? saved.type : null,
     notes: (saved.notes != null && saved.notes !== 'null') ? saved.notes : null,
+    ar_year,
+    ar_month,
   }
 }
 
@@ -121,6 +141,8 @@ function mergeARRowAfterSave(row: AccountsReceivable, saved: AccountsReceivable)
     date_recorded: row.date_recorded !== undefined ? row.date_recorded : normalized.date_recorded,
     type: row.type !== undefined ? row.type : normalized.type,
     notes: row.notes !== undefined ? row.notes : normalized.notes,
+    ar_year: row.ar_year != null && row.ar_month != null ? row.ar_year : normalized.ar_year,
+    ar_month: row.ar_year != null && row.ar_month != null ? row.ar_month : normalized.ar_month,
   }
   return merged
 }
@@ -232,6 +254,11 @@ export default function AccountsReceivableTab({
   useEffect(() => {
     selectedMonthRef.current = selectedMonth
   }, [selectedMonth])
+  /** Rows edited on the current sheet belong to the month shown in the selector (not claim `created_at`). */
+  const applySheetPeriodToRow = useCallback((row: AccountsReceivable): AccountsReceivable => {
+    const d = selectedMonthRef.current
+    return { ...row, ar_year: d.getFullYear(), ar_month: d.getMonth() + 1 }
+  }, [])
   const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(1)
   const fetchIdRef = useRef(0)
   /** Full list (all months) for save and month switching - like Patients has one list, we keep "all" in ref */
@@ -334,6 +361,8 @@ export default function AccountsReceivableTab({
       date_recorded: null,
       type: null,
       notes: null,
+      ar_year: selectedMonth.getFullYear(),
+      ar_month: selectedMonth.getMonth() + 1,
       payroll: clinicPayroll === 2 ? selectedPayroll : 1,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -356,10 +385,12 @@ export default function AccountsReceivableTab({
     date_recorded: null,
     type: null,
     notes: null,
+    ar_year: selectedMonth.getFullYear(),
+    ar_month: selectedMonth.getMonth() + 1,
     payroll: currentPayrollForAR,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-  }), [clinicId, currentPayrollForAR])
+  }), [clinicId, currentPayrollForAR, selectedMonth])
 
   const fetchStatusColors = useCallback(async () => {
     try {
@@ -387,9 +418,10 @@ export default function AccountsReceivableTab({
         .order('created_at', { ascending: false })
 
       if (error) throw error
-      let fetchedAR = data || []
+      const rawList = (data || []) as AccountsReceivable[]
+      let fetchedAR = rawList.map((ar) => normalizeARFromDb(ar))
       if (clinicPayroll === 2) {
-        fetchedAR = fetchedAR.filter((row: { payroll?: number }) => (row.payroll ?? 1) === payrollFilter)
+        fetchedAR = fetchedAR.filter((row) => (row.payroll ?? 1) === payrollFilter)
       }
 
       // Only apply if no newer fetch started (user may have switched payroll before we completed)
@@ -398,18 +430,11 @@ export default function AccountsReceivableTab({
       }
 
       const fetchedARMap = new Map<string, AccountsReceivable>()
-      fetchedAR.forEach((ar: AccountsReceivable) => {
+      fetchedAR.forEach((ar) => {
         fetchedARMap.set(ar.id, ar)
       })
 
-      const newFetchedAR = Array.from(fetchedARMap.values()).map(ax => ({
-        ...ax,
-        name: (ax.name != null && ax.name !== 'null') ? ax.name : null,
-        date_of_service: (ax.date_of_service != null && ax.date_of_service !== 'null') ? ax.date_of_service : null,
-        date_recorded: (ax.date_recorded != null && ax.date_recorded !== 'null') ? ax.date_recorded : null,
-        type: (ax.type != null && (ax.type as unknown) !== 'null') ? ax.type : null,
-        notes: (ax.notes != null && ax.notes !== 'null') ? ax.notes : null,
-      }))
+      const newFetchedAR = Array.from(fetchedARMap.values())
 
       if (clinicPayroll === 1) {
         const currentAR = fullListRef.current
@@ -420,26 +445,12 @@ export default function AccountsReceivableTab({
           } else {
             const freshData = fetchedARMap.get(ar.id)
             if (freshData) {
-              preservedOrder.push({
-                ...freshData,
-                name: (freshData.name != null && freshData.name !== 'null') ? freshData.name : null,
-                date_of_service: (freshData.date_of_service != null && freshData.date_of_service !== 'null') ? freshData.date_of_service : null,
-                date_recorded: (freshData.date_recorded != null && freshData.date_recorded !== 'null') ? freshData.date_recorded : null,
-                type: (freshData.type != null && (freshData.type as unknown) !== 'null') ? freshData.type : null,
-                notes: (freshData.notes != null && freshData.notes !== 'null') ? freshData.notes : null,
-              })
+              preservedOrder.push(freshData)
               fetchedARMap.delete(ar.id)
             }
           }
         })
-        const remainingFetched = Array.from(fetchedARMap.values()).map(ax => ({
-          ...ax,
-          name: (ax.name != null && ax.name !== 'null') ? ax.name : null,
-          date_of_service: (ax.date_of_service != null && ax.date_of_service !== 'null') ? ax.date_of_service : null,
-          date_recorded: (ax.date_recorded != null && ax.date_recorded !== 'null') ? ax.date_recorded : null,
-          type: (ax.type != null && (ax.type as unknown) !== 'null') ? ax.type : null,
-          notes: (ax.notes != null && ax.notes !== 'null') ? ax.notes : null,
-        }))
+        const remainingFetched = Array.from(fetchedARMap.values())
         const updated = [...preservedOrder, ...remainingFetched]
         const emptyRowsNeeded = Math.max(0, 200 - updated.length)
         const existingEmptyCount = updated.filter(ar => ar.id.startsWith('empty-')).length
@@ -563,6 +574,15 @@ export default function AccountsReceivableTab({
           ar.date_of_service != null && ar.date_of_service !== 'null' ? String(ar.date_of_service) : null
         const rawDr =
           ar.date_recorded != null && ar.date_recorded !== 'null' ? String(ar.date_recorded) : null
+        const inferredPeriod = inferAccountsReceivableSheetYearMonth(ar)
+        const arYear =
+          ar.ar_year != null && Number.isFinite(Number(ar.ar_year))
+            ? Math.trunc(Number(ar.ar_year))
+            : inferredPeriod?.year ?? new Date().getFullYear()
+        const arMonth =
+          ar.ar_month != null && Number.isFinite(Number(ar.ar_month))
+            ? Math.trunc(Number(ar.ar_month))
+            : inferredPeriod?.month ?? new Date().getMonth() + 1
         const arData: any = {
           clinic_id: clinicId,
           ar_id: finalArId.trim(),
@@ -573,6 +593,8 @@ export default function AccountsReceivableTab({
           type: (ar.type != null && (ar.type as unknown) !== 'null') ? ar.type : null,
           notes: (ar.notes != null && ar.notes !== 'null') ? ar.notes : null,
           payroll: payrollValue,
+          ar_year: arYear,
+          ar_month: arMonth,
           updated_at: new Date().toISOString(),
         }
 
@@ -589,14 +611,7 @@ export default function AccountsReceivableTab({
             savedAR = updateData[0] as AccountsReceivable
             savedARMap.set(oldId, savedAR)
             pendingNewIdByRowIdRef.current.delete(oldId)
-            const norm: AccountsReceivable = {
-              ...savedAR,
-              name: (savedAR.name != null && savedAR.name !== 'null') ? savedAR.name : null,
-              date_of_service: (savedAR.date_of_service != null && savedAR.date_of_service !== 'null') ? savedAR.date_of_service : null,
-              date_recorded: (savedAR.date_recorded != null && savedAR.date_recorded !== 'null') ? savedAR.date_recorded : null,
-              type: (savedAR.type != null && (savedAR.type as unknown) !== 'null') ? savedAR.type : null,
-              notes: (savedAR.notes != null && savedAR.notes !== 'null') ? savedAR.notes : null,
-            }
+            const norm = normalizeARFromDb(savedAR)
             lastSavedSnapshotRef.current.set(norm.id, normalizeARForSnapshot(norm))
             if (oldId !== norm.id) lastSavedSnapshotRef.current.delete(oldId)
             continue
@@ -618,14 +633,7 @@ export default function AccountsReceivableTab({
           savedAR = insertedAR as AccountsReceivable
           savedARMap.set(oldId, savedAR)
           pendingNewIdByRowIdRef.current.delete(oldId)
-          const norm: AccountsReceivable = {
-            ...savedAR,
-            name: (savedAR.name != null && savedAR.name !== 'null') ? savedAR.name : null,
-            date_of_service: (savedAR.date_of_service != null && savedAR.date_of_service !== 'null') ? savedAR.date_of_service : null,
-            date_recorded: (savedAR.date_recorded != null && savedAR.date_recorded !== 'null') ? savedAR.date_recorded : null,
-            type: (savedAR.type != null && (savedAR.type as unknown) !== 'null') ? savedAR.type : null,
-            notes: (savedAR.notes != null && savedAR.notes !== 'null') ? savedAR.notes : null,
-          }
+          const norm = normalizeARFromDb(savedAR)
           lastSavedSnapshotRef.current.set(norm.id, normalizeARForSnapshot(norm))
           if (oldId !== norm.id) lastSavedSnapshotRef.current.delete(oldId)
         }
@@ -1331,10 +1339,12 @@ export default function AccountsReceivableTab({
       const phys = physicalRowFromHot(typeof row === 'number' ? row : 0)
       while (updatedDisplayed.length <= phys) {
         const existingEmptyCount = updatedDisplayed.filter((ar) => ar.id.startsWith('empty-')).length
-        updatedDisplayed.push({
-          ...createEmptyAR(existingEmptyCount),
-          date_of_service: firstDayOfSelectedMonth,
-        })
+        updatedDisplayed.push(
+          applySheetPeriodToRow({
+            ...createEmptyAR(existingEmptyCount),
+            date_of_service: firstDayOfSelectedMonth,
+          })
+        )
       }
       const ar = updatedDisplayed[phys]
       if (!ar) return
@@ -1356,18 +1366,33 @@ export default function AccountsReceivableTab({
 
       if (field === 'amount') {
         const numValue = (newValue === '' || newValue === null || newValue === 'null') ? null : (typeof newValue === 'number' ? newValue : parseFloat(String(newValue)) || null)
-        updatedDisplayed[phys] = { ...ar, id: newId, [field]: numValue, updated_at: new Date().toISOString() } as AccountsReceivable
+        updatedDisplayed[phys] = applySheetPeriodToRow({
+          ...ar,
+          id: newId,
+          [field]: numValue,
+          updated_at: new Date().toISOString(),
+        } as AccountsReceivable)
       } else if (field === 'date_of_service' || field === 'date_recorded') {
         const str =
           newValue === '' || newValue === null || newValue === 'null' ? '' : String(newValue).trim()
         const value = str === '' ? null : parseDateOfServiceInput(str)
-        updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
+        updatedDisplayed[phys] = applySheetPeriodToRow({
+          ...ar,
+          id: newId,
+          [field]: value,
+          updated_at: new Date().toISOString(),
+        } as AccountsReceivable)
         if (value == null && str !== '' && typeof row === 'number') {
           invalidDateCells.push({ row, col: colNum })
         }
       } else if (field === 'type' || field === 'notes') {
         const value = toStoredString(String(newValue ?? ''))
-        updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
+        updatedDisplayed[phys] = applySheetPeriodToRow({
+          ...ar,
+          id: newId,
+          [field]: value,
+          updated_at: new Date().toISOString(),
+        } as AccountsReceivable)
       } else if (field === 'ar_id') {
         const raw = (newValue === '' || newValue === 'null') ? '' : String(newValue).trim()
         const idPart = raw ? (raw.split(' - ')[0]?.trim() || raw) : ''
@@ -1386,16 +1411,21 @@ export default function AccountsReceivableTab({
           }
         }
 
-        updatedDisplayed[phys] = {
+        updatedDisplayed[phys] = applySheetPeriodToRow({
           ...ar,
           id: newId,
           ar_id: value,
           name: nextName,
           updated_at: new Date().toISOString(),
-        } as AccountsReceivable
+        } as AccountsReceivable)
       } else if (field) {
         const value = toStoredString(String(newValue ?? ''))
-        updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
+        updatedDisplayed[phys] = applySheetPeriodToRow({
+          ...ar,
+          id: newId,
+          [field]: value,
+          updated_at: new Date().toISOString(),
+        } as AccountsReceivable)
       }
     })
 
@@ -1509,6 +1539,7 @@ export default function AccountsReceivableTab({
     physicalRowFromHot,
     patientByArIdKey,
     getReadOnly,
+    applySheetPeriodToRow,
   ])
 
   // ResizeObserver for split screen: fill table height (must run before any early return)

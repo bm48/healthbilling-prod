@@ -231,6 +231,10 @@ export interface AccountsReceivable {
   date_recorded: string | null
   type: ARType | null
   notes: string | null
+  /** A-R tab month selector (calendar year), not claim date */
+  ar_year: number
+  /** A-R tab month selector, 1–12 */
+  ar_month: number
   /** 1 or 2 when clinic has payroll 2; otherwise 1 */
   payroll?: 1 | 2
   created_at: string
