@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { apiClient } from '@/lib/apiClient'
-import { AccountsReceivable, ARType, StatusColor, IsLockAccountsReceivable } from '@/types'
+import { AccountsReceivable, ARType, StatusColor, IsLockAccountsReceivable, Patient } from '@/types'
 import { useAuth } from '@/contexts/AuthContext'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
@@ -26,6 +26,22 @@ function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
 
 function isHandsontableUndoRedoSource(source?: string) {
   return source === 'UndoRedo.undo' || source === 'UndoRedo.redo'
+}
+
+/**
+ * First name: only the first character uppercase (rest lowercase). Last: one uppercase initial.
+ * Used when A-R "ID #" matches a {@link Patient} in the same clinic.
+ */
+function formatAccountsReceivablePatientName(p: Patient): string {
+  const rawFirst = (p.first_name ?? '').trim()
+  const first =
+    rawFirst.length === 0
+      ? ''
+      : rawFirst.charAt(0).toUpperCase() + rawFirst.slice(1).toLowerCase()
+  const last = (p.last_name ?? '').trim()
+  const initial = last.length > 0 ? last.charAt(0).toUpperCase() : ''
+  if (first && initial) return `${first} ${initial}`
+  return first || initial || ''
 }
 
 /** DB-backed row fingerprint — only dirty rows are saved (same idea as PatientsTab lastSavedSnapshotRef). */
@@ -185,6 +201,8 @@ interface AccountsReceivableTabProps {
   onLocksMonthKeyChange?: (monthKey: string) => void
   /** Register a flush function the parent calls before switching away from this tab (so pending save completes). */
   onRegisterFlushBeforeTabLeave?: (flush: () => Promise<void>) => void
+  /** Clinic patients: when ID # matches `patient_id`, Name auto-fills (same clinic only). */
+  patients?: Patient[]
 }
 
 export default function AccountsReceivableTab({
@@ -204,6 +222,7 @@ export default function AccountsReceivableTab({
   backupVersionKey = 0,
   onLocksMonthKeyChange,
   onRegisterFlushBeforeTabLeave,
+  patients = [],
 }: AccountsReceivableTabProps) {
   const { userProfile } = useAuth()
   const [statusColors, setStatusColors] = useState<StatusColor[]>([])
@@ -1103,6 +1122,17 @@ export default function AccountsReceivableTab({
     [effectiveCanEdit, lockData]
   )
 
+  /** Case-insensitive patient_id → patient for this clinic only (defense in depth if parent passes extra rows). */
+  const patientByArIdKey = useMemo(() => {
+    const m = new Map<string, Patient>()
+    for (const p of patients) {
+      if (p.clinic_id !== clinicId) continue
+      const key = String(p.patient_id ?? '').trim().toLowerCase()
+      if (key) m.set(key, p)
+    }
+    return m
+  }, [patients, clinicId])
+
   // Create columns with custom renderers
   const arColumns = useMemo(() => [
     { 
@@ -1339,8 +1369,30 @@ export default function AccountsReceivableTab({
         const value = toStoredString(String(newValue ?? ''))
         updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
       } else if (field === 'ar_id') {
-        const value = (newValue === '' || newValue === 'null') ? '' : String(newValue)
-        updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
+        const raw = (newValue === '' || newValue === 'null') ? '' : String(newValue).trim()
+        const idPart = raw ? (raw.split(' - ')[0]?.trim() || raw) : ''
+        const value = idPart
+
+        let nextName = ar.name
+        if (!getReadOnly('name')) {
+          if (value === '') {
+            nextName = null
+          } else {
+            const matched = patientByArIdKey.get(value.toLowerCase())
+            if (matched) {
+              const formatted = formatAccountsReceivablePatientName(matched)
+              nextName = toStoredString(formatted)
+            }
+          }
+        }
+
+        updatedDisplayed[phys] = {
+          ...ar,
+          id: newId,
+          ar_id: value,
+          name: nextName,
+          updated_at: new Date().toISOString(),
+        } as AccountsReceivable
       } else if (field) {
         const value = toStoredString(String(newValue ?? ''))
         updatedDisplayed[phys] = { ...ar, id: newId, [field]: value, updated_at: new Date().toISOString() } as AccountsReceivable
@@ -1361,6 +1413,31 @@ export default function AccountsReceivableTab({
     unsavedChangesRef.current = true
     displayedARRef.current = updatedDisplayed
     setDisplayedAR(updatedDisplayed)
+
+    const nameCellsToSync = new Map<number, string>()
+    for (const ch of changes) {
+      const row = ch[0]
+      const col = ch[1]
+      if (col !== 0) continue
+      if (getReadOnly('name')) continue
+      const phys = physicalRowFromHot(typeof row === 'number' ? row : 0)
+      const arRow = updatedDisplayed[phys]
+      if (!arRow) continue
+      nameCellsToSync.set(typeof row === 'number' ? row : 0, toDisplayValue(arRow.name))
+    }
+    if (nameCellsToSync.size > 0) {
+      queueMicrotask(() => {
+        const hot = hotRef.current
+        if (!hot || (hot as { isDestroyed?: boolean }).isDestroyed) return
+        nameCellsToSync.forEach((name, visualRow) => {
+          try {
+            hot.setDataAtCell(visualRow, 1, name, 'loadData')
+          } catch {
+            /* ignore */
+          }
+        })
+      })
+    }
 
     if (invalidDateCells.length > 0) {
       queueMicrotask(() => {
@@ -1430,6 +1507,8 @@ export default function AccountsReceivableTab({
     createEmptyAR,
     firstDayOfSelectedMonth,
     physicalRowFromHot,
+    patientByArIdKey,
+    getReadOnly,
   ])
 
   // ResizeObserver for split screen: fill table height (must run before any early return)

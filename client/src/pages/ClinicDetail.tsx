@@ -3258,6 +3258,7 @@ export default function ClinicDetail() {
             <AccountsReceivableTab
               clinicId={clinicId!}
               clinicPayroll={clinic?.payroll ?? 1}
+              patients={patients}
               canEdit={canEdit && !backupOverrideAR}
               canTogglePastMonthWholeSheetLock={canLockColumns}
               wholeSheetLocked={Boolean(isLockAccountsReceivable?.whole_sheet_locked)}

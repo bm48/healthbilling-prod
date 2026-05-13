@@ -758,6 +758,7 @@ export default function ProviderSheetPage() {
         <AccountsReceivableTab
           clinicId={clinicId}
           clinicPayroll={clinic?.payroll ?? 1}
+          patients={patients}
           canEdit={false}
           isInSplitScreen={false}
         />
