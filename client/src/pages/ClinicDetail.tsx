@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
 import { fetchSheetRows, fetchSheetRowsForSheetIds, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
@@ -2457,7 +2457,9 @@ export default function ClinicDetail() {
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: rowsToSave } }))
 
     try {
-      const savedRows = await saveSheetRows(apiClient, sheet.id, rowsToProcess, knownDeletedIds ?? [])
+      // Do not coerce omitted arg to [] — [] skips deletes and skips orphan SELECT (saveSheetRows treats [] as explicit).
+      // Pending replays omit knownDeletedIds so orphans are cleaned via SELECT path.
+      const savedRows = await saveSheetRows(apiClient, sheet.id, rowsToProcess, knownDeletedIds)
       // Patient demographics are owned by `patients` (Patients tab / API), not pushed from provider sheets.
       const freshPatients =
         patientsRef.current.length > 0
@@ -2951,11 +2953,15 @@ export default function ClinicDetail() {
     // Non-UUID ids (empty-*, new-*) were never persisted so need no DB delete.
     const deletedDbIds = isUuid(rowId) ? [rowId] : []
     let rowsAfterDelete: SheetRow[] = []
-    setProviderSheetRowsByMonth(prev => {
-      const current = prev[selectedMonthKey] ?? {}
-      const list = current[providerId] || []
-      rowsAfterDelete = list.filter(r => r.id !== rowId)
-      return { ...prev, [selectedMonthKey]: { ...current, [providerId]: rowsAfterDelete } }
+    // Context menu removes several rows quickly; without flushSync, React defers batched updates
+    // and `rowsAfterDelete` can still be empty when save runs, so only one row persists as deleted.
+    flushSync(() => {
+      setProviderSheetRowsByMonth(prev => {
+        const current = prev[selectedMonthKey] ?? {}
+        const list = current[providerId] || []
+        rowsAfterDelete = list.filter(r => r.id !== rowId)
+        return { ...prev, [selectedMonthKey]: { ...current, [providerId]: rowsAfterDelete } }
+      })
     })
     await saveProviderSheetRows(providerId, rowsAfterDelete, deletedDbIds)
     if (deletedRow != null && insertIndex >= 0) {

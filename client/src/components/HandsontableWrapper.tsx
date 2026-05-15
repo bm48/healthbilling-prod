@@ -104,6 +104,43 @@ function syncRowHeaderHeightsToClone(hot: Handsontable) {
   }
 }
 
+/**
+ * Remove every visually selected data row via context menu.
+ * HOT's built-in preset only removes one row even when multiple rows are selected (shift-drag / multi-range).
+ */
+function removeRowsFromCurrentSelection(hot: Handsontable) {
+  try {
+    if ((hot as { isDestroyed?: boolean }).isDestroyed) return
+  } catch {
+    return
+  }
+  const rows = new Set<number>()
+  const addRange = (r1: number, r2: number) => {
+    const lo = Math.min(r1, r2)
+    const hi = Math.max(r1, r2)
+    for (let r = lo; r <= hi; r++) rows.add(r)
+  }
+  const ranges = hot.getSelected()
+  if (ranges?.length) {
+    for (const range of ranges) {
+      if (range == null) continue
+      if (range.length >= 4) addRange(range[0], range[2])
+      else if (range.length >= 2) addRange(range[0], range[0])
+    }
+  } else {
+    const last = hot.getSelectedLast?.()
+    if (last != null) {
+      if (last.length >= 4) addRange(last[0], last[2])
+      else if (last.length >= 2) addRange(last[0], last[0])
+    }
+  }
+  if (rows.size === 0) return
+  const descending = [...rows].sort((a, b) => b - a)
+  for (const r of descending) {
+    hot.alter('remove_row', r, 1)
+  }
+}
+
 /** For providers tab: measure column header row height and set CSS variable + corner cell/row height so row-number corner matches when header wraps. */
 function syncColHeaderHeightForProviders(hot: Handsontable) {
   const root = hot?.rootElement as HTMLElement | undefined
@@ -669,7 +706,20 @@ export default function HandsontableWrapper({
       const nativeRowAndEditItems = {
         row_above: {},
         row_below: {},
-        remove_row: {},
+        remove_row: {
+          name: 'Remove row',
+          callback() {
+            const refHot = hotTableRef.current?.hotInstance as Handsontable | undefined
+            const thisHot = this as unknown as Handsontable
+            const thisLooksLikeHot =
+              thisHot != null &&
+              typeof thisHot.getSelected === 'function' &&
+              typeof thisHot.alter === 'function'
+            const hot = thisLooksLikeHot ? thisHot : refHot
+            if (!hot) return
+            removeRowsFromCurrentSelection(hot)
+          },
+        },
         sep_nr0: '---------',
         copy: {},
         cut: {},
