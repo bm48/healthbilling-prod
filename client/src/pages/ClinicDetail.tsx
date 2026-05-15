@@ -3116,16 +3116,6 @@ export default function ClinicDetail() {
               : activeTab === 'accounts_receivable' && tab !== 'accounts_receivable'
                 ? accountsReceivableTabFlushRef.current
                 : null
-      const flushLabel =
-        activeTab === 'patients' && tab !== 'patients'
-          ? 'patients'
-          : activeTab === 'todo' && tab !== 'todo'
-            ? 'todo'
-            : activeTab === 'providers' && tab !== 'providers'
-              ? 'providers'
-              : activeTab === 'accounts_receivable' && tab !== 'accounts_receivable'
-                ? 'accounts_receivable'
-                : 'none'
       if (flushBeforeTabLeave) {
         // Do not setLoading(true) here: pageReady is !loading, so a full-page spinner would unmount the
         // tab being flushed and destroy Handsontable before finishEditing + save (especially AR).
