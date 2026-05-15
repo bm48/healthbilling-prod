@@ -348,6 +348,10 @@ export default function ProvidersTab({
   // Get rows for the first provider (or selected provider) to display in Handsontable
   const activeProvider = providersToShow.length > 0 ? providersToShow[0] : null
   const activeProviderRows = activeProvider ? filterRowsByMonth(providerSheetRows[activeProvider.id] || []) : []
+  // Always-current mirror of activeProviderRows — updated every render so callbacks with stale closures
+  // (e.g. HOT afterChange fired before React has updated the callback) still see the latest UUIDs.
+  const activeProviderRowsRef = useRef<SheetRow[]>(activeProviderRows)
+  activeProviderRowsRef.current = activeProviderRows
 
   /** Bumps Handsontable dataVersion when Patient Info (or elsewhere) updates patients so rows with matching ID show filled fields — without auto-adding provider rows. */
   const patientsDisplayRevision = useMemo(() => {
@@ -1667,8 +1671,11 @@ export default function ProvidersTab({
     if (latestProviderRowsRef.current?.providerId === activeProvider.id) {
       const rawRows = latestProviderRowsRef.current.rows
       let anyIdPromoted = false
+      // Use the ref (not the closure) so that even a stale HOT callback sees the most recently
+      // rendered activeProviderRows — critical when the user types faster than React re-renders.
+      const latestPropsRows = activeProviderRowsRef.current
       const reconciled = rawRows.map((row, i) => {
-        const propsRow = activeProviderRows[i]
+        const propsRow = latestPropsRows[i]
         if (propsRow && !UUID_RE.test(row.id) && UUID_RE.test(propsRow.id)) {
           anyIdPromoted = true
           return { ...row, id: propsRow.id, created_at: propsRow.created_at, updated_at: propsRow.updated_at }
@@ -1680,7 +1687,7 @@ export default function ProvidersTab({
       }
       baseRows = reconciled
     } else {
-      baseRows = [...activeProviderRows]
+      baseRows = [...activeProviderRowsRef.current]
     }
 
     const updatedRows = [...baseRows]
@@ -2169,9 +2176,6 @@ export default function ProvidersTab({
     []
   )
 
-  const activeProviderRowsRef = useRef<SheetRow[]>(activeProviderRows)
-  activeProviderRowsRef.current = activeProviderRows
-
   /** Pending/latest change-handler refs only (no HOT snapshot) — avoids a second save after tab flush with stale temp ids.
    *  Also reconciles any leftover new-* ids with the current props UUIDs so the flush doesn't re-INSERT already-saved rows. */
   const resolveRowsForTabLeaveFlushRef = useRef<() => { providerId: string; rows: SheetRow[] } | null>(() => null)
@@ -2389,7 +2393,9 @@ export default function ProvidersTab({
       const resolved = resolveRowsForTabLeaveFlushRef.current()
       const providerIdToSave = resolved?.providerId
       const rowsToSave = resolved?.rows
-      if (!providerIdToSave || !rowsToSave?.length) return
+      if (!providerIdToSave || !rowsToSave?.length) {
+        return
+      }
       pendingProviderSheetSaveRef.current = null
       await onSaveProviderSheetRowsDirectRef.current(providerIdToSave, rowsToSave)
       tabLeaveFlushPersistedRef.current = true

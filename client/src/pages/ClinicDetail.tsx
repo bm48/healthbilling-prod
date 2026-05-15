@@ -26,25 +26,6 @@ import ProviderPayTab, { type IsLockProviderPay } from '@/components/tabs/Provid
 
 type TabType = 'patients' | 'todo' | 'providers' | 'accounts_receivable' | 'provider_pay'
 
-/**
- * When a second save was queued while the first was in-flight, the queued `pending` snapshot can still
- * use `new-*` / client `empty-*` ids for rows the completed save already persisted as UUIDs. Replaying
- * `pending` as-is causes `saveSheetRows` to INSERT those rows again → duplicate provider_sheet_rows.
- * Align by row index: if merged row i is a UUID and pending row i is not, carry over the stable id + timestamps.
- */
-function reconcileQueuedProviderSheetRows(pending: SheetRow[], mergedAfterSave: SheetRow[]): SheetRow[] {
-  const out = [...pending]
-  const n = Math.min(out.length, mergedAfterSave.length)
-  for (let i = 0; i < n; i++) {
-    const p = out[i]!
-    const m = mergedAfterSave[i]!
-    if (!isUuid(p.id) && isUuid(m.id)) {
-      out[i] = { ...p, id: m.id, created_at: m.created_at, updated_at: m.updated_at }
-    }
-  }
-  return out
-}
-
 function initialTabFromPath(
   clinicId: string | undefined,
   providerIdFromRoute: string | undefined,
@@ -2466,7 +2447,11 @@ export default function ClinicDetail() {
     }
     saveProviderSheetInProgressRef.current.add(providerId)
 
-    const mergedProviderRowsForPendingReconcile: { current: SheetRow[] | null } = { current: null }
+    // Built synchronously from savedRows right after saveSheetRows returns — no React batching delay.
+    // Maps every temp id (new-*, empty-* with data) that was sent as an INSERT to the real UUID
+    // the DB assigned. Used in finally to reconcile any queued pending before replay so we UPDATE
+    // instead of INSERT again (which creates duplicate provider_sheet_rows).
+    let savedTempIdToUuidMap: Map<string, string> | null = null
 
     // Optimistic update: apply full rows to state immediately so the row (e.g. patient fill) appears right away
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: rowsToSave } }))
@@ -2482,6 +2467,8 @@ export default function ClinicDetail() {
         const pendingKey = `provider_sheet_pending_${clinicId}_${providerId}_${selectedMonthKey}`
         localStorage.removeItem(pendingKey)
       } catch (_) {}
+      // Populate the synchronous id map right after the network response — before any React state update.
+      savedTempIdToUuidMap = new Map<string, string>()
       const savedRowsByOldId = new Map<string, SheetRow>()
       const savedRowsByAnyId = new Map<string, SheetRow>()
       rowsToProcess.forEach((row, i) => {
@@ -2490,6 +2477,10 @@ export default function ClinicDetail() {
         savedRowsByOldId.set(row.id, saved)
         savedRowsByAnyId.set(row.id, saved)
         savedRowsByAnyId.set(saved.id, saved)
+        // Track temp→UUID promotions for the queued pending reconciliation
+        if (!isUuid(row.id) && isUuid(saved.id)) {
+          savedTempIdToUuidMap!.set(row.id, saved.id)
+        }
       })
 
       // Merge saved row ids, then apply co-patient demographics to all providers for this month (last-write-wins from DB).
@@ -2573,7 +2564,6 @@ export default function ClinicDetail() {
           }
           nextMonthRows = merged
         }
-        mergedProviderRowsForPendingReconcile.current = nextMonthRows[providerId] ?? null
         return { ...prev, [selectedMonthKey]: nextMonthRows } as Record<string, Record<string, SheetRow[]>>
       })
       if (freshPatients.length > 0) {
@@ -2586,9 +2576,19 @@ export default function ClinicDetail() {
       const pending = pendingProviderSheetSaveRef.current[providerId]
       if (pending) {
         delete pendingProviderSheetSaveRef.current[providerId]
-        const baseline = mergedProviderRowsForPendingReconcile.current
-        const toSave =
-          baseline && baseline.length > 0 ? reconcileQueuedProviderSheetRows(pending, baseline) : pending
+        const idMap = savedTempIdToUuidMap
+        let toSave = pending
+        if (idMap && idMap.size > 0) {
+          toSave = pending.map((row) => {
+            if (!isUuid(row.id)) {
+              const newId = idMap.get(row.id)
+              if (newId) {
+                return { ...row, id: newId, updated_at: new Date().toISOString() }
+              }
+            }
+            return row
+          })
+        }
         void saveProviderSheetRows(providerId, toSave)
       }
     }
@@ -3116,6 +3116,16 @@ export default function ClinicDetail() {
               : activeTab === 'accounts_receivable' && tab !== 'accounts_receivable'
                 ? accountsReceivableTabFlushRef.current
                 : null
+      const flushLabel =
+        activeTab === 'patients' && tab !== 'patients'
+          ? 'patients'
+          : activeTab === 'todo' && tab !== 'todo'
+            ? 'todo'
+            : activeTab === 'providers' && tab !== 'providers'
+              ? 'providers'
+              : activeTab === 'accounts_receivable' && tab !== 'accounts_receivable'
+                ? 'accounts_receivable'
+                : 'none'
       if (flushBeforeTabLeave) {
         // Do not setLoading(true) here: pageReady is !loading, so a full-page spinner would unmount the
         // tab being flushed and destroy Handsontable before finishEditing + save (especially AR).
