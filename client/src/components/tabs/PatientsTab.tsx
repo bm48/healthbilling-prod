@@ -1041,10 +1041,7 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
   }
 
   return (
-    <div 
-      className="p-6" 
-      style={isInSplitScreen ? { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 } : {}}
-    >
+    <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
       <div 
         ref={tableContainerRef}
         className="table-container dark-theme" 
@@ -1052,8 +1049,10 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
           maxHeight: isInSplitScreen ? undefined : '600px',
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
-          overflow: 'hidden',
+          overflow: isInSplitScreen ? undefined : 'hidden' as const,
           border: '1px solid rgba(255, 255, 255, 0.1)',
+          width: '100%',
+          maxWidth: '100%',
           borderRadius: '8px',
           backgroundColor: '#d2dbe5'
         }}
@@ -1067,6 +1066,7 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
           rowHeaders={true}
           width="100%"
           height={isInSplitScreen ? tableHeight : 600}
+          stretchH={isInSplitScreen ? "none" : "all"}
           afterChange={handlePatientsHandsontableChange}
           afterSelection={handleAfterSelection}
           afterDeselect={handleAfterDeselect}

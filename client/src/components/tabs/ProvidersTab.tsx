@@ -2467,10 +2467,7 @@ export default function ProvidersTab({
   }
 
   return (
-    <div 
-      className="p-6" 
-      style={isInSplitScreen ? { width: '100%', overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 } : {}}
-    >
+    <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
       {/* <h1 className="text-3xl font-bold text-white">{activeProvider?.first_name} {activeProvider?.last_name}</h1> */}
       {/* month selector - background color from status_colors (month type), like Ins Pay Date column */}
       {(() => {
@@ -2527,7 +2524,7 @@ export default function ProvidersTab({
           maxHeight: isInSplitScreen ? undefined : '600px',
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
-          overflow: 'hidden',
+          overflow: isInSplitScreen ? undefined : 'hidden' as const,
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: '8px',
           width: '100%',
@@ -2547,6 +2544,7 @@ export default function ProvidersTab({
             rowHeaders={true}
             width="100%"
             height={isInSplitScreen ? tableHeight : 600}
+            stretchH={isInSplitScreen ? "none" : "all"}
             beforeChangeCorrect={beforeChangeCorrectProviderRows}
             afterChange={handleProviderRowsHandsontableChange}
             onAfterRowMove={handleProviderRowMove}

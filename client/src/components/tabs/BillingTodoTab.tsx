@@ -1016,25 +1016,24 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
   }
 
   return (
-    <div 
-      className="p-6" 
-      style={isInSplitScreen ? { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 } : {}}
-    >
-      <div 
+    <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
+      <div
         ref={tableContainerRef}
-        className="table-container dark-theme" 
-        style={{ 
+        className={`table-container dark-theme ${isInSplitScreen ? 'min-w-0 flex-1' : ''}`}
+        style={{
           maxHeight: isInSplitScreen ? undefined : '600px',
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
-          overflow: 'hidden',
+          overflow: isInSplitScreen ? undefined : 'hidden' as const,
           border: '1px solid rgba(255, 255, 255, 0.1)',
+          width: '100%',
+          maxWidth: '100%',
           borderRadius: '8px',
           backgroundColor: '#d2dbe5'
         }}
       >
         <HandsontableWrapper
-          key={`todos-${clinicId}`}
+          key={`todos-${clinicId}-${isInSplitScreen ? 'split' : 'full'}`}
           hotInstanceRef={hotRef}
           data={getTodosHandsontableData()}
           dataVersion={structureVersion}
@@ -1043,6 +1042,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
           rowHeaders={true}
           width="100%"
           height={isInSplitScreen ? tableHeight : 600}
+          stretchH={isInSplitScreen ? "none" : "all"}
           afterChange={handleTodosHandsontableChange}
           afterSelection={handleAfterSelection}
           afterDeselect={handleAfterDeselect}

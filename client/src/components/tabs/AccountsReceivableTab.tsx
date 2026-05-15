@@ -1565,14 +1565,7 @@ export default function AccountsReceivableTab({
 
   
   return (
-    <div 
-      className="p-6" 
-      style={
-        isInSplitScreen
-          ? { width: '100%', overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }
-          : {}
-      }
-    >
+    <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
       {!isInSplitScreen && (
         <div className="mb-4 flex justify-between items-center">
           <h2 className="text-2xl font-bold text-white">ACCOUNTS RECEIVABLE</h2>
@@ -1586,8 +1579,16 @@ export default function AccountsReceivableTab({
         const textColor = monthColor?.textColor ?? '#fff'
         return (
           <div
-            className="relative flex items-center justify-center gap-4 rounded-lg border border-slate-700"
-            style={{ backgroundColor: bgColor, color: textColor, maxWidth: '40%', margin: 'auto', marginBottom: '10px' }}
+            className={`relative flex items-center justify-center gap-4 rounded-lg border border-slate-700 shrink-0 ${
+              isInSplitScreen ? 'w-full' : ''
+            }`}
+            style={{
+              backgroundColor: bgColor,
+              color: textColor,
+              maxWidth: isInSplitScreen ? '100%' : '40%',
+              margin: 'auto',
+              marginBottom: '10px',
+            }}
           >
             <button
               onClick={() => {
@@ -1651,21 +1652,21 @@ export default function AccountsReceivableTab({
       })()}
       <div 
         ref={tableContainerRef}
-        className="table-container dark-theme" 
-        style={{ 
+        className={`table-container dark-theme ${isInSplitScreen ? 'min-w-0 flex-1' : ''}`}
+        style={{
           maxHeight: isInSplitScreen ? undefined : 'calc(100vh - 300px)',
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
-          overflow: 'hidden',
+          overflow: isInSplitScreen ? undefined : 'hidden' as const,
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: '8px',
           backgroundColor: '#d2dbe5',
           width: '100%',
-          maxWidth: '100%',
+          ...(isInSplitScreen ? {} : { maxWidth: '100%' }),
         }}
       >
         <HandsontableWrapper
-          key={`ar-${selectedMonth.getTime()}-${selectedPayroll}-${JSON.stringify(lockData)}-${wholeSheetLocked ? '1' : '0'}`}
+          key={`ar-${selectedMonth.getTime()}-${selectedPayroll}-${JSON.stringify(lockData)}-${wholeSheetLocked ? '1' : '0'}-${isInSplitScreen ? 'split' : 'full'}`}
           data={getARHandsontableData()}
           dataVersion={structureVersion + (isViewingBackup ? 1000000 + backupVersionKey : 0)}
           scrollToRowAfterUpdateRef={scrollToRowAfterUpdateRef}
@@ -1676,6 +1677,7 @@ export default function AccountsReceivableTab({
           rowHeaders={true}
           width="100%"
           height={isInSplitScreen ? tableHeight : 600}
+          stretchH={isInSplitScreen ? "none" : "all"}
           afterChange={handleARHandsontableChange}
           afterSelection={handleARAfterSelection}
           afterDeselect={handleARAfterDeselect}
@@ -1697,7 +1699,9 @@ export default function AccountsReceivableTab({
 
       {/* Sum bar — same placement and chrome as billing sheet (ProvidersTab) */}
       <div
-        className="mt-3 flex flex-col gap-2 px-4 py-3 rounded-lg border border-white/20 bg-slate-800/80 text-white"
+        className={`mt-3 flex flex-col gap-2 px-4 py-3 rounded-lg border border-white/20 bg-slate-800/80 text-white ${
+          isInSplitScreen ? 'shrink-0' : ''
+        }`}
         style={{ width: '100%', maxWidth: '100%' }}
         role="status"
         aria-live="polite"

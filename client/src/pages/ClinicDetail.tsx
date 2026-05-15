@@ -3575,7 +3575,7 @@ export default function ClinicDetail() {
     return () => document.removeEventListener('keydown', handleKeyDown, true)
   }, [])
 
-  // Tab order for cycling in split screen (left/right Switch) — exclude patients so Switch never changes the Patients pane; admin has no Billing To-Do
+  // Tab order for cycling when opening split screen — admin has no Billing To-Do
   const SPLIT_SCREEN_TAB_ORDER: TabType[] = [
     ...(showBillingTodoTab ? (['todo'] as const) : []),
     'providers',
@@ -3591,7 +3591,58 @@ export default function ClinicDetail() {
     return next
   }
   const getTabLabel = (tab: TabType) =>
-    tab === 'patients' ? 'Patient Info' : tab === 'todo' ? 'Billing To-Do' : tab === 'providers' ? 'Providers' : tab === 'provider_pay' ? 'Provider Pay' : 'Accounts Receivable'
+    tab === 'patients'
+      ? 'Patient Info'
+      : tab === 'todo'
+        ? 'Billing To-Do'
+        : tab === 'providers'
+          ? 'Providers'
+          : tab === 'provider_pay'
+            ? 'Provider Pay'
+            : 'Accounts Receivable'
+
+  /** Tabs available in split-screen pane dropdowns (finance tabs always listed in split view). */
+  const getSplitScreenSelectableTabs = (): TabType[] => [
+    ...(showPatientTab ? (['patients'] as const) : []),
+    ...(showBillingTodoTab ? (['todo'] as const) : []),
+    ...(!isBillingStaff && !isOfficeStaff
+      ? ([
+          'providers',
+          ...(showAccountsReceivableTab || splitScreen != null ? (['accounts_receivable'] as const) : []),
+          ...(showProviderPayTab || splitScreen != null ? (['provider_pay'] as const) : []),
+        ] as const)
+      : []),
+  ]
+
+  const getSplitScreenPaneTabOptions = (
+    pane: 'left' | 'right',
+    currentTab: TabType,
+    otherPaneTab: TabType,
+  ): TabType[] => {
+    const options = getSplitScreenSelectableTabs().filter(tab => {
+      if (pane === 'right' && tab === 'providers') return false
+      if (tab === otherPaneTab) return false
+      return true
+    })
+    if (!options.includes(currentTab)) {
+      return [currentTab, ...options]
+    }
+    return options
+  }
+
+  const handleSplitPaneTabChange = (pane: 'left' | 'right', tab: TabType) => {
+    if (!splitScreen) return
+    if (pane === 'left') {
+      if (tab === splitScreen.right) return
+      setSplitScreen({ ...splitScreen, left: tab })
+    } else {
+      if (tab === 'providers' || tab === splitScreen.left) return
+      setSplitScreen({ ...splitScreen, right: tab })
+    }
+  }
+
+  const splitPaneTabSelectClassName =
+    'px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm font-medium min-w-0 max-w-[11rem] truncate cursor-pointer hover:bg-slate-700/80 focus:outline-none focus:ring-1 focus:ring-primary-400'
 
   // Open split screen: provider billing sheet on the left, current tab (or next) on the right
   const openSplitScreen = () => {
@@ -3901,9 +3952,19 @@ export default function ClinicDetail() {
             >
               <div className="shrink-0 p-2 border-b border-white/20 flex justify-between items-center gap-2 min-h-[2.5rem]">
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-white font-medium shrink-0">
-                    {getTabLabel(splitScreen.left)}
-                  </span>
+                  <select
+                    value={splitScreen.left}
+                    onChange={(e) => handleSplitPaneTabChange('left', e.target.value as TabType)}
+                    className={splitPaneTabSelectClassName}
+                    title="Select left pane tab"
+                    aria-label="Select left pane tab"
+                  >
+                    {getSplitScreenPaneTabOptions('left', splitScreen.left, splitScreen.right).map(tab => (
+                      <option key={tab} value={tab}>
+                        {getTabLabel(tab)}
+                      </option>
+                    ))}
+                  </select>
                   {splitScreen.left === 'providers' && currentProvider && (
                     <span className="text-white/90 text-sm text-[#ffd600] truncate">
                       {currentProvider.first_name} {currentProvider.last_name}
@@ -3921,14 +3982,6 @@ export default function ClinicDetail() {
                       Export CSV
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setSplitScreen({ ...splitScreen, left: getNextTab(splitScreen.left, splitScreen.right) })}
-                    className="text-white/70 hover:text-white text-sm px-2 whitespace-nowrap"
-                    title="Switch left tab"
-                  >
-                    Switch
-                  </button>
                 </div>
               </div>
               <div className="flex flex-col flex-1 min-h-0 overflow-hidden w-full">
@@ -3972,9 +4025,19 @@ export default function ClinicDetail() {
             >
               <div className="shrink-0 p-2 border-b border-white/20 flex justify-between items-center gap-2 min-h-[2.5rem]">
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-white font-medium shrink-0">
-                    {getTabLabel(splitScreen.right)}
-                  </span>
+                  <select
+                    value={splitScreen.right}
+                    onChange={(e) => handleSplitPaneTabChange('right', e.target.value as TabType)}
+                    className={splitPaneTabSelectClassName}
+                    title="Select right pane tab"
+                    aria-label="Select right pane tab"
+                  >
+                    {getSplitScreenPaneTabOptions('right', splitScreen.right, splitScreen.left).map(tab => (
+                      <option key={tab} value={tab}>
+                        {getTabLabel(tab)}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {splitScreen.right === 'todo' && (
@@ -3987,20 +4050,6 @@ export default function ClinicDetail() {
                       Export CSV
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      let next = getNextTab(splitScreen.right, splitScreen.left)
-                      if (next === 'providers') {
-                        next = getNextTab(next, 'providers')
-                      }
-                      setSplitScreen({ ...splitScreen, right: next })
-                    }}
-                    className="text-white/70 hover:text-white text-sm px-2 whitespace-nowrap"
-                    title="Switch right tab"
-                  >
-                    Switch
-                  </button>
                   <button
                     type="button"
                     onClick={() => void handleExitSplitScreen()}

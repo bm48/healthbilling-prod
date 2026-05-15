@@ -533,21 +533,33 @@ export default function HandsontableWrapper({
   }), [columns])
 
 
-  // Update columns when they change (e.g., when readOnly state changes)
-  useEffect(() => {
-    if (hotTableRef.current?.hotInstance && processedColumns.length > 0) {
-      const hotInstance = hotTableRef.current.hotInstance
-      hotInstance.updateSettings({
-        columns: processedColumns
-      })
-    }
-  }, [processedColumns])
-
   // Convert rowHeaders number[] to string[] if needed
   const processedRowHeaders: boolean | string[] | ((index: number) => string) | undefined = 
     Array.isArray(rowHeaders) && rowHeaders.length > 0 && typeof rowHeaders[0] === 'number'
       ? rowHeaders.map(String)
       : (rowHeaders as boolean | string[] | undefined)
+
+  // Re-apply stretchH when it changes (e.g. switching split/non-split layout)
+  useEffect(() => {
+    const hot = hotTableRef.current?.hotInstance
+    if (!hot) return
+    hot.updateSettings({ stretchH, autoColumnSize: false })
+    requestAnimationFrame(() => {
+      try {
+        hot.refreshDimensions()
+        hot.render()
+      } catch {
+        // ignore if instance is tearing down
+      }
+    })
+  }, [stretchH])
+
+  // Update columns when they change (e.g., when readOnly state changes)
+  useEffect(() => {
+    if (hotTableRef.current?.hotInstance && processedColumns.length > 0) {
+      hotTableRef.current.hotInstance.updateSettings({ columns: processedColumns })
+    }
+  }, [processedColumns])
 
   const settings: Handsontable.GridSettings = {
     ...(omitDataAndColumnsFromReactSettings
@@ -706,10 +718,8 @@ export default function HandsontableWrapper({
     // Column sorting: use prop (default false to preserve table order)
     columnSorting: columnSortingProp,
 
-    // Auto column width
-    autoColumnSize: {
-      syncLimit: 50,
-    },
+    // Disable auto column sizing so defined column widths are respected; stretchH fills any extra space
+    autoColumnSize: false,
     
     // Cell selection
     selectionMode: 'multiple',

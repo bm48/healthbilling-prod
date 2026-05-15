@@ -834,6 +834,33 @@ providers-handsontable} */
   border-color: rgba(255, 255, 255, 0.2);
 }
 
+/* Split-screen clinic panes — the pane content area fills the available height */
+.split-pane-tab {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* In split-screen panes, horizontal scrolling is handled by Handsontable's internal wtHolder.
+   Use overflow-x: auto so the scrollbar is reachable, and overflow-y: hidden to defer vertical
+   scroll to Handsontable's wtHolder as well. */
+.split-pane-tab > .table-container,
+.split-pane-tab .table-container {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  min-width: 0;
+}
+
+.split-pane-tab .handsontable-custom {
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+}
+
 /* Loading State */
 .table-spreadsheet tbody tr.loading {
   opacity: 0.6;

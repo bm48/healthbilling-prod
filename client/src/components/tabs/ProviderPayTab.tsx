@@ -817,17 +817,26 @@ export default function ProviderPayTab({
     )
   }
 
+  const dateInputClass = (empty: boolean) =>
+    `bg-transparent border border-white/30 rounded outline-none text-inherit [color-scheme:dark] ${
+      empty ? 'provider-pay-date-empty' : ''
+    } ${
+      isInSplitScreen
+        ? 'w-full min-w-0 max-w-full box-border px-2 py-1 text-sm'
+        : 'text-sm'
+    }`
+
   return (
     <div
-      className="p-6 min-w-0"
-      style={
-        isInSplitScreen
-          ? { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }
-          : { maxWidth: '45vw', width: '100%' }
-      }
+      className={`min-w-0 ${isInSplitScreen ? 'p-3 split-pane-tab' : 'p-6'}`}
+      style={isInSplitScreen ? undefined : { maxWidth: '45vw', width: '100%' }}
     >
       {clinicPayroll === 2 && (
-        <div className="flex items-center gap-3 mb-3">
+        <div
+          className={`flex items-center gap-3 shrink-0 ${
+            isInSplitScreen ? 'mb-2 flex-wrap' : 'mb-3'
+          }`}
+        >
           <label className="text-white font-medium">Payroll:</label>
           <select
             value={selectedPayroll}
@@ -839,40 +848,56 @@ export default function ProviderPayTab({
           </select>
         </div>
       )}
-      <div className="flex items-center gap-2 justify-between">
+      <div
+        className={
+          isInSplitScreen
+            ? 'flex flex-col gap-2 w-full min-w-0 mb-2 shrink-0'
+            : 'flex items-center gap-2 justify-between'
+        }
+      >
         {/* Month selector - same style as other tabs */}
         {(() => {
           const monthName = selectedMonth.toLocaleString('en-US', { month: 'long' })
           const monthColor = getMonthColor(monthName)
           const bgColor = monthColor?.color ?? 'rgba(30, 41, 59, 0.5)'
           const textColor = monthColor?.textColor ?? '#fff'
+          const payrollHalf = clinicPayroll === 2 ? selectedPayroll : undefined
+          const monthPeriodLabel = formatMonthYear(selectedMonth, payrollHalf)
+          const fullMonthTitle = `Provider Pay for ${monthPeriodLabel}`
           return (
             <div
-              className="relative flex h-9 mb-3 items-center justify-center gap-4 rounded-lg border border-slate-700"
+              className={`relative flex h-9 items-center justify-center rounded-lg border border-slate-700 shrink-0 ${
+                isInSplitScreen ? 'w-full min-w-0' : 'mb-3'
+              }`}
               style={{
                 backgroundColor: bgColor,
                 color: textColor,
-                width: 'min(100%, 32rem)',
-                // margin: 'auto',
-                // marginBottom: '10px',
+                width: isInSplitScreen ? '100%' : 'min(100%, 32rem)',
               }}
             >
               <button
                 onClick={onPreviousMonth}
-                className="absolute left-0 p-2 hover:opacity-80 rounded-lg transition-opacity"
+                className="absolute left-0 p-2 hover:opacity-80 rounded-lg transition-opacity shrink-0 z-10"
                 style={{ color: textColor }}
                 title="Previous month"
               >
                 <ChevronLeft size={20} />
               </button>
-              <div className="text-lg font-semibold min-w-[200px] text-center px-2">
-                Provider Pay for {formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}
+              <div
+                className={`font-semibold text-center min-w-0 ${
+                  isInSplitScreen
+                    ? 'text-sm flex-1 truncate px-9'
+                    : 'text-lg min-w-[200px] px-2'
+                }`}
+                title={fullMonthTitle}
+              >
+                {isInSplitScreen ? monthPeriodLabel : fullMonthTitle}
               </div>
               {canTogglePastMonthWholeSheetLock && isViewingPastPeriod && (
                 <button
                   type="button"
                   onClick={handleToggleWholeSheetLock}
-                  className="absolute right-9 p-1.5 rounded-lg hover:opacity-80 transition-opacity"
+                  className="absolute right-9 p-1.5 rounded-lg hover:opacity-80 transition-opacity shrink-0 z-10"
                   style={{ color: textColor }}
                   title={
                     wholeSheetLocked
@@ -886,7 +911,7 @@ export default function ProviderPayTab({
               )}
               <button
                 onClick={onNextMonth}
-                className="absolute right-0 p-2 hover:opacity-80 rounded-lg transition-opacity"
+                className="absolute right-0 p-2 hover:opacity-80 rounded-lg transition-opacity shrink-0 z-10"
                 style={{ color: textColor }}
                 title="Next month"
               >
@@ -898,7 +923,13 @@ export default function ProviderPayTab({
 
         {/* Provider select - when providers list is provided */}
         {providers.length > 0 && (
-          <div className="mb-3 flex items-center gap-2">
+          <div
+            className={
+              isInSplitScreen
+                ? 'flex flex-col gap-1 w-full min-w-0'
+                : 'mb-3 flex items-center gap-2'
+            }
+          >
             <label htmlFor="provider-pay-provider-select" className="text-sm font-medium text-slate-300 whitespace-nowrap">
               Provider:
             </label>
@@ -910,7 +941,9 @@ export default function ProviderPayTab({
                 setSelectedProviderId(id)
                 onSelectedProviderIdChange?.(id)
               }}
-              className="cursor-pointer rounded-lg border border-slate-600 bg-slate-800 text-slate-100 px-3 py-2 text-sm min-w-[200px] focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className={`cursor-pointer rounded-lg border border-slate-600 bg-slate-800 text-slate-100 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                isInSplitScreen ? 'w-full min-w-0' : 'min-w-[200px]'
+              }`}
             >
               {providers.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -925,61 +958,113 @@ export default function ProviderPayTab({
 
       {/* Pay Date and Pay Period - header color same as selected month */}
       <div
-        className="rounded-t-lg border border-b-0 border-slate-700"
+        className={`rounded-t-lg border border-b-0 border-slate-700 shrink-0 min-w-0 ${
+          isInSplitScreen ? 'w-full overflow-hidden' : ''
+        }`}
         style={{
           backgroundColor: headerStyle.bgColor,
           color: headerStyle.textColor,
         }}
       >
-        <div className="flex items-center px-4 py-2 border-b border-slate-600/50">
-          <span className="font-bold w-28">Pay Date:</span>
+        <div
+          className={
+            isInSplitScreen
+              ? 'flex flex-col gap-1 px-2 py-2 border-b border-slate-600/50 min-w-0'
+              : 'flex items-center px-4 py-2 border-b border-slate-600/50'
+          }
+        >
+          <span
+            className={
+              isInSplitScreen ? 'font-bold text-sm shrink-0' : 'font-bold w-28 shrink-0'
+            }
+          >
+            Pay Date:
+          </span>
           <input
             type="date"
             value={payDate}
             onChange={(e) => setPayDate(e.target.value)}
             disabled={!effectiveCanEdit}
-            className={`flex-1 max-w-[12rem] bg-transparent border border-white/30 rounded px-2 py-1 outline-none text-inherit [color-scheme:dark] ${!payDate ? 'provider-pay-date-empty' : ''}`}
+            className={`${dateInputClass(!payDate)} ${
+              isInSplitScreen ? '' : 'flex-1 max-w-[12rem] px-2 py-1'
+            }`}
             style={{ color: headerStyle.textColor }}
           />
         </div>
-        <div className="flex items-center gap-3 px-4 py-2">
-          <span className="font-bold w-28 shrink-0">Pay Period:</span>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <label className="text-sm font-medium opacity-90 whitespace-nowrap">From</label>
-            <input
-              type="date"
-              value={payPeriodFrom}
-              onChange={(e) => setPayPeriodFrom(e.target.value)}
-              disabled={!effectiveCanEdit}
-              className={`w-[8.5rem] bg-transparent border border-white/30 rounded px-1.5 py-1 text-sm outline-none text-inherit [color-scheme:dark] ${!payPeriodFrom ? 'provider-pay-date-empty' : ''}`}
-              style={{ color: headerStyle.textColor }}
-            />
+        {isInSplitScreen ? (
+          <div className="flex flex-col gap-2 px-2 py-2 min-w-0">
+            <span className="font-bold text-sm shrink-0">Pay Period:</span>
+            <div className="flex flex-col gap-2 w-full min-w-0">
+              <div className="flex flex-col gap-1 min-w-0">
+                <label className="text-xs font-medium opacity-90">From</label>
+                <input
+                  type="date"
+                  value={payPeriodFrom}
+                  onChange={(e) => setPayPeriodFrom(e.target.value)}
+                  disabled={!effectiveCanEdit}
+                  className={dateInputClass(!payPeriodFrom)}
+                  style={{ color: headerStyle.textColor }}
+                />
+              </div>
+              <div className="flex flex-col gap-1 min-w-0">
+                <label className="text-xs font-medium opacity-90">To</label>
+                <input
+                  type="date"
+                  value={payPeriodTo}
+                  onChange={(e) => setPayPeriodTo(e.target.value)}
+                  disabled={!effectiveCanEdit}
+                  className={dateInputClass(!payPeriodTo)}
+                  style={{ color: headerStyle.textColor }}
+                />
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <label className="text-sm font-medium opacity-90 whitespace-nowrap">To</label>
-            <input
-              type="date"
-              value={payPeriodTo}
-              onChange={(e) => setPayPeriodTo(e.target.value)}
-              disabled={!effectiveCanEdit}
-              className={`w-[8.5rem] bg-transparent border border-white/30 rounded px-1.5 py-1 text-sm outline-none text-inherit [color-scheme:dark] ${!payPeriodTo ? 'provider-pay-date-empty' : ''}`}
-              style={{ color: headerStyle.textColor }}
-            />
+        ) : (
+          <div className="flex items-center gap-3 px-4 py-2">
+            <span className="font-bold w-28 shrink-0">Pay Period:</span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <label className="text-sm font-medium opacity-90 whitespace-nowrap">From</label>
+              <input
+                type="date"
+                value={payPeriodFrom}
+                onChange={(e) => setPayPeriodFrom(e.target.value)}
+                disabled={!effectiveCanEdit}
+                className={`w-[8.5rem] ${dateInputClass(!payPeriodFrom)} px-1.5 py-1`}
+                style={{ color: headerStyle.textColor }}
+              />
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <label className="text-sm font-medium opacity-90 whitespace-nowrap">To</label>
+              <input
+                type="date"
+                value={payPeriodTo}
+                onChange={(e) => setPayPeriodTo(e.target.value)}
+                disabled={!effectiveCanEdit}
+                className={`w-[8.5rem] ${dateInputClass(!payPeriodTo)} px-1.5 py-1`}
+                style={{ color: headerStyle.textColor }}
+              />
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
-      <div className="mt-4 flex gap-4">
+      <div
+        className={
+          isInSplitScreen
+            ? 'mt-2 flex flex-col flex-1 min-h-0 min-w-0 gap-2'
+            : 'mt-4 flex gap-4'
+        }
+      >
         <div
           ref={containerRef}
-          className="table-container dark-theme flex-1"
+          className="table-container dark-theme flex-1 min-w-0 min-h-0"
           style={
             {
               height: isInSplitScreen ? undefined : '50vh',
               maxHeight: isInSplitScreen ? undefined : '50vh',
               flex: isInSplitScreen ? 1 : undefined,
               minHeight: isInSplitScreen ? 0 : undefined,
-              overflow: 'hidden',
+              overflow: isInSplitScreen ? undefined : 'hidden' as const,
               border: '1px solid rgba(0,0,0,0.2)',
               borderTop: 'none',
               borderRadius: '0 0 8px 8px',
@@ -998,6 +1083,7 @@ export default function ProviderPayTab({
             rowHeaders={false}
             width="100%"
             height={tableHeight}
+            stretchH={isInSplitScreen ? "none" : "all"}
             readOnly={!effectiveCanEdit}
             afterChange={afterChange}
             cells={cellsCallback}
