@@ -3591,9 +3591,10 @@ export default function ClinicDetail() {
     return next
   }
   const getTabLabel = (tab: TabType) =>
-    tab === 'patients'
-      ? 'Patient Info'
-      : tab === 'todo'
+    // tab === 'patients'
+    //   ? 'Patient Info'
+    //   : tab === 'todo'
+    tab === 'todo'
         ? 'Billing To-Do'
         : tab === 'providers'
           ? 'Providers'
