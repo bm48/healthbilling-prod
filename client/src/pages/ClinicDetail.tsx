@@ -26,6 +26,25 @@ import ProviderPayTab, { type IsLockProviderPay } from '@/components/tabs/Provid
 
 type TabType = 'patients' | 'todo' | 'providers' | 'accounts_receivable' | 'provider_pay'
 
+/**
+ * When a second save was queued while the first was in-flight, the queued `pending` snapshot can still
+ * use `new-*` / client `empty-*` ids for rows the completed save already persisted as UUIDs. Replaying
+ * `pending` as-is causes `saveSheetRows` to INSERT those rows again → duplicate provider_sheet_rows.
+ * Align by row index: if merged row i is a UUID and pending row i is not, carry over the stable id + timestamps.
+ */
+function reconcileQueuedProviderSheetRows(pending: SheetRow[], mergedAfterSave: SheetRow[]): SheetRow[] {
+  const out = [...pending]
+  const n = Math.min(out.length, mergedAfterSave.length)
+  for (let i = 0; i < n; i++) {
+    const p = out[i]!
+    const m = mergedAfterSave[i]!
+    if (!isUuid(p.id) && isUuid(m.id)) {
+      out[i] = { ...p, id: m.id, created_at: m.created_at, updated_at: m.updated_at }
+    }
+  }
+  return out
+}
+
 function initialTabFromPath(
   clinicId: string | undefined,
   providerIdFromRoute: string | undefined,
@@ -2417,10 +2436,14 @@ export default function ClinicDetail() {
 
 
   const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]) => {
-    if (!clinicId || !userProfile) return
+    if (!clinicId || !userProfile) {
+      return
+    }
 
     const sheet = providerSheets[providerId]
-    if (!sheet) return
+    if (!sheet) {
+      return
+    }
 
     // Filter out only truly empty rows (empty- rows with no data)
     const rowsToProcess = rowsToSave.filter(r => {
@@ -2442,6 +2465,8 @@ export default function ClinicDetail() {
       return
     }
     saveProviderSheetInProgressRef.current.add(providerId)
+
+    const mergedProviderRowsForPendingReconcile: { current: SheetRow[] | null } = { current: null }
 
     // Optimistic update: apply full rows to state immediately so the row (e.g. patient fill) appears right away
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: rowsToSave } }))
@@ -2548,6 +2573,7 @@ export default function ClinicDetail() {
           }
           nextMonthRows = merged
         }
+        mergedProviderRowsForPendingReconcile.current = nextMonthRows[providerId] ?? null
         return { ...prev, [selectedMonthKey]: nextMonthRows } as Record<string, Record<string, SheetRow[]>>
       })
       if (freshPatients.length > 0) {
@@ -2560,7 +2586,10 @@ export default function ClinicDetail() {
       const pending = pendingProviderSheetSaveRef.current[providerId]
       if (pending) {
         delete pendingProviderSheetSaveRef.current[providerId]
-        saveProviderSheetRows(providerId, pending)
+        const baseline = mergedProviderRowsForPendingReconcile.current
+        const toSave =
+          baseline && baseline.length > 0 ? reconcileQueuedProviderSheetRows(pending, baseline) : pending
+        void saveProviderSheetRows(providerId, toSave)
       }
     }
   }, [clinicId, userProfile, providerSheets, selectedMonthKey, fetchPatients])

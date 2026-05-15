@@ -369,6 +369,12 @@ export default function ProvidersTab({
     return h
   }, [patients, patientAssignmentRevision])
 
+  /** Revisions captured when `latestTableDataRef` was built — if patients/rows changed externally, ignore stale matrix (fixes missing DOS / wrong patient cells after tab switch + fetchPatients). */
+  const patientsDisplayRevisionForMatrixRef = useRef(patientsDisplayRevision)
+  patientsDisplayRevisionForMatrixRef.current = patientsDisplayRevision
+  const providerRowsVersionForMatrixRef = useRef(providerRowsVersion ?? 0)
+  providerRowsVersionForMatrixRef.current = providerRowsVersion ?? 0
+
   const handleProviderRowMove = useCallback((movedRows: number[], finalIndex: number) => {
     if (!activeProvider || !onReorderProviderRows) return
     onReorderProviderRows(activeProvider.id, movedRows, finalIndex)
@@ -376,6 +382,8 @@ export default function ProvidersTab({
 
   // Ref for latest table data from change handler so we don't pass stale data when parent re-renders before state updates
   const latestTableDataRef = useRef<any[][] | null>(null)
+  /** Revisions under which `latestTableDataRef` was materialized; must match current revisions or matrix is stale. */
+  const matrixSourceRevisionsRef = useRef<{ patientsRev: number; rowsVer: number } | null>(null)
   /** Latest rows from change handler so rapid edits accumulate and flush-on-unmount has current data (like PatientsTab patientsRef). */
   const latestProviderRowsRef = useRef<{ providerId: string; rows: SheetRow[] } | null>(null)
   const saveProviderSheetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -407,12 +415,19 @@ export default function ProvidersTab({
   const patientIdEditDebounceRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
   const patientIdDeferredQueueRef = useRef<Array<{ row: number; col: number | string; newVal: string }>>([])
   const patientIdFlushScheduledRef = useRef(false)
+  /** Serialized tail so tab-leave flush can await paste/typed patient_id DB validation + merge. */
+  const patientIdAsyncTailRef = useRef<Promise<void>>(Promise.resolve())
   const activeProviderRef = useRef(activeProvider)
   const clinicIdForValidationRef = useRef(clinicId)
   const isViewingBackupRef = useRef(isViewingBackup)
   activeProviderRef.current = activeProvider
   clinicIdForValidationRef.current = clinicId
   isViewingBackupRef.current = isViewingBackup
+  /**
+   * Tab-leave flush awaits save before parent switches tabs; ProvidersTab then unmounts and its cleanup
+   * used to save again with the same temp row ids — second INSERT duplicates in DB. Skip unmount save when flush already persisted.
+   */
+  const tabLeaveFlushPersistedRef = useRef(false)
 
   /** Prefer parent-loaded patients; avoids a full-clinic `patients` query on every patient_id edit/batch. */
   const patientsForLookupRef = useRef(patients)
@@ -434,15 +449,41 @@ export default function ProvidersTab({
     return (data || []) as Patient[]
   }, [])
 
+  /** Commit open HOT editor into React state (afterChange) before persisting — same idea as AccountsReceivableTab.flushARSave. */
+  const commitProviderHandsontableBeforePersist = useCallback(async () => {
+    const hot = hotInstanceRef.current as
+      | (Handsontable & { isDestroyed?: boolean; deselectCell?: () => void })
+      | null
+    if (!hot || hot.isDestroyed) {
+      await new Promise<void>((r) => queueMicrotask(r))
+      return
+    }
+    try {
+      hot.getActiveEditor?.()?.finishEditing?.(false)
+    } catch {
+      /* ignore */
+    }
+    try {
+      hot.deselectCell?.()
+    } catch {
+      /* ignore */
+    }
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    await new Promise<void>((r) => queueMicrotask(r))
+  }, [])
+
   const localRowsProviderKeyRef = useRef<string | null>(null)
 
   /** Column `data` for Patient ID is always 0 in this grid. */
   const isPatientIdSheetColumnProp = (prop: string | number): boolean =>
     prop === 0 || prop === '0' || Number(prop) === 0
 
-  // Clear refs when provider/month changes, when parent refetched, or when viewing backup (so backup rows from props are used)
+  // Clear refs when provider/month changes or when viewing backup (so backup rows from props are used).
+  // Do NOT clear on providerRowsVersion — parent bumps that after each save merge; clearing wiped latestProviderRowsRef
+  // before tab-leave flush could read it (empty flush → duplicate rows / lost DOS). Stale matrix is handled by getProviderRowsHandsontableData revision checks.
   useEffect(() => {
     latestTableDataRef.current = null
+    matrixSourceRevisionsRef.current = null
     latestProviderRowsRef.current = null
     localRowsProviderKeyRef.current = null
     coPatientDraftByIdKeyRef.current.clear()
@@ -452,7 +493,12 @@ export default function ProvidersTab({
     patientIdEditLatestPidRef.current.clear()
     for (const t of patientIdEditDebounceRef.current.values()) clearTimeout(t)
     patientIdEditDebounceRef.current.clear()
-  }, [activeProvider?.id, selectedMonth.getTime(), providerRowsVersion, isViewingBackup])
+    patientIdAsyncTailRef.current = Promise.resolve()
+  }, [activeProvider?.id, selectedMonth.getTime(), isViewingBackup])
+
+  useEffect(() => {
+    tabLeaveFlushPersistedRef.current = false
+  }, [activeProvider?.id])
 
   // Keep ref in sync for provider/month/backup so change handler and flush-on-unmount have correct key
   useEffect(() => {
@@ -568,10 +614,21 @@ export default function ProvidersTab({
   // When viewing backup, always use backup rows from props. When not viewing backup and ref is null, use props (activeProviderRows) so "Back to current" shows current data immediately instead of stale local state.
   const getProviderRowsHandsontableData = useCallback(() => {
     if (!activeProvider) return []
-    if (isViewingBackup) return getTableDataFromRows(activeProviderRows)
-    if (latestTableDataRef.current != null) return latestTableDataRef.current
+    if (isViewingBackup) {
+      return getTableDataFromRows(activeProviderRows)
+    }
+    const obs = matrixSourceRevisionsRef.current
+    const rowsVer = providerRowsVersion ?? 0
+    const useCachedMatrix =
+      latestTableDataRef.current != null &&
+      obs != null &&
+      obs.patientsRev === patientsDisplayRevision &&
+      obs.rowsVer === rowsVer
+    if (useCachedMatrix) {
+      return latestTableDataRef.current as (string | number | boolean)[][]
+    }
     return getTableDataFromRows(activeProviderRows)
-  }, [activeProvider, activeProviderRows, getTableDataFromRows, isViewingBackup])
+  }, [activeProvider, activeProviderRows, getTableDataFromRows, isViewingBackup, patientsDisplayRevision, providerRowsVersion])
 
   /** Column → SheetRow field mapping for current grid layout (must match handleProviderRowsHandsontableChange). */
   const providerSheetColumnFieldsForSync = useMemo((): Array<keyof SheetRow> => {
@@ -1507,7 +1564,7 @@ export default function ProvidersTab({
               const ap = activeProviderRef.current
               const cid = clinicIdForValidationRef.current
               if (!hot.isDestroyed && ap && cid && batch.length > 0) {
-                void (async () => {
+                const work = (async () => {
                   const data = await resolvePatientsListForValidation()
                   const byKey = new Map<string, Patient>()
                   for (const p of data) {
@@ -1529,6 +1586,7 @@ export default function ProvidersTab({
                     }
                   }
                 })()
+                patientIdAsyncTailRef.current = patientIdAsyncTailRef.current.then(() => work).catch(() => {})
               }
             })
           }
@@ -1600,10 +1658,30 @@ export default function ProvidersTab({
         : (showCondenseButton && isCondensed ? fieldsFull.slice(0, showVisitTypeColumn ? 10 : 9) : fieldsFull)
     
     const dateFields: (keyof SheetRow)[] = ['appointment_date', 'submit_date', 'payment_date', 'ar_date']
-    // Start from latest ref when same provider so rapid edits accumulate (parent state may not have updated yet)
-    const baseRows = (latestProviderRowsRef.current?.providerId === activeProvider.id)
-      ? latestProviderRowsRef.current.rows
-      : activeProviderRows
+    // Start from latest ref when same provider so rapid edits accumulate (parent state may not have updated yet).
+    // Before using the ref, reconcile any temp ids (new-*, empty-*) that the parent has since promoted to real
+    // UUIDs via save merge — otherwise stale new-* ids get re-sent as new INSERTs on every edit burst and
+    // create duplicate provider_sheet_rows even after the row already has a UUID in the DB.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    let baseRows: SheetRow[]
+    if (latestProviderRowsRef.current?.providerId === activeProvider.id) {
+      const rawRows = latestProviderRowsRef.current.rows
+      let anyIdPromoted = false
+      const reconciled = rawRows.map((row, i) => {
+        const propsRow = activeProviderRows[i]
+        if (propsRow && !UUID_RE.test(row.id) && UUID_RE.test(propsRow.id)) {
+          anyIdPromoted = true
+          return { ...row, id: propsRow.id, created_at: propsRow.created_at, updated_at: propsRow.updated_at }
+        }
+        return row
+      })
+      if (anyIdPromoted) {
+        latestProviderRowsRef.current = { providerId: activeProvider.id, rows: reconciled }
+      }
+      baseRows = reconciled
+    } else {
+      baseRows = [...activeProviderRows]
+    }
 
     const updatedRows = [...baseRows]
     let idCounter = 0
@@ -1766,7 +1844,7 @@ export default function ProvidersTab({
             row,
             setTimeout(() => {
               patientIdEditDebounceRef.current.delete(row)
-              void (async () => {
+              const work = (async () => {
                 const ap = activeProviderRef.current
                 const clinic = clinicIdForValidationRef.current
                 if (!ap || !clinic || ap.id !== apIdForDebounce || isViewingBackupRef.current) return
@@ -1796,12 +1874,17 @@ export default function ProvidersTab({
                 }
                 latestProviderRowsRef.current = { providerId: ap.id, rows: cur }
                 latestTableDataRef.current = getTableDataFromRows(cur)
+                matrixSourceRevisionsRef.current = {
+                  patientsRev: patientsDisplayRevisionForMatrixRef.current,
+                  rowsVer: providerRowsVersionForMatrixRef.current,
+                }
                 pendingProviderSheetSaveRef.current = { providerId: ap.id, rows: cur }
                 onSaveProviderSheetRowsDirectRef.current(ap.id, cur).catch((e) =>
                   console.error('[ProvidersTab] save after patient id merge (edit)', e)
                 )
                 setStructureVersion((v) => v + 1)
               })()
+              patientIdAsyncTailRef.current = patientIdAsyncTailRef.current.then(() => work).catch(() => {})
             }, 350)
           )
           return
@@ -1933,6 +2016,10 @@ export default function ProvidersTab({
 
     // Store latest table data and rows so next render and flush-on-unmount have current data (like PatientsTab setPatients)
     latestTableDataRef.current = getTableDataFromRows(updatedRows)
+    matrixSourceRevisionsRef.current = {
+      patientsRev: patientsDisplayRevisionForMatrixRef.current,
+      rowsVer: providerRowsVersionForMatrixRef.current,
+    }
     latestProviderRowsRef.current = { providerId: activeProvider.id, rows: updatedRows }
 
     // Auto add/remove highlight when Ins Pay or Collected from PT is set to 0 / "00" or changed
@@ -2082,6 +2169,34 @@ export default function ProvidersTab({
     []
   )
 
+  const activeProviderRowsRef = useRef<SheetRow[]>(activeProviderRows)
+  activeProviderRowsRef.current = activeProviderRows
+
+  /** Pending/latest change-handler refs only (no HOT snapshot) — avoids a second save after tab flush with stale temp ids.
+   *  Also reconciles any leftover new-* ids with the current props UUIDs so the flush doesn't re-INSERT already-saved rows. */
+  const resolveRowsForTabLeaveFlushRef = useRef<() => { providerId: string; rows: SheetRow[] } | null>(() => null)
+  resolveRowsForTabLeaveFlushRef.current = () => {
+    const pending = pendingProviderSheetSaveRef.current
+    const latest = latestProviderRowsRef.current
+    const providerIdFromRefs = pending?.providerId ?? latest?.providerId
+    const rowsFromRefs =
+      latest?.providerId === providerIdFromRefs && latest?.rows?.length ? latest.rows : pending?.rows
+    if (!providerIdFromRefs || !rowsFromRefs?.length) return null
+    // Reconcile stale temp ids: if props row i has a UUID and ref row i has a non-UUID, use the UUID.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const propsRows = activeProviderRowsRef.current
+    let anyPromoted = false
+    const reconciled = rowsFromRefs.map((row, i) => {
+      const propsRow = propsRows[i]
+      if (propsRow && !UUID_RE.test(row.id) && UUID_RE.test(propsRow.id)) {
+        anyPromoted = true
+        return { ...row, id: propsRow.id, created_at: propsRow.created_at, updated_at: propsRow.updated_at }
+      }
+      return row
+    })
+    return { providerId: providerIdFromRefs, rows: anyPromoted ? reconciled : rowsFromRefs }
+  }
+
   const handleProviderAfterCreateRow = useCallback(
     (index: number, amount: number, source?: string) => {
       if (!canEdit || !activeProvider) return
@@ -2095,6 +2210,7 @@ export default function ProvidersTab({
         if (beforeId) {
           onAddRowAbove(activeProvider.id, beforeId)
           latestTableDataRef.current = null
+          matrixSourceRevisionsRef.current = null
           latestProviderRowsRef.current = null
           setStructureVersion((v) => v + 1)
         }
@@ -2104,6 +2220,7 @@ export default function ProvidersTab({
         if (afterId) {
           onAddRowBelow(activeProvider.id, afterId)
           latestTableDataRef.current = null
+          matrixSourceRevisionsRef.current = null
           latestProviderRowsRef.current = null
           setStructureVersion((v) => v + 1)
         }
@@ -2126,6 +2243,7 @@ export default function ProvidersTab({
         if (onDeleteRow) onDeleteRow(activeProvider.id, r.id)
       })
       latestTableDataRef.current = null
+      matrixSourceRevisionsRef.current = null
       latestProviderRowsRef.current = null
       setStructureVersion((v) => v + 1)
     },
@@ -2157,6 +2275,10 @@ export default function ProvidersTab({
       }
       latestProviderRowsRef.current = { providerId: activeProvider.id, rows: merged }
       latestTableDataRef.current = getTableDataFromRows(merged)
+      matrixSourceRevisionsRef.current = {
+        patientsRev: patientsDisplayRevisionForMatrixRef.current,
+        rowsVer: providerRowsVersionForMatrixRef.current,
+      }
       pendingProviderSheetSaveRef.current = { providerId: activeProvider.id, rows: merged }
       providersDebugTab('undo/redo immediate save', {
         providerId: activeProvider.id,
@@ -2190,19 +2312,37 @@ export default function ProvidersTab({
   // parent recreates save callback when providerSheets changes, which would run this cleanup while still on the tab and duplicate saves / corrupt ids.
   useEffect(() => {
     return () => {
+      const hotUnmount = hotInstanceRef.current as
+        | (Handsontable & { isDestroyed?: boolean; deselectCell?: () => void })
+        | null
+      if (hotUnmount && !hotUnmount.isDestroyed) {
+        try {
+          hotUnmount.getActiveEditor?.()?.finishEditing?.(false)
+        } catch {
+          /* ignore */
+        }
+        try {
+          hotUnmount.deselectCell?.()
+        } catch {
+          /* ignore */
+        }
+      }
       if (saveProviderSheetTimeoutRef.current) {
         clearTimeout(saveProviderSheetTimeoutRef.current)
         saveProviderSheetTimeoutRef.current = null
       }
-      const pending = pendingProviderSheetSaveRef.current
-      const latest = latestProviderRowsRef.current
-      const providerIdToSave = pending?.providerId ?? latest?.providerId
-      const rowsToSave = (latest?.providerId === providerIdToSave && latest?.rows?.length)
-        ? latest.rows
-        : pending?.rows
+      if (tabLeaveFlushPersistedRef.current) {
+        tabLeaveFlushPersistedRef.current = false
+        return
+      }
+      const resolved = resolveRowsForTabLeaveFlushRef.current()
+      const providerIdToSave = resolved?.providerId
+      const rowsToSave = resolved?.rows
       if (providerIdToSave && rowsToSave?.length) {
         pendingProviderSheetSaveRef.current = null
         latestProviderRowsRef.current = null
+        latestTableDataRef.current = null
+        matrixSourceRevisionsRef.current = null
         providersDebugTab('unmount flush save', {
           providerId: providerIdToSave,
           rows: rowsToSave.length,
@@ -2240,22 +2380,25 @@ export default function ProvidersTab({
   useEffect(() => {
     if (!onRegisterFlushBeforeTabLeave) return
     const flush = async () => {
+      await commitProviderHandsontableBeforePersist()
+      await patientIdAsyncTailRef.current.catch(() => {})
       if (saveProviderSheetTimeoutRef.current) {
         clearTimeout(saveProviderSheetTimeoutRef.current)
         saveProviderSheetTimeoutRef.current = null
       }
-      const pending = pendingProviderSheetSaveRef.current
-      const latest = latestProviderRowsRef.current
-      const providerIdToSave = pending?.providerId ?? latest?.providerId
-      const rowsToSave = (latest?.providerId === providerIdToSave && latest?.rows?.length)
-        ? latest.rows
-        : pending?.rows
+      const resolved = resolveRowsForTabLeaveFlushRef.current()
+      const providerIdToSave = resolved?.providerId
+      const rowsToSave = resolved?.rows
       if (!providerIdToSave || !rowsToSave?.length) return
       pendingProviderSheetSaveRef.current = null
       await onSaveProviderSheetRowsDirectRef.current(providerIdToSave, rowsToSave)
+      tabLeaveFlushPersistedRef.current = true
+      latestProviderRowsRef.current = null
+      latestTableDataRef.current = null
+      matrixSourceRevisionsRef.current = null
     }
     onRegisterFlushBeforeTabLeave(flush)
-  }, [onRegisterFlushBeforeTabLeave])
+  }, [onRegisterFlushBeforeTabLeave, commitProviderHandsontableBeforePersist])
 
   // Apply custom header colors after table renders
   useEffect(() => {
