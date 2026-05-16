@@ -940,9 +940,6 @@ export default function HandsontableWrapper({
     // Styling
     className,
     
-    // Prevent text selection during navigation
-    preventOverflow: 'horizontal',
-    
     // Enable fill handle for drag-fill
     fillHandle: {
       direction: 'vertical',

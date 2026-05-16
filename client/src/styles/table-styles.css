@@ -846,12 +846,15 @@ providers-handsontable} */
 }
 
 /* In split-screen panes, horizontal scrolling is handled by Handsontable's internal wtHolder.
-   Use overflow-x: auto so the scrollbar is reachable, and overflow-y: hidden to defer vertical
-   scroll to Handsontable's wtHolder as well. */
+   overflow-y must NOT be hidden or visible here:
+   - "hidden" clips the horizontal scrollbar at the bottom edge due to sub-pixel rounding.
+   - "visible" gets promoted to "auto" by the browser when overflow-x is "auto", creating a
+     spurious outer vertical scrollbar alongside Handsontable's own internal one.
+   "clip" cuts off vertical overflow without creating a scroll container, avoiding both issues. */
 .split-pane-tab > .table-container,
 .split-pane-tab .table-container {
   overflow-x: auto !important;
-  overflow-y: hidden !important;
+  overflow-y: clip !important;
   min-width: 0;
 }
 
@@ -859,6 +862,32 @@ providers-handsontable} */
   min-width: 0;
   max-width: none;
   width: 100%;
+}
+
+/* Ensure the wtHolder in split-screen panes scrolls horizontally and shows its scrollbar.
+   Also set Firefox scrollbar properties. */
+.split-pane-tab .ht_master .wtHolder {
+  overflow-x: auto !important;
+  overflow-y: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.65) rgba(0, 0, 0, 0.08);
+}
+
+/* Style the wtHolder scrollbar so it is always visible (not overlay/invisible on Windows) */
+.split-pane-tab .ht_master .wtHolder::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+.split-pane-tab .ht_master .wtHolder::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 5px;
+}
+.split-pane-tab .ht_master .wtHolder::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.65);
+  border-radius: 5px;
+}
+.split-pane-tab .ht_master .wtHolder::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.9);
 }
 
 /* Loading State */

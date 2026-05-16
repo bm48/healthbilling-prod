@@ -377,7 +377,9 @@ export default function Layout({ children }: LayoutProps) {
             )}
             <button
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className="text-white/70 hover:text-white hover:bg-white/10 p-2 rounded-lg transition-colors shrink-0 -ml-12 mt-14"
+              className={`text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0 flex items-center justify-center ${
+                sidebarCollapsed ? 'py-3 px-2' : 'p-2 -ml-12 mt-14'
+              }`}
               title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             >
               {sidebarCollapsed ? <Menu size={20} /> : <ArrowLeft size={20} />}
