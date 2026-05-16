@@ -846,15 +846,12 @@ providers-handsontable} */
 }
 
 /* In split-screen panes, horizontal scrolling is handled by Handsontable's internal wtHolder.
-   overflow-y must NOT be hidden or visible here:
-   - "hidden" clips the horizontal scrollbar at the bottom edge due to sub-pixel rounding.
-   - "visible" gets promoted to "auto" by the browser when overflow-x is "auto", creating a
-     spurious outer vertical scrollbar alongside Handsontable's own internal one.
-   "clip" cuts off vertical overflow without creating a scroll container, avoiding both issues. */
+   overflow: visible is required here — "hidden" and "clip" both clip the scrollbar at the
+   clientHeight boundary. "visible" on both axes avoids the CSS visible→auto promotion that
+   would otherwise create a spurious outer vertical scrollbar. */
 .split-pane-tab > .table-container,
 .split-pane-tab .table-container {
-  overflow-x: auto !important;
-  overflow-y: clip !important;
+  overflow: visible !important;
   min-width: 0;
 }
 

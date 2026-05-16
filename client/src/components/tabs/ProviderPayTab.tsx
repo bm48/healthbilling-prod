@@ -707,7 +707,7 @@ export default function ProviderPayTab({
     if (!el) return
     const updateHeight = () => {
       const h = el.clientHeight
-      if (h > 0) setTableHeight(h)
+      if (h > 0) setTableHeight(h - 12)
     }
     updateHeight()
     const ro = new ResizeObserver(updateHeight)
