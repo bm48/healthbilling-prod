@@ -360,7 +360,54 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         }
 
         // Upsert only for new placeholder rows (new- / empty- ids)
+        // existingRealPatient is set when drag-autofill copies an existing patient's patient_id
+        // to an empty row — used below to route to UPDATE instead of upsert in that case.
+        let existingRealPatient: Patient | undefined
         if (oldId.startsWith('empty-') || oldId.startsWith('new-')) {
+          // FIX 1: Detect when the placeholder row has been filled (e.g. via drag-autofill) with a
+          // patient_id that already belongs to a real patient in this clinic. If we ran a normal
+          // upsert with onConflict:'clinic_id,patient_id', PostgREST would emit
+          //   ON CONFLICT (clinic_id,patient_id) DO UPDATE SET id = <new-uuid>
+          // which overwrites the existing patient's PRIMARY KEY — causing patients_pkey violations
+          // on any subsequent save that reuses the same UUID. Instead, UPDATE the existing patient
+          // directly (preserving its primary key) and skip creating a duplicate row.
+          existingRealPatient = patientsRef.current.find(
+            p => !p.id.startsWith('empty-') && !p.id.startsWith('new-') && p.patient_id === finalPatientId
+          )
+
+          if (existingRealPatient) {
+            const { error: dupError, data: dupData } = await apiClient
+              .from('patients')
+              .update(patientData)
+              .eq('id', existingRealPatient.id)
+              .select()
+
+            if (dupError) {
+              console.error('[PatientData] Error updating duplicate-patient_id row:', dupError)
+              throw dupError
+            }
+
+            const resolvedPatient: Patient = (dupData && dupData.length > 0)
+              ? (dupData[0] as Patient)
+              : ({ ...existingRealPatient, ...(patientData as Partial<Patient>), id: existingRealPatient.id } as Patient)
+
+            savedPatientsMap.set(oldId, resolvedPatient)
+            pendingInsertUuidByPlaceholderIdRef.current.delete(oldId)
+            pendingPatientIdByRowIdRef.current.delete(oldId)
+            lastSavedSnapshotRef.current.set(resolvedPatient.id, {
+              patient_id: resolvedPatient.patient_id ?? '',
+              first_name: (resolvedPatient.first_name != null && resolvedPatient.first_name !== 'null') ? resolvedPatient.first_name : '',
+              last_name: (resolvedPatient.last_name != null && resolvedPatient.last_name !== 'null') ? resolvedPatient.last_name : '',
+              insurance: (resolvedPatient.insurance != null && resolvedPatient.insurance !== 'null') ? resolvedPatient.insurance : null,
+              copay: resolvedPatient.copay != null ? resolvedPatient.copay : null,
+              coinsurance: resolvedPatient.coinsurance != null ? resolvedPatient.coinsurance : null,
+            })
+            if (oldId !== resolvedPatient.id) lastSavedSnapshotRef.current.delete(oldId)
+            continue
+          }
+
+          // Normal case: assign a stable UUID so multiple edits to the same placeholder row
+          // all upsert the same record instead of creating one row per cell-edit.
           let insertId = pendingInsertUuidByPlaceholderIdRef.current.get(oldId)
           if (!insertId) {
             insertId = uuidv4()
@@ -381,11 +428,16 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
           console.error('[PatientData] Error upserting patient:', upsertError, patientData)
           throw upsertError
         }
-        
+
+        // FIX 2: Always delete the placeholder UUID reservation on success — even when upsertData
+        // comes back empty (which can happen with ON CONFLICT DO UPDATE in some PostgREST configs).
+        // Previously the delete was guarded by upsertData.length > 0, so a subsequent save could
+        // reuse the same UUID and hit a patients_pkey violation on the re-INSERT.
+        pendingInsertUuidByPlaceholderIdRef.current.delete(oldId)
+
         if (upsertData && upsertData.length > 0) {
           savedPatient = upsertData[0] as Patient
-          pendingInsertUuidByPlaceholderIdRef.current.delete(oldId)
-          savedPatientsMap.set(oldId, savedPatient) // Map old ID to new patient data
+          savedPatientsMap.set(oldId, savedPatient)
           if (!flushTriggered && (oldId.startsWith('empty-') || oldId.startsWith('new-'))) {
             lastNewPatientIdFromDebounceRef.current = savedPatient.id
           }
@@ -398,6 +450,30 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
             coinsurance: savedPatient.coinsurance != null ? savedPatient.coinsurance : null,
           })
           if (oldId !== savedPatient.id) lastSavedSnapshotRef.current.delete(oldId)
+        } else if (patientData.id) {
+          // FIX 3: Upsert succeeded but returned no rows. Build a synthetic record from the data
+          // we sent so state and the saved-snapshot map stay consistent and the row is not re-saved
+          // on the next debounce tick.
+          const insertId = patientData.id as string
+          const syntheticPatient = {
+            ...(patientData as Partial<Patient>),
+            id: insertId,
+            created_at: new Date().toISOString(),
+          } as Patient
+          savedPatient = syntheticPatient
+          savedPatientsMap.set(oldId, syntheticPatient)
+          if (!flushTriggered && (oldId.startsWith('empty-') || oldId.startsWith('new-'))) {
+            lastNewPatientIdFromDebounceRef.current = insertId
+          }
+          lastSavedSnapshotRef.current.set(insertId, {
+            patient_id: syntheticPatient.patient_id ?? '',
+            first_name: (syntheticPatient.first_name != null && syntheticPatient.first_name !== 'null') ? syntheticPatient.first_name : '',
+            last_name: (syntheticPatient.last_name != null && syntheticPatient.last_name !== 'null') ? syntheticPatient.last_name : '',
+            insurance: (syntheticPatient.insurance != null && syntheticPatient.insurance !== 'null') ? syntheticPatient.insurance : null,
+            copay: syntheticPatient.copay != null ? syntheticPatient.copay : null,
+            coinsurance: syntheticPatient.coinsurance != null ? syntheticPatient.coinsurance : null,
+          })
+          lastSavedSnapshotRef.current.delete(oldId)
         }
       }
 
