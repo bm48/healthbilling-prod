@@ -35,7 +35,12 @@ function providersDebugTab(event: string, payload?: Record<string, unknown>) {
   void payload
 }
 
-const PROVIDER_GRID_DATE_FIELDS: (keyof SheetRow)[] = ['appointment_date', 'submit_date', 'payment_date', 'ar_date']
+// Only appointment_date is a true date column (parsed via parseDateOfServiceInput).
+// submit_date is free text ("Most Recent Submit Date"); payment_date / ar_date are month-name
+// dropdowns ("May", "September", ...). Routing those through the date parser on undo/redo sync
+// nulled out the whole column (parser returns null for non-MM-DD-YY values).
+const PROVIDER_GRID_DATE_FIELDS: (keyof SheetRow)[] = ['appointment_date']
+const PROVIDER_GRID_TEXT_FIELDS_FORMERLY_DATE: (keyof SheetRow)[] = ['submit_date', 'payment_date', 'ar_date']
 
 /** Matches `columnFieldsFullBase` / row order used by `getTableDataFromRows` for full sheets (before optional Tele column insert). */
 const IS_LOCK_PROVIDERS_FIELD_ORDER: Array<keyof IsLockProviders> = [
@@ -159,9 +164,18 @@ function mergeProviderRowFromGridRowForSync(
     if (PROVIDER_GRID_DATE_FIELDS.includes(field)) {
       const d = raw === '' || raw == null || raw === 'null' ? null : parseDateOfServiceInput(String(raw))
       if (field === 'appointment_date') next.appointment_date = d
-      else if (field === 'submit_date') next.submit_date = d
-      else if (field === 'payment_date') next.payment_date = d
-      else if (field === 'ar_date') next.ar_date = d
+      continue
+    }
+    if (PROVIDER_GRID_TEXT_FIELDS_FORMERLY_DATE.includes(field)) {
+      let value = raw === '' || raw == null || raw === 'null' ? null : String(raw)
+      // Match afterChange guard: reject purely numeric input for submit_date so the prior value sticks.
+      if (field === 'submit_date' && value !== null) {
+        const s = value.trim()
+        if (s !== '' && /^-?\d*\.?\d*$/.test(s)) value = prev.submit_date ?? null
+      }
+      if (field === 'submit_date') next.submit_date = value
+      else if (field === 'payment_date') next.payment_date = value
+      else if (field === 'ar_date') next.ar_date = value
       continue
     }
     if (field === 'appointment_status') {
