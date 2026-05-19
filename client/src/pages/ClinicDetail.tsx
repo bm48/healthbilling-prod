@@ -2560,11 +2560,13 @@ export default function ClinicDetail() {
 
         let nextMonthRows: Record<string, SheetRow[]> = { ...current, [providerId]: nextForProvider }
         if (freshPatients.length > 0) {
-          const merged: Record<string, SheetRow[]> = {}
-          for (const [pid, rws] of Object.entries(nextMonthRows)) {
-            merged[pid] = applyCoPatientSnapshotToSheetRows(rws, freshPatients)
+          // Only re-enrich the provider we just saved. Patients didn't change here (we just confirmed
+          // we have a fresh list), so other providers' rows are unaffected and re-running the snapshot
+          // on them is wasted O(rows × patients) work that piled up linearly with provider count.
+          nextMonthRows = {
+            ...nextMonthRows,
+            [providerId]: applyCoPatientSnapshotToSheetRows(nextForProvider, freshPatients),
           }
-          nextMonthRows = merged
         }
         return { ...prev, [selectedMonthKey]: nextMonthRows } as Record<string, Record<string, SheetRow[]>>
       })
@@ -3083,9 +3085,12 @@ export default function ClinicDetail() {
     saveProviderSheetRows(providerId, newRows).catch(err => console.error('Failed to save after add row', err))
   }, [providerSheetRows, saveProviderSheetRows, selectedMonthKey])
 
-  // Direct save function that accepts providerId and rows - for use when we have computed updated data
+  // Direct save function that accepts providerId and rows - for use when we have computed updated data.
+  // afterChange never deletes rows itself; row removal flows through handleDeleteProviderSheetRow /
+  // afterRemoveRow, which pass `knownDeletedIds` explicitly. Pass `[]` here so saveSheetRows skips the
+  // legacy `SELECT id ... + diff` orphan cleanup that otherwise ran on every keystroke-debounced save.
   const saveProviderSheetRowsDirect = useCallback(async (providerId: string, rowsToSave: SheetRow[]) => {
-    await saveProviderSheetRows(providerId, rowsToSave)
+    await saveProviderSheetRows(providerId, rowsToSave, [])
   }, [saveProviderSheetRows])
 
   const handleReorderProviderRows = useCallback((providerId: string, movedRows: number[], finalIndex: number) => {

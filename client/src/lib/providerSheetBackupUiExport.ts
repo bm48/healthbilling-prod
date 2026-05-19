@@ -10,7 +10,9 @@ export type ProviderSheetUiExportLayout = {
   isCondensed: boolean
 }
 
-function coPatientByIdKey(patients: Patient[]): Map<string, Patient> {
+/** Build a patient_id → Patient lookup. Exported so callers can memoize and reuse it across renders
+ *  instead of paying the O(patients) build on every matrix/snapshot call. */
+export function coPatientByIdKey(patients: Patient[]): Map<string, Patient> {
   const m = new Map<string, Patient>()
   for (const p of patients) {
     const k = String(p.patient_id ?? '').trim().toLowerCase()
@@ -67,11 +69,14 @@ export function providerSheetUiExportHeaders(layout: ProviderSheetUiExportLayout
 export function sheetRowsToUiMatrix(
   rows: SheetRow[],
   patients: Patient[],
-  layout: ProviderSheetUiExportLayout
+  layout: ProviderSheetUiExportLayout,
+  /** Optional pre-built patient_id → Patient map, e.g. memoized at the component level so we don't
+   *  rebuild it on every render / matrix call. Falls back to building from `patients` if omitted. */
+  patientLookup?: Map<string, Patient>
 ): (string | number | boolean)[][] {
   const { showVisitTypeColumn, officeStaffView, isProviderView, providerLevel, isCondensed } = layout
   const showCondenseButton = !officeStaffView && !isProviderView
-  const coPatients = coPatientByIdKey(patients)
+  const coPatients = patientLookup ?? coPatientByIdKey(patients)
 
   return rows.map((row) => {
     const patientDisplay = toDisplayValue(row.patient_id)

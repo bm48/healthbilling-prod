@@ -13,6 +13,7 @@ import { isAccountsReceivableRowInMonth } from '@/lib/accountsReceivableInMonth'
 import {
   sheetRowsToUiMatrix,
   providerSheetUiExportHeaders,
+  coPatientByIdKey,
   type ProviderSheetUiExportLayout,
 } from '@/lib/providerSheetBackupUiExport'
 
@@ -622,10 +623,16 @@ export default function ProvidersTab({
     }
   }, [patients])
 
+  // Build the patient_id → Patient lookup once per `patients` reference so sheetRowsToUiMatrix
+  // (called per matrix rebuild, which previously fired O(rows) work per cached miss) doesn't
+  // re-iterate the full patient list every call.
+  const patientsLookup = useMemo(() => coPatientByIdKey(patients), [patients])
+
   // Map rows to Handsontable 2D array format (shared with provider backup CSV export in `providerSheetBackupUiExport`).
   const getTableDataFromRows = useCallback(
-    (rows: SheetRow[]) => sheetRowsToUiMatrix(rows, patients, providerSheetUiLayout) as (string | number | boolean)[][],
-    [patients, providerSheetUiLayout]
+    (rows: SheetRow[]) =>
+      sheetRowsToUiMatrix(rows, patients, providerSheetUiLayout, patientsLookup) as (string | number | boolean)[][],
+    [patients, providerSheetUiLayout, patientsLookup]
   )
 
   // Convert rows to Handsontable data format; prefer latest from change handler, then props, to avoid losing typed data when parent re-renders after load (like PatientsTab).
