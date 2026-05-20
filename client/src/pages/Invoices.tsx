@@ -6,7 +6,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { generateClinicInvoicePdf, type PaystubEntry } from '@/lib/clinicInvoicePdf'
 import { fetchClinicAddressesByClinicIds } from '@/lib/clinicAddresses'
-import { Download, RefreshCw } from 'lucide-react'
+import { Download } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -103,7 +103,6 @@ export default function Invoices() {
   })
   const [clinicSummaries, setClinicSummaries] = useState<ClinicInvoiceSummaryRow[]>([])
   const [summaryLoading, setSummaryLoading] = useState(false)
-  const [syncing, setSyncing] = useState(false)
 
   // ── inline edit state ────────────────────────────────────────────────────
   const [editingCell, setEditingCell] = useState<{ clinicId: string; field: 'payment_status' | 'payment_date' | 'due_date' } | null>(null)
@@ -292,29 +291,6 @@ export default function Invoices() {
     }
   }
 
-  // ── Sync (recompute all invoices for selected month) ─────────────────────
-
-  async function handleSync() {
-    setSyncing(true)
-    try {
-      const month = selectedMonth.getMonth() + 1
-      const year = selectedMonth.getFullYear()
-      const token = (apiClient as any)._session?.access_token ?? ''
-      const base = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
-      const res = await fetch(`${base}/api/recompute-invoices-for-month`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ month, year }),
-      })
-      if (!res.ok) throw new Error(await res.text())
-      await fetchClinicSummaries()
-    } catch (err) {
-      alert('Sync failed: ' + String(err))
-    } finally {
-      setSyncing(false)
-    }
-  }
-
   // ── Inline edit helpers ───────────────────────────────────────────────────
 
   function startEdit(clinicId: string, field: 'payment_status' | 'payment_date' | 'due_date', currentValue: string) {
@@ -477,11 +453,6 @@ export default function Invoices() {
         })
       }
 
-      // Clinic address details
-      const clinicPhone = (() => {
-        // Pull from clinics table if available
-        return ''
-      })()
       const { data: clinicData } = await apiClient.from('clinics').select('phone, ein').eq('id', row.clinic_id).maybeSingle()
       const clinicPhone2 = clinicData?.phone ?? ''
       const clinicEin = clinicData?.ein ?? ''
@@ -707,18 +678,6 @@ export default function Invoices() {
                   ))}
                 </select>
               </div>
-              {/* Sync Invoices — manual bulk recompute; totals also refresh on provider sheet save
-              <button
-                type="button"
-                onClick={handleSync}
-                disabled={syncing}
-                title="Recompute all invoice totals for this month from provider sheets"
-                className="flex items-center gap-2 px-4 py-2 bg-white/20 hover:bg-white/30 disabled:opacity-50 disabled:pointer-events-none border border-white/20 rounded-lg text-white text-sm"
-              >
-                <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
-                {syncing ? 'Syncing…' : 'Sync Invoices'}
-              </button>
-              */}
             </div>
           </div>
 
@@ -750,7 +709,7 @@ export default function Invoices() {
                       {clinicSummaries.length === 0 ? (
                         <tr>
                           <td colSpan={12} className="text-center text-white/70 py-8">
-                            No data for this month — click <strong>Sync Invoices</strong> to compute from provider sheets.
+                            No data for this month — save a provider sheet or add invoice notes to populate totals.
                           </td>
                         </tr>
                       ) : (
