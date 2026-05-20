@@ -10,6 +10,7 @@ const TABLES_WITH_CLINIC_ID = new Set([
   'cell_highlights',
   'clinic_addresses',
   'clinic_invoice_notes',
+  'invoices',
   'is_lock_accounts_receivable',
   'is_lock_billing_todo',
   'is_lock_patients',

@@ -406,5 +406,176 @@ serviceRoutes.post('/save-pending-provider-sheet', async (req, res) => {
     await pool.query(`DELETE FROM public.provider_sheet_rows WHERE id = ANY($1::uuid[])`, [idsToDelete])
   }
 
+  // Near-real-time: recompute invoice summary for this clinic/month/year after saving rows.
+  recomputeClinicInvoice(clinicId, parsed.month, parsed.year).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('[invoice] recompute failed after sheet save:', err)
+  })
+
   res.json({ success: true, saved: savedIds.length })
+})
+
+// ---------------------------------------------------------------------------
+// Invoice recompute helpers
+// ---------------------------------------------------------------------------
+
+function parseNumericCell(v: unknown): number {
+  if (v == null || v === '') return 0
+  const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[$,]/g, ''))
+  return Number.isFinite(n) ? n : 0
+}
+
+/**
+ * Recomputes and upserts the `invoices` row for a given clinic+month+year.
+ * Computed fields are always overwritten; payment_status/payment_date/due_date are preserved on conflict.
+ */
+async function recomputeClinicInvoice(clinicId: string, month: number, year: number): Promise<void> {
+  // 1. Clinic invoice_rate
+  const clinicQ = await pool.query<{ invoice_rate: string | null }>(
+    `SELECT invoice_rate FROM public.clinics WHERE id = $1::uuid LIMIT 1`,
+    [clinicId],
+  )
+  const invoiceRate = clinicQ.rows[0]?.invoice_rate != null
+    ? parseFloat(String(clinicQ.rows[0].invoice_rate))
+    : 0
+
+  // 2. All provider sheets for this clinic/month/year (all payroll periods)
+  const sheetsQ = await pool.query<{ id: string }>(
+    `SELECT id FROM public.provider_sheets WHERE clinic_id = $1::uuid AND month = $2 AND year = $3`,
+    [clinicId, month, year],
+  )
+  const sheetIds = sheetsQ.rows.map((r) => r.id)
+
+  let insuranceTotal = 0
+  let patientTotal = 0
+  let arTotal = 0
+
+  if (sheetIds.length > 0) {
+    const rowsQ = await pool.query<{
+      insurance_payment: string | null
+      collected_from_patient: string | null
+      ar_amount: string | null
+    }>(
+      `SELECT insurance_payment, collected_from_patient, ar_amount
+       FROM public.provider_sheet_rows
+       WHERE sheet_id = ANY($1::uuid[])`,
+      [sheetIds],
+    )
+    for (const r of rowsQ.rows) {
+      insuranceTotal += parseNumericCell(r.insurance_payment)
+      patientTotal += parseNumericCell(r.collected_from_patient)
+      arTotal += parseNumericCell(r.ar_amount)
+    }
+  }
+
+  // 3. clinic_invoice_notes for additional_fee and note
+  const notesQ = await pool.query<{ additional_fee: string | null; note: string | null }>(
+    `SELECT additional_fee, note FROM public.clinic_invoice_notes
+     WHERE clinic_id = $1::uuid AND month = $2 AND year = $3 LIMIT 1`,
+    [clinicId, month, year],
+  )
+  const additionalFee = notesQ.rows[0]?.additional_fee != null
+    ? parseFloat(String(notesQ.rows[0].additional_fee))
+    : 0
+  const note = notesQ.rows[0]?.note ?? null
+
+  // 4. Compute totals
+  const subtotal = insuranceTotal + patientTotal + arTotal + additionalFee
+  const invoiceTotal = subtotal * (Number.isFinite(invoiceRate) ? invoiceRate : 0)
+
+  // 5. Default due_date = 15th of the following month
+  const dueYear = month === 12 ? year + 1 : year
+  const dueMonth = month === 12 ? 1 : month + 1
+  const defaultDueDate = `${dueYear}-${String(dueMonth).padStart(2, '0')}-15`
+
+  // 6. Upsert: INSERT preserves due_date default; UPDATE preserves editable fields
+  await pool.query(
+    `INSERT INTO public.invoices (
+       clinic_id, month, year,
+       insurance_payment_total, patient_payment_total, accounts_receivable_total,
+       additional_fee, subtotal, invoice_rate, invoice_total,
+       note, due_date, computed_at, created_at, updated_at
+     ) VALUES (
+       $1::uuid, $2, $3,
+       $4, $5, $6,
+       $7, $8, $9, $10,
+       $11, $12::date, now(), now(), now()
+     )
+     ON CONFLICT (clinic_id, month, year) DO UPDATE SET
+       insurance_payment_total = EXCLUDED.insurance_payment_total,
+       patient_payment_total   = EXCLUDED.patient_payment_total,
+       accounts_receivable_total = EXCLUDED.accounts_receivable_total,
+       additional_fee          = EXCLUDED.additional_fee,
+       subtotal                = EXCLUDED.subtotal,
+       invoice_rate            = EXCLUDED.invoice_rate,
+       invoice_total           = EXCLUDED.invoice_total,
+       note                    = EXCLUDED.note,
+       computed_at             = now(),
+       updated_at              = now()`,
+    [
+      clinicId, month, year,
+      insuranceTotal.toFixed(2),
+      patientTotal.toFixed(2),
+      arTotal.toFixed(2),
+      additionalFee.toFixed(2),
+      subtotal.toFixed(2),
+      Number.isFinite(invoiceRate) ? invoiceRate : null,
+      invoiceTotal.toFixed(2),
+      note,
+      defaultDueDate,
+    ],
+  )
+}
+
+/** POST /api/upsert-clinic-invoice  { clinicId, month, year } */
+serviceRoutes.post('/upsert-clinic-invoice', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const clinicId = typeof req.body?.clinicId === 'string' ? req.body.clinicId.trim() : ''
+  const month = Number(req.body?.month)
+  const year = Number(req.body?.year)
+  if (!clinicId || !Number.isFinite(month) || !Number.isFinite(year)) {
+    res.status(400).json({ error: 'Missing or invalid clinicId, month, year' })
+    return
+  }
+  try {
+    await recomputeClinicInvoice(clinicId, month, year)
+    res.json({ success: true })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[invoice] upsert-clinic-invoice failed:', err)
+    res.status(500).json({ error: 'Failed to recompute invoice' })
+  }
+})
+
+/** POST /api/recompute-invoices-for-month  { month, year }
+ * Recomputes invoices for ALL clinics for the given month/year (super admin use).
+ */
+serviceRoutes.post('/recompute-invoices-for-month', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const month = Number(req.body?.month)
+  const year = Number(req.body?.year)
+  if (!Number.isFinite(month) || !Number.isFinite(year)) {
+    res.status(400).json({ error: 'Missing or invalid month or year' })
+    return
+  }
+  try {
+    const clinicsQ = await pool.query<{ id: string }>(`SELECT id FROM public.clinics`)
+    const results = await Promise.allSettled(
+      clinicsQ.rows.map((c) => recomputeClinicInvoice(c.id, month, year)),
+    )
+    const failed = results.filter((r) => r.status === 'rejected').length
+    res.json({ success: true, total: clinicsQ.rows.length, failed })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[invoice] recompute-invoices-for-month failed:', err)
+    res.status(500).json({ error: 'Failed to recompute invoices' })
+  }
 })
