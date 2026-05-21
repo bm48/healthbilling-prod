@@ -72,7 +72,46 @@ export function formatInvoicePdfDate(isoDate: string | null | undefined): string
   return formatDateShort(d)
 }
 
-function addPaystubPage(doc: jsPDF, entry: PaystubEntry, logoDataUrl: string | null): void {
+const PAYSTUB_CLOSING_PARAGRAPH_1 =
+  'Please refer to your billing spreadsheet for specific payment amounts and reach out if you have any questions in regards to your pay.'
+const PAYSTUB_CLOSING_PARAGRAPH_2 =
+  'Thank you for all your hard work- We appreciate you!'
+
+function addPaystubClosingFooter(doc: jsPDF): void {
+  const pageW = doc.internal.pageSize.getWidth()
+  const pageH = doc.internal.pageSize.getHeight()
+  const marginX = 14
+  const maxWidth = pageW - marginX * 2
+  const lineHeight = 5
+  const paragraphGap = 6
+  const bottomMargin = 20
+
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(10)
+  doc.setTextColor(0, 0, 0)
+
+  const lines1 = doc.splitTextToSize(PAYSTUB_CLOSING_PARAGRAPH_1, maxWidth)
+  const lines2 = doc.splitTextToSize(PAYSTUB_CLOSING_PARAGRAPH_2, maxWidth)
+  const blockHeight = lines1.length * lineHeight + paragraphGap + lines2.length * lineHeight
+  let y = pageH - bottomMargin - blockHeight
+
+  for (const line of lines1) {
+    doc.text(line, marginX, y)
+    y += lineHeight
+  }
+  y += paragraphGap
+  for (const line of lines2) {
+    doc.text(line, marginX, y)
+    y += lineHeight
+  }
+}
+
+function addPaystubPage(
+  doc: jsPDF,
+  entry: PaystubEntry,
+  logoDataUrl: string | null,
+  isLastPaystub: boolean,
+): void {
   doc.addPage()
   const pageW = doc.internal.pageSize.getWidth()
   const pageH = doc.internal.pageSize.getHeight()
@@ -211,10 +250,13 @@ function addPaystubPage(doc: jsPDF, entry: PaystubEntry, logoDataUrl: string | n
   const ddStr = formatCurrency(entry.direct_deposit_amount)
   doc.text(ddStr, pageW - 14 - doc.getTextWidth(ddStr) - 6, afterTableY + 9)
 
-  // Reset text color for subsequent pages
   doc.setTextColor(0, 0, 0)
   doc.setFont('helvetica', 'normal')
-  // Suppress unused variable warning on pageH
+
+  if (isLastPaystub) {
+    addPaystubClosingFooter(doc)
+  }
+
   void pageH
 }
 
@@ -323,9 +365,9 @@ export async function generateClinicInvoicePdf(
 
   // ── Page 2+: Provider paystubs ───────────────────────────────────────────
   if (paystubs && paystubs.length > 0) {
-    for (const stub of paystubs) {
-      addPaystubPage(doc, stub, logoDataUrl)
-    }
+    paystubs.forEach((stub, index) => {
+      addPaystubPage(doc, stub, logoDataUrl, index === paystubs.length - 1)
+    })
   }
 
   return doc
