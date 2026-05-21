@@ -2459,7 +2459,11 @@ export default function ClinicDetail() {
     try {
       // Do not coerce omitted arg to [] — [] skips deletes and skips orphan SELECT (saveSheetRows treats [] as explicit).
       // Pending replays omit knownDeletedIds so orphans are cleaned via SELECT path.
-      const savedRows = await saveSheetRows(apiClient, sheet.id, rowsToProcess, knownDeletedIds)
+      const savedRows = await saveSheetRows(apiClient, sheet.id, rowsToProcess, knownDeletedIds, {
+        clinicId,
+        providerId,
+        selectedMonthKey,
+      })
       // Patient demographics are owned by `patients` (Patients tab / API), not pushed from provider sheets.
       const freshPatients =
         patientsRef.current.length > 0
@@ -2560,13 +2564,11 @@ export default function ClinicDetail() {
 
         let nextMonthRows: Record<string, SheetRow[]> = { ...current, [providerId]: nextForProvider }
         if (freshPatients.length > 0) {
-          // Only re-enrich the provider we just saved. Patients didn't change here (we just confirmed
-          // we have a fresh list), so other providers' rows are unaffected and re-running the snapshot
-          // on them is wasted O(rows × patients) work that piled up linearly with provider count.
-          nextMonthRows = {
-            ...nextMonthRows,
-            [providerId]: applyCoPatientSnapshotToSheetRows(nextForProvider, freshPatients),
+          const merged: Record<string, SheetRow[]> = {}
+          for (const [pid, rws] of Object.entries(nextMonthRows)) {
+            merged[pid] = applyCoPatientSnapshotToSheetRows(rws, freshPatients)
           }
+          nextMonthRows = merged
         }
         return { ...prev, [selectedMonthKey]: nextMonthRows } as Record<string, Record<string, SheetRow[]>>
       })
@@ -2637,7 +2639,7 @@ export default function ClinicDetail() {
   useEffect(() => {
     const PREFIX = 'provider_sheet_pending_'
     const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
-    const savePendingUrl = apiBase ? `${apiBase}/api/save-pending-provider-sheet` : '/api/save-pending-provider-sheet'
+    const savePendingUrl = apiBase ? `${apiBase}/api/save-provider-sheet-rows` : '/api/save-provider-sheet-rows'
 
     const onPageHide = () => {
       let token: string | null = null
@@ -3085,12 +3087,9 @@ export default function ClinicDetail() {
     saveProviderSheetRows(providerId, newRows).catch(err => console.error('Failed to save after add row', err))
   }, [providerSheetRows, saveProviderSheetRows, selectedMonthKey])
 
-  // Direct save function that accepts providerId and rows - for use when we have computed updated data.
-  // afterChange never deletes rows itself; row removal flows through handleDeleteProviderSheetRow /
-  // afterRemoveRow, which pass `knownDeletedIds` explicitly. Pass `[]` here so saveSheetRows skips the
-  // legacy `SELECT id ... + diff` orphan cleanup that otherwise ran on every keystroke-debounced save.
+  // Direct save function that accepts providerId and rows - for use when we have computed updated data
   const saveProviderSheetRowsDirect = useCallback(async (providerId: string, rowsToSave: SheetRow[]) => {
-    await saveProviderSheetRows(providerId, rowsToSave, [])
+    await saveProviderSheetRows(providerId, rowsToSave)
   }, [saveProviderSheetRows])
 
   const handleReorderProviderRows = useCallback((providerId: string, movedRows: number[], finalIndex: number) => {
@@ -3594,7 +3593,7 @@ export default function ClinicDetail() {
     ...(showProviderPayTab ? (['provider_pay'] as const) : []),
   ]
   const getNextTab = (current: TabType, skip?: TabType): TabType => {
-    if (current === 'patients') return 'patients' // Never switch away from Patients when clicking Switch
+    if (current === 'patients') return 'patients' // Never switch away from Patients when clicking Switchnpm run bu
     const i = SPLIT_SCREEN_TAB_ORDER.indexOf(current)
     if (i === -1) return current
     let next = SPLIT_SCREEN_TAB_ORDER[(i + 1) % SPLIT_SCREEN_TAB_ORDER.length]

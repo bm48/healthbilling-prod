@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/apiClient'
+import { upsertClinicInvoice } from '@/lib/invoiceApi'
 
 /**
  * Fetch Provider Pay for a given clinic, provider, and month.
@@ -194,6 +195,11 @@ export async function saveProviderPay(
       throw rowErr
     }
   }
+
+  // Refresh clinic invoice summary for this month from provider_pay totals.
+  upsertClinicInvoice(clinicId, month, year).catch((err) => {
+    console.warn('[saveProviderPay] invoice recompute failed:', err)
+  })
 }
 
 const DEFAULT_ROW_TEMPLATE: string[][] = [

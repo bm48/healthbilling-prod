@@ -4,9 +4,11 @@ import { fetchSheetRowsForSheetIds } from '@/lib/providerSheetRows'
 import { SheetRow, Clinic, Patient, User } from '@/types'
 import { useAuth } from '@/contexts/AuthContext'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { generateClinicInvoicePdf, type PaystubEntry } from '@/lib/clinicInvoicePdf'
+import { generateClinicInvoicePdf, formatInvoicePdfDate, type PaystubEntry } from '@/lib/clinicInvoicePdf'
 import { fetchClinicAddressesByClinicIds } from '@/lib/clinicAddresses'
 import { Download } from 'lucide-react'
+import { recomputeInvoicesForMonth, upsertClinicInvoice } from '@/lib/invoiceApi'
+import { DateOfServiceTableCell } from '@/components/DateOfServiceTableCell'
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -36,7 +38,6 @@ interface InvoiceRecord {
   subtotal: number
   invoice_rate: number | null
   invoice_total: number
-  payment_status: string | null
   payment_date: string | null
   due_date: string | null
   note: string | null
@@ -57,7 +58,6 @@ interface ClinicInvoiceSummaryRow {
   total: number
   invoice_rate: number | null
   invoice_total: number
-  payment_status: string
   payment_date: string | null
   due_date: string | null
   note: string
@@ -72,17 +72,151 @@ function parseNum(v: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
-const PAYMENT_STATUS_OPTIONS = [
-  '',
-  'Paid',
-  'Pending',
-  'Overdue',
-  'Partial',
-  'Waived',
-]
-
 /** Matches Provider Pay tab default when `providers.provider_cut_percent` is unset. */
 const DEFAULT_PROVIDER_CUT_PERCENT = 0.7
+
+const PP_ROW_PATIENT = 1
+const PP_ROW_INSURANCE = 2
+const PP_ROW_AR = 3
+
+type PayRowLite = { row_index: number; amount: string | null }
+
+function payRowAmount(ppRows: PayRowLite[], rowIdx: number): number {
+  const r = ppRows.find((x) => x.row_index === rowIdx)
+  return parseNum(r?.amount)
+}
+
+function resolveCutPercent(providerCutPercent: number | null | undefined): number {
+  const raw = providerCutPercent
+  if (
+    raw != null &&
+    Number.isFinite(Number(raw)) &&
+    Number(raw) >= 0 &&
+    Number(raw) <= 1
+  ) {
+    return Number(raw)
+  }
+  return DEFAULT_PROVIDER_CUT_PERCENT
+}
+
+function providerMonthAmounts(
+  providerId: string,
+  monthNum: number,
+  cutPercent: number,
+  ppHeaders: { id: string; provider_id: string; month: number }[],
+  ppRowsByPayId: Map<string, PayRowLite[]>,
+  sheets: { id: string; provider_id: string; month: number }[],
+  rowsBySheetId: Map<string, SheetRow[]>,
+): {
+  monthCollected: number
+  arCollected: number
+  monthOwed: number
+  arOwed: number
+  directDeposit: number
+} {
+  const ppForMonth = ppHeaders.filter((p) => p.provider_id === providerId && p.month === monthNum)
+  let patient = 0
+  let insurance = 0
+  let ar = 0
+
+  if (ppForMonth.length > 0) {
+    for (const pp of ppForMonth) {
+      const rows = ppRowsByPayId.get(pp.id) ?? []
+      patient += payRowAmount(rows, PP_ROW_PATIENT)
+      insurance += payRowAmount(rows, PP_ROW_INSURANCE)
+      ar += payRowAmount(rows, PP_ROW_AR)
+    }
+  } else {
+    for (const ps of sheets.filter((s) => s.provider_id === providerId && s.month === monthNum)) {
+      for (const r of rowsBySheetId.get(ps.id) ?? []) {
+        insurance += parseNum(r.insurance_payment)
+        patient += parseNum(r.collected_from_patient)
+        ar += parseNum(r.ar_amount)
+      }
+    }
+  }
+
+  const monthCollected = insurance + patient
+  const arCollected = ar
+  const monthOwed = monthCollected * cutPercent
+  const arOwed = arCollected * cutPercent
+  return {
+    monthCollected,
+    arCollected,
+    monthOwed,
+    arOwed,
+    directDeposit: monthOwed + arOwed,
+  }
+}
+
+/** Total owed for one provider in one month (Provider Pay rows 1–3 × cut %, or sheet fallback). */
+function totalOwedForProviderMonth(
+  providerId: string,
+  monthNum: number,
+  cutPercent: number,
+  ppHeaders: { id: string; provider_id: string; month: number }[],
+  ppRowsByPayId: Map<string, PayRowLite[]>,
+  sheets: { id: string; provider_id: string; month: number }[],
+  rowsBySheetId: Map<string, SheetRow[]>,
+): number {
+  return providerMonthAmounts(
+    providerId,
+    monthNum,
+    cutPercent,
+    ppHeaders,
+    ppRowsByPayId,
+    sheets,
+    rowsBySheetId,
+  ).directDeposit
+}
+
+/** Sum of total owed from January through `throughMonth` (inclusive). */
+function ytdTotalOwedThroughMonth(
+  providerId: string,
+  throughMonth: number,
+  cutPercent: number,
+  ppHeaders: { id: string; provider_id: string; month: number }[],
+  ppRowsByPayId: Map<string, PayRowLite[]>,
+  sheets: { id: string; provider_id: string; month: number }[],
+  rowsBySheetId: Map<string, SheetRow[]>,
+): number {
+  let sum = 0
+  for (let m = 1; m <= throughMonth; m++) {
+    sum += totalOwedForProviderMonth(
+      providerId,
+      m,
+      cutPercent,
+      ppHeaders,
+      ppRowsByPayId,
+      sheets,
+      rowsBySheetId,
+    )
+  }
+  return sum
+}
+
+/** Six-digit stub number from PDF download time + per-stub sequence (unique within one download). */
+function generatePaystubStubNo(downloadedAt: Date, sequenceIndex: number): string {
+  const t = downloadedAt.getTime()
+  const y = downloadedAt.getFullYear()
+  const mo = downloadedAt.getMonth() + 1
+  const d = downloadedAt.getDate()
+  const h = downloadedAt.getHours()
+  const mi = downloadedAt.getMinutes()
+  const s = downloadedAt.getSeconds()
+  const ms = downloadedAt.getMilliseconds()
+  const mixed =
+    (t % 1_000_007) +
+    y * 17 +
+    mo * 1_003 +
+    d * 7_919 +
+    h * 13_871 +
+    mi * 97 +
+    s * 1_009 +
+    ms * 31 +
+    sequenceIndex * 100_003
+  return String(mixed % 1_000_000).padStart(6, '0')
+}
 
 // ── Component ─────────────────────────────────────────────────────────────
 
@@ -103,10 +237,6 @@ export default function Invoices() {
   })
   const [clinicSummaries, setClinicSummaries] = useState<ClinicInvoiceSummaryRow[]>([])
   const [summaryLoading, setSummaryLoading] = useState(false)
-
-  // ── inline edit state ────────────────────────────────────────────────────
-  const [editingCell, setEditingCell] = useState<{ clinicId: string; field: 'payment_status' | 'payment_date' | 'due_date' } | null>(null)
-  const [editValue, setEditValue] = useState<string>('')
 
   // ── note / additional fee state (super admin) ────────────────────────────
   const [invoiceNotes, setInvoiceNotes] = useState<Record<string, string>>({})
@@ -158,6 +288,11 @@ export default function Invoices() {
     try {
       const month = selectedMonth.getMonth() + 1
       const year = selectedMonth.getFullYear()
+
+      // Sync `invoices` from provider sheets for the selected month before reading.
+      await recomputeInvoicesForMonth(month, year).catch((err) => {
+        console.warn('[Invoices] recompute for month failed:', err)
+      })
 
       // Load all clinics
       const { data: allClinicsData, error: clinicsErr } = await apiClient
@@ -213,7 +348,6 @@ export default function Invoices() {
           total: parseNum(inv?.subtotal),
           invoice_rate: inv?.invoice_rate ?? clinic.invoice_rate ?? null,
           invoice_total: parseNum(inv?.invoice_total),
-          payment_status: inv?.payment_status ?? '',
           payment_date: inv?.payment_date ?? null,
           due_date: inv?.due_date ?? null,
           note: inv?.note ?? notesMap[clinic.id] ?? '',
@@ -291,47 +425,40 @@ export default function Invoices() {
     }
   }
 
-  // ── Inline edit helpers ───────────────────────────────────────────────────
-
-  function startEdit(clinicId: string, field: 'payment_status' | 'payment_date' | 'due_date', currentValue: string) {
-    setEditingCell({ clinicId, field })
-    setEditValue(currentValue ?? '')
-  }
-
-  async function commitEdit(clinicId: string, field: 'payment_status' | 'payment_date' | 'due_date') {
-    setEditingCell(null)
+  async function saveInvoiceDateField(
+    clinicId: string,
+    field: 'payment_date' | 'due_date',
+    stored: string | null,
+  ) {
     const row = clinicSummaries.find((r) => r.clinic_id === clinicId)
     if (!row) return
+    if (row[field] === stored) return
 
     const updatePayload: Record<string, string | null> = {
-      [field]: editValue || null,
+      [field]: stored,
       updated_at: new Date().toISOString(),
     }
 
     if (row.invoice_id) {
       await apiClient.from('invoices').update(updatePayload).eq('id', row.invoice_id)
     } else {
-      // No invoice record yet — trigger a recompute first, then update
       const month = selectedMonth.getMonth() + 1
       const year = selectedMonth.getFullYear()
-      const token = (apiClient as any)._session?.access_token ?? ''
-      const base = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
-      await fetch(`${base}/api/upsert-clinic-invoice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ clinicId, month, year }),
-      })
-      const { data } = await apiClient.from('invoices').select('id').eq('clinic_id', clinicId).eq('month', month).eq('year', year).maybeSingle()
+      await upsertClinicInvoice(clinicId, month, year)
+      const { data } = await apiClient
+        .from('invoices')
+        .select('id')
+        .eq('clinic_id', clinicId)
+        .eq('month', month)
+        .eq('year', year)
+        .maybeSingle()
       if (data?.id) {
         await apiClient.from('invoices').update(updatePayload).eq('id', data.id)
       }
     }
 
-    // Optimistic update in local state
     setClinicSummaries((prev) =>
-      prev.map((r) =>
-        r.clinic_id === clinicId ? { ...r, [field]: editValue || null } : r,
-      ),
+      prev.map((r) => (r.clinic_id === clinicId ? { ...r, [field]: stored } : r)),
     )
   }
 
@@ -352,14 +479,7 @@ export default function Invoices() {
     setInvoiceNotes((prev) => ({ ...prev, [selectedClinicForNote]: noteText }))
     setInvoiceAdditionalFees((prev) => ({ ...prev, [selectedClinicForNote]: additionalFee }))
 
-    // Trigger server-side recompute so `invoices` row picks up new additional_fee/note
-    const token = (apiClient as any)._session?.access_token ?? ''
-    const base = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
-    fetch(`${base}/api/upsert-clinic-invoice`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ clinicId: selectedClinicForNote, month, year }),
-    }).then(() => fetchClinicSummaries()).catch(() => { /* silent */ })
+    fetchClinicSummaries().catch(() => { /* silent */ })
   }
 
   // ── PDF download ──────────────────────────────────────────────────────────
@@ -397,73 +517,58 @@ export default function Invoices() {
         { first_name: string; last_name: string; provider_cut_percent: number | null }
       >((providersData || []).map((p: any) => [p.id, p]))
 
-      // Fetch provider_pay for each provider this month
-      const { data: ppData } = await apiClient
-        .from('provider_pay')
-        .select('id, provider_id, pay_date, pay_period')
-        .eq('clinic_id', row.clinic_id)
-        .eq('month', month)
-        .eq('year', year)
-      const ppMap = new Map<string, { id: string; pay_date: string | null; pay_period: string | null }>(
-        (ppData || []).map((p: any) => [p.provider_id, p]),
-      )
-
-      // Fetch provider_pay_rows for all provider_pay ids
-      const ppIds = (ppData || []).map((p: any) => p.id)
-      let ppRowsMap = new Map<string, { row_index: number; description: string | null; amount: string | null }[]>()
-      if (ppIds.length > 0) {
-        const { data: ppRowsData } = await apiClient
-          .from('provider_pay_rows')
-          .select('provider_pay_id, row_index, description, amount')
-          .in('provider_pay_id', ppIds)
-          .order('row_index')
-        ;(ppRowsData || []).forEach((r: any) => {
-          const arr = ppRowsMap.get(r.provider_pay_id) ?? []
-          arr.push(r)
-          ppRowsMap.set(r.provider_pay_id, arr)
-        })
-      }
-
-      // Fetch sheet rows to compute amounts when no provider_pay data exists
-      const sheetIds = sheets.map((s) => s.id)
-      const rowsBySheetIdMap = sheetIds.length > 0
-        ? await fetchSheetRowsForSheetIds(apiClient, sheetIds)
-        : new Map<string, SheetRow[]>()
-
-      // YTD: fetch all prior months in same year for provider cut totals
-      const { data: ytdSheetsData } = await apiClient
+      // Provider Pay + sheets Jan–current month (YTD and current-month owed use same sources)
+      const { data: ytdPpData } = await apiClient
         .from('provider_pay')
         .select('id, provider_id, month')
         .eq('clinic_id', row.clinic_id)
         .eq('year', year)
-        .lt('month', month)
-      const ytdPpIds = (ytdSheetsData || []).map((p: any) => p.id)
-      const ytdByProvider = new Map<string, number>()
+        .lte('month', month)
+      const ytdPpHeaders = (ytdPpData || []) as {
+        id: string
+        provider_id: string
+        month: number
+      }[]
+      const ytdPpIds = ytdPpHeaders.map((p) => p.id)
+      const ytdPpRowsMap = new Map<string, PayRowLite[]>()
       if (ytdPpIds.length > 0) {
-        const { data: ytdRowsData } = await apiClient
+        const { data: ytdPpRowsData } = await apiClient
           .from('provider_pay_rows')
-          .select('provider_pay_id, row_index, description, amount')
+          .select('provider_pay_id, row_index, amount')
           .in('provider_pay_id', ytdPpIds)
-          .eq('row_index', 6) // Provider Cut row
-        ;(ytdRowsData || []).forEach((r: any) => {
-          const pp = (ytdSheetsData || []).find((p: any) => p.id === r.provider_pay_id)
-          if (!pp) return
-          const cut = parseNum(r.amount)
-          ytdByProvider.set(pp.provider_id, (ytdByProvider.get(pp.provider_id) ?? 0) + cut)
+          .order('row_index')
+        ;(ytdPpRowsData || []).forEach((r: { provider_pay_id: string; row_index: number; amount: string | null }) => {
+          const arr = ytdPpRowsMap.get(r.provider_pay_id) ?? []
+          arr.push(r)
+          ytdPpRowsMap.set(r.provider_pay_id, arr)
         })
       }
+
+      const { data: ytdSheetsData } = await apiClient
+        .from('provider_sheets')
+        .select('id, provider_id, month')
+        .eq('clinic_id', row.clinic_id)
+        .eq('year', year)
+        .lte('month', month)
+      const ytdSheets = (ytdSheetsData || []) as { id: string; provider_id: string; month: number }[]
+      const ytdSheetIds = ytdSheets.map((s) => s.id)
+      const ytdRowsBySheetId =
+        ytdSheetIds.length > 0
+          ? await fetchSheetRowsForSheetIds(apiClient, ytdSheetIds)
+          : new Map<string, SheetRow[]>()
 
       const { data: clinicData } = await apiClient.from('clinics').select('phone, ein').eq('id', row.clinic_id).maybeSingle()
       const clinicPhone2 = clinicData?.phone ?? ''
       const clinicEin = clinicData?.ein ?? ''
 
       // Build paystub entries — one per unique provider
-      const defaultPayDate = new Date(year, month, 15) // 15th of next month
+      const invoicePayDateStr = formatInvoicePdfDate(row.payment_date)
       const monthName = new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'long' })
       const payPeriod = `${monthName} ${year}`
       const clinicAddress = [row.clinic_address_1, row.clinic_address_2].filter(Boolean).join('\n')
 
       const paystubs: PaystubEntry[] = []
+      const downloadedAt = new Date()
       let empIndex = 1
       const providerIdsForPdf = [...providerIds].sort((a, b) => {
         const nameA = (usersMap.get(a)?.full_name || usersMap.get(a)?.email || '').toLowerCase()
@@ -477,66 +582,39 @@ export default function Invoices() {
         const providerName = provRecord
           ? `${provRecord.first_name} ${provRecord.last_name}`.trim()
           : userInfo?.full_name || userInfo?.email || 'Unknown'
-        const cutPercentRaw = provRecord?.provider_cut_percent
-        const cutPercent =
-          cutPercentRaw != null &&
-          Number.isFinite(Number(cutPercentRaw)) &&
-          Number(cutPercentRaw) >= 0 &&
-          Number(cutPercentRaw) <= 1
-            ? Number(cutPercentRaw)
-            : DEFAULT_PROVIDER_CUT_PERCENT
+        const cutPercent = resolveCutPercent(provRecord?.provider_cut_percent)
 
-        const pp = ppMap.get(pid)
-        const ppRows = pp ? (ppRowsMap.get(pp.id) ?? []) : []
+        const {
+          monthCollected,
+          arCollected,
+          monthOwed,
+          arOwed,
+          directDeposit,
+        } = providerMonthAmounts(
+          pid,
+          month,
+          cutPercent,
+          ytdPpHeaders,
+          ytdPpRowsMap,
+          ytdSheets,
+          ytdRowsBySheetId,
+        )
 
-        // Provider Pay rows: 1 = Patient, 2 = Insurance, 3 = A/R
-        const getAmount = (rowIdx: number) => {
-          const r = ppRows.find((x) => x.row_index === rowIdx)
-          return parseNum(r?.amount)
-        }
-        const patientPay = getAmount(1)
-        const insurancePay = getAmount(2)
-        const arPay = getAmount(3)
-
-        // Fallback: sum provider_sheet_rows when Provider Pay not saved
-        let fallbackIns = 0, fallbackPatient = 0, fallbackAR = 0
-        if (ppRows.length === 0) {
-          const providerSheets = sheets.filter((s) => s.provider_id === pid)
-          for (const ps of providerSheets) {
-            const rows = rowsBySheetIdMap.get(ps.id) ?? []
-            rows.forEach((r: SheetRow) => {
-              fallbackIns += parseNum(r.insurance_payment)
-              fallbackPatient += parseNum(r.collected_from_patient)
-              fallbackAR += parseNum(r.ar_amount)
-            })
-          }
-        }
-
-        // Collected: month row = Insurance + Patient; AR row = A/R only (same as Provider Pay box)
-        const monthCollected = ppRows.length > 0 ? insurancePay + patientPay : fallbackIns + fallbackPatient
-        const arCollected = ppRows.length > 0 ? arPay : fallbackAR
-        // Total owed = collected × provider cut % (60%, 70%, etc.)
-        const monthOwed = monthCollected * cutPercent
-        const arOwed = arCollected * cutPercent
-        const directDeposit = monthOwed + arOwed
-
-        let payDateStr = `${String(defaultPayDate.getMonth() + 1).padStart(2, '0')}/${String(defaultPayDate.getDate()).padStart(2, '0')}/${defaultPayDate.getFullYear()}`
-        if (pp?.pay_date) {
-          try {
-            const d = new Date(pp.pay_date + 'T00:00:00')
-            payDateStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`
-          } catch { /* keep default */ }
-        }
-
-        const ytdPrior = ytdByProvider.get(pid) ?? 0
-        const ytdTotal = ytdPrior + directDeposit
+        const ytdTotal = ytdTotalOwedThroughMonth(
+          pid,
+          month,
+          cutPercent,
+          ytdPpHeaders,
+          ytdPpRowsMap,
+          ytdSheets,
+          ytdRowsBySheetId,
+        )
 
         paystubs.push({
           provider_name: providerName,
-          emp_id: String(empIndex).padStart(3, '0'),
-          stub_no: String(year).slice(2) + String(month).padStart(2, '0') + String(empIndex).padStart(2, '0'),
+          stub_no: generatePaystubStubNo(downloadedAt, empIndex - 1),
           pay_period: payPeriod,
-          pay_date: payDateStr,
+          pay_date: invoicePayDateStr,
           clinic_name: row.clinic_name,
           clinic_address: clinicAddress,
           clinic_phone: clinicPhone2,
@@ -549,7 +627,6 @@ export default function Invoices() {
           direct_deposit_amount: directDeposit,
         })
         empIndex++
-        break // PDF includes only one earnings-statement page
       }
 
       const pdfRow = {
@@ -579,58 +656,6 @@ export default function Invoices() {
   const months = Array.from({ length: 12 }, (_, i) => i)
   const years = Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - i)
 
-  // ── Render helpers ────────────────────────────────────────────────────────
-
-  function renderEditableCell(
-    row: ClinicInvoiceSummaryRow,
-    field: 'payment_status' | 'payment_date' | 'due_date',
-    displayValue: string,
-  ) {
-    const isEditing = editingCell?.clinicId === row.clinic_id && editingCell?.field === field
-
-    if (isEditing) {
-      if (field === 'payment_status') {
-        return (
-          <select
-            autoFocus
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={() => commitEdit(row.clinic_id, field)}
-            className="px-1 py-0.5 text-sm bg-white text-black rounded border border-blue-400 w-full"
-          >
-            {PAYMENT_STATUS_OPTIONS.map((opt) => (
-              <option key={opt} value={opt}>{opt || '—'}</option>
-            ))}
-          </select>
-        )
-      }
-      return (
-        <input
-          autoFocus
-          type="date"
-          value={editValue}
-          onChange={(e) => setEditValue(e.target.value)}
-          onBlur={() => commitEdit(row.clinic_id, field)}
-          onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(row.clinic_id, field) }}
-          className="px-1 py-0.5 text-sm bg-white text-black rounded border border-blue-400 w-full"
-        />
-      )
-    }
-
-    return (
-      <span
-        role="button"
-        tabIndex={0}
-        title="Click to edit"
-        onClick={() => startEdit(row.clinic_id, field, displayValue)}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') startEdit(row.clinic_id, field, displayValue) }}
-        className="cursor-pointer hover:bg-white/10 rounded px-1 py-0.5 min-w-[60px] inline-block"
-      >
-        {displayValue || <span className="text-white/30 italic text-xs">click to set</span>}
-      </span>
-    )
-  }
-
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -641,7 +666,7 @@ export default function Invoices() {
 
       {isSuperAdmin ? (
         <>
-          {/* Month/year selector + Sync button */}
+          {/* Month/year selector */}
           <div className="bg-white/10 backdrop-blur-md rounded-lg shadow-xl p-6 mb-6 border border-white/20">
             <div className="flex flex-wrap items-end gap-4">
               <div>
@@ -685,7 +710,7 @@ export default function Invoices() {
           <div className="bg-white/10 backdrop-blur-md rounded-lg shadow-xl border border-white/20">
             <div className="p-6">
               {summaryLoading ? (
-                <div className="text-center py-8 text-white/70">Loading…</div>
+                <div className="text-center py-8 text-white/70">Updating invoice totals…</div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="table-spreadsheet w-full text-sm [&_td]:text-gray-900 [&_th]:text-white">
@@ -698,9 +723,8 @@ export default function Invoices() {
                         <th>Addl Fee</th>
                         <th>Total</th>
                         <th>Invoice Total</th>
-                        <th>Payment Status ✏️</th>
-                        <th>Payment Date ✏️</th>
-                        <th>Due Date ✏️</th>
+                        <th className="w-[90px]">Payment Date</th>
+                        <th className="w-[90px]">Due Date</th>
                         <th>Note</th>
                         <th className="w-16">PDF</th>
                       </tr>
@@ -708,8 +732,8 @@ export default function Invoices() {
                     <tbody>
                       {clinicSummaries.length === 0 ? (
                         <tr>
-                          <td colSpan={12} className="text-center text-white/70 py-8">
-                            No data for this month — save a provider sheet or add invoice notes to populate totals.
+                          <td colSpan={11} className="text-center text-white/70 py-8">
+                            No clinics found.
                           </td>
                         </tr>
                       ) : (
@@ -722,26 +746,17 @@ export default function Invoices() {
                             <td>{formatCurrency(row.additional_fee)}</td>
                             <td>{formatCurrency(row.total)}</td>
                             <td>{formatCurrency(row.invoice_total)}</td>
-                            <td>
-                              {renderEditableCell(row, 'payment_status', row.payment_status ?? '')}
+                            <td className="w-[90px] p-0">
+                              <DateOfServiceTableCell
+                                value={row.payment_date}
+                                onCommit={(stored) => saveInvoiceDateField(row.clinic_id, 'payment_date', stored)}
+                              />
                             </td>
-                            <td>
-                              {renderEditableCell(
-                                row,
-                                'payment_date',
-                                row.payment_date
-                                  ? row.payment_date.slice(0, 10)
-                                  : '',
-                              )}
-                            </td>
-                            <td>
-                              {renderEditableCell(
-                                row,
-                                'due_date',
-                                row.due_date
-                                  ? row.due_date.slice(0, 10)
-                                  : '',
-                              )}
+                            <td className="w-[90px] p-0">
+                              <DateOfServiceTableCell
+                                value={row.due_date}
+                                onCommit={(stored) => saveInvoiceDateField(row.clinic_id, 'due_date', stored)}
+                              />
                             </td>
                             <td className="max-w-[160px] truncate text-white/70" title={row.note}>
                               {row.note || '—'}
@@ -751,7 +766,7 @@ export default function Invoices() {
                                 type="button"
                                 onClick={() => handleDownloadClinicInvoice(row)}
                                 className="p-1.5 text-black hover:bg-gray-200/60 rounded inline-flex items-center justify-center"
-                                title="Download invoice PDF (with provider paystub)"
+                                title="Download invoice PDF (with provider paystubs)"
                               >
                                 <Download className="w-4 h-4" />
                               </button>

@@ -1,6 +1,6 @@
 -- Persistent invoice summaries (one row per clinic per month).
 -- Computed fields are refreshed near-real-time whenever a provider sheet is saved.
--- payment_status, payment_date, due_date are manually editable and preserved on recompute.
+-- payment_date and due_date are manually editable and preserved on recompute.
 
 CREATE TABLE IF NOT EXISTS public.invoices (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -14,7 +14,6 @@ CREATE TABLE IF NOT EXISTS public.invoices (
   subtotal numeric(12,2) NOT NULL DEFAULT 0,
   invoice_rate numeric(6,4),
   invoice_total numeric(12,2) NOT NULL DEFAULT 0,
-  payment_status text,
   payment_date date,
   due_date date,
   note text,
@@ -25,7 +24,7 @@ CREATE TABLE IF NOT EXISTS public.invoices (
 );
 
 COMMENT ON TABLE public.invoices IS
-  'Pre-computed invoice summary per clinic per month. Refreshed on every provider sheet save. payment_status/payment_date/due_date are manually editable and preserved on recompute.';
+  'Pre-computed invoice summary per clinic per month. Totals from provider_pay_rows (all payrolls); sheet rows fallback for providers without provider_pay. payment_date and due_date preserved on recompute.';
 
 COMMENT ON COLUMN public.invoices.subtotal IS
   'insurance_payment_total + patient_payment_total + accounts_receivable_total + additional_fee';

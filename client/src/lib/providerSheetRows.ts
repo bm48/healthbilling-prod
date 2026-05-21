@@ -1,5 +1,6 @@
 import type { SheetRow } from '@/types'
 import type { NativeClient } from '@/lib/nativeClient'
+import { getApiBase, getAuthToken } from '@/lib/invoiceApi'
 
 /** DB row shape for provider_sheet_rows (snake_case, id is UUID). Patient demographics live in `patients`. */
 export interface ProviderSheetRowDb {
@@ -132,6 +133,165 @@ export function isUuid(id: string): boolean {
   return UUID_REGEX.test(id)
 }
 
+/** Aligns with server `rowHasData` so API save indices match returned rows. */
+export function rowHasDataForSave(row: SheetRow): boolean {
+  if (!row.id.startsWith('empty-')) return true
+  return !!(
+    row.patient_id ||
+    row.appointment_date ||
+    row.cpt_code ||
+    row.appointment_status ||
+    row.claim_status ||
+    row.submit_date ||
+    row.insurance_payment ||
+    row.payment_date ||
+    row.insurance_adjustment ||
+    row.collected_from_patient ||
+    row.patient_pay_status ||
+    row.ar_date ||
+    row.total !== null ||
+    row.notes
+  )
+}
+
+export type SaveSheetRowsContext = {
+  clinicId: string
+  providerId: string
+  selectedMonthKey: string
+}
+
+function buildMonthKey(year: number, month: number, payroll: number): string {
+  return payroll === 2 ? `${year}-${month}-2` : `${year}-${month}`
+}
+
+async function resolveSaveContext(
+  db: NativeClient,
+  sheetId: string,
+  explicit?: SaveSheetRowsContext,
+): Promise<SaveSheetRowsContext | null> {
+  if (explicit) return explicit
+  const { data, error } = await db
+    .from('provider_sheets')
+    .select('clinic_id, provider_id, month, year, payroll')
+    .eq('id', sheetId)
+    .maybeSingle()
+  if (error || !data) return null
+  const payroll = Number(data.payroll) === 2 ? 2 : 1
+  return {
+    clinicId: String(data.clinic_id),
+    providerId: String(data.provider_id),
+    selectedMonthKey: buildMonthKey(Number(data.year), Number(data.month), payroll),
+  }
+}
+
+async function saveSheetRowsViaApi(
+  rows: SheetRow[],
+  context: SaveSheetRowsContext,
+  knownDeletedIds?: string[],
+): Promise<SheetRow[]> {
+  const token = getAuthToken()
+  if (!token) throw new Error('Not signed in')
+
+  const body: Record<string, unknown> = {
+    clinicId: context.clinicId,
+    providerId: context.providerId,
+    selectedMonthKey: context.selectedMonthKey,
+    rows,
+  }
+  if (knownDeletedIds !== undefined) {
+    body.knownDeletedIds = knownDeletedIds.filter((id) => isUuid(id))
+  }
+
+  const base = getApiBase()
+  const res = await fetch(`${base}/api/save-provider-sheet-rows`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  })
+  const payload = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(typeof payload?.error === 'string' ? payload.error : `Save failed (${res.status})`)
+  }
+
+  const apiRows = (payload?.rows ?? []) as ProviderSheetRowDb[]
+  let apiIdx = 0
+  return rows.map((row) => {
+    if (!rowHasDataForSave(row)) return row
+    const dbRow = apiRows[apiIdx++]
+    if (!dbRow) return row
+    return dbToSheetRow(dbRow)
+  })
+}
+
+async function saveSheetRowsDirectDb(
+  db: NativeClient,
+  sheetId: string,
+  rows: SheetRow[],
+  knownDeletedIds?: string[],
+): Promise<SheetRow[]> {
+  let saved: SheetRow[]
+
+  if (rows.length > 0) {
+    const upsertPayloads = rows.map((row, i) => {
+      const base = sheetRowToDbPayload(row, sheetId, i)
+      if (isUuid(row.id)) {
+        return { id: row.id, ...base, updated_at: new Date().toISOString() } as Record<string, unknown>
+      }
+      return { ...base, updated_at: new Date().toISOString() } as Record<string, unknown>
+    })
+
+    const { data, error } = await db
+      .from('provider_sheet_rows')
+      .upsert(upsertPayloads, { onConflict: 'id' })
+      .select()
+
+    if (error) throw error
+
+    const byUUID = new Map<string, SheetRow>()
+    const bySortOrder = new Map<number, SheetRow>()
+    for (const raw of (data ?? []) as ProviderSheetRowDb[]) {
+      const sr = dbToSheetRow(raw)
+      byUUID.set(raw.id, sr)
+      bySortOrder.set(raw.sort_order, sr)
+    }
+    saved = rows.map((row, i) =>
+      isUuid(row.id) ? (byUUID.get(row.id) ?? row) : (bySortOrder.get(i) ?? row),
+    )
+  } else {
+    saved = []
+  }
+
+  if (knownDeletedIds !== undefined) {
+    if (knownDeletedIds.length > 0) {
+      const { error: deleteError } = await db
+        .from('provider_sheet_rows')
+        .delete()
+        .in('id', knownDeletedIds)
+      if (deleteError) throw deleteError
+    }
+  } else {
+    const idsToKeep = new Set(saved.filter((r) => isUuid(r.id)).map((r) => r.id))
+    const { data: existing } = await db
+      .from('provider_sheet_rows')
+      .select('id')
+      .eq('sheet_id', sheetId)
+    const idsToDelete = ((existing ?? []) as { id: string }[])
+      .map((r) => r.id)
+      .filter((id) => !idsToKeep.has(id))
+    if (idsToDelete.length > 0) {
+      const { error: deleteError } = await db
+        .from('provider_sheet_rows')
+        .delete()
+        .in('id', idsToDelete)
+      if (deleteError) throw deleteError
+    }
+  }
+
+  return saved
+}
 
 /**
  * Fetch all rows for a provider sheet from provider_sheet_rows, ordered by sort_order.
@@ -189,78 +349,24 @@ export async function fetchSheetRowsForSheetIds(
  *
  * Returns saved rows with real UUIDs in the same order as `rows`.
  */
+/**
+ * Save rows via server API (updates `invoices` for the clinic/month) when context is available.
+ * Falls back to direct DB upsert only if the API cannot be used.
+ */
 export async function saveSheetRows(
   db: NativeClient,
   sheetId: string,
   rows: SheetRow[],
   knownDeletedIds?: string[],
+  saveContext?: SaveSheetRowsContext,
 ): Promise<SheetRow[]> {
-  let saved: SheetRow[]
-
-  if (rows.length > 0) {
-    // Build one payload per row. Existing rows carry their UUID so the server resolves
-    // ON CONFLICT (id) → UPDATE. New rows omit id so the server INSERTs with a fresh UUID.
-    const upsertPayloads = rows.map((row, i) => {
-      const base = sheetRowToDbPayload(row, sheetId, i)
-      if (isUuid(row.id)) {
-        return { id: row.id, ...base, updated_at: new Date().toISOString() } as Record<string, unknown>
-      }
-      return { ...base, updated_at: new Date().toISOString() } as Record<string, unknown>
-    })
-
-    // One network round-trip for all rows (replaces N individual UPDATE/INSERT calls).
-    const { data, error } = await db
-      .from('provider_sheet_rows')
-      .upsert(upsertPayloads, { onConflict: 'id' })
-      .select()
-
-    if (error) throw error
-
-    // Map returned rows back to the original order.
-    // Existing rows match by UUID; new rows match by sort_order (= their index in the array).
-    const byUUID = new Map<string, SheetRow>()
-    const bySortOrder = new Map<number, SheetRow>()
-    for (const raw of (data ?? []) as ProviderSheetRowDb[]) {
-      const sr = dbToSheetRow(raw)
-      byUUID.set(raw.id, sr)
-      bySortOrder.set(raw.sort_order, sr)
-    }
-    saved = rows.map((row, i) =>
-      isUuid(row.id) ? (byUUID.get(row.id) ?? row) : (bySortOrder.get(i) ?? row)
-    )
-  } else {
-    saved = []
-  }
-
-  // ── Orphan cleanup ────────────────────────────────────────────────────────────
-  // Only needed when rows were actually removed from the list.
-  if (knownDeletedIds !== undefined) {
-    // Caller knows exactly which IDs were deleted — no extra SELECT required.
-    if (knownDeletedIds.length > 0) {
-      const { error: deleteError } = await db
-        .from('provider_sheet_rows')
-        .delete()
-        .in('id', knownDeletedIds)
-      if (deleteError) throw deleteError
-    }
-  } else {
-    // Legacy path: fetch all DB ids for this sheet and delete anything not in our list.
-    const idsToKeep = new Set(saved.filter(r => isUuid(r.id)).map(r => r.id))
-    const { data: existing } = await db
-      .from('provider_sheet_rows')
-      .select('id')
-      .eq('sheet_id', sheetId)
-    const idsToDelete = ((existing ?? []) as { id: string }[])
-      .map(r => r.id)
-      .filter(id => !idsToKeep.has(id))
-    if (idsToDelete.length > 0) {
-      const { error: deleteError } = await db
-        .from('provider_sheet_rows')
-        .delete()
-        .in('id', idsToDelete)
-      if (deleteError) throw deleteError
+  const context = await resolveSaveContext(db, sheetId, saveContext)
+  if (context && getAuthToken()) {
+    try {
+      return await saveSheetRowsViaApi(rows, context, knownDeletedIds)
+    } catch (err) {
+      console.warn('[saveSheetRows] API save failed, falling back to direct DB (invoice totals may be stale):', err)
     }
   }
-
-  return saved
+  return saveSheetRowsDirectDb(db, sheetId, rows, knownDeletedIds)
 }

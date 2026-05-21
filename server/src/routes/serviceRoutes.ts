@@ -263,27 +263,61 @@ serviceRoutes.get('/get-invite-credentials', async (req, res) => {
   res.json({ email: row.email, password: row.temp_password })
 })
 
-serviceRoutes.post('/save-pending-provider-sheet', async (req, res) => {
-  const callerId = getUserIdFromBearer(req.headers.authorization)
-  if (!callerId) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
-  }
+const PROVIDER_SHEET_ROW_COLS = [
+  'sheet_id',
+  'sort_order',
+  'patient_id',
+  'appointment_date',
+  'appointment_time',
+  'visit_type',
+  'notes',
+  'billing_code',
+  'billing_code_color',
+  'cpt_code',
+  'cpt_code_color',
+  'appointment_status',
+  'appointment_status_color',
+  'claim_status',
+  'claim_status_color',
+  'submit_date',
+  'insurance_payment',
+  'insurance_adjustment',
+  'invoice_amount',
+  'collected_from_patient',
+  'patient_pay_status',
+  'patient_pay_status_color',
+  'payment_date',
+  'payment_date_color',
+  'ar_type',
+  'ar_amount',
+  'ar_date',
+  'ar_date_color',
+  'ar_notes',
+  'provider_payment_amount',
+  'provider_payment_date',
+  'provider_payment_notes',
+  'highlight_color',
+  'total',
+] as const
 
-  const clinicId = typeof req.body?.clinicId === 'string' ? req.body.clinicId.trim() : ''
-  const providerId = typeof req.body?.providerId === 'string' ? req.body.providerId.trim() : ''
-  const selectedMonthKey = typeof req.body?.selectedMonthKey === 'string' ? req.body.selectedMonthKey.trim() : ''
-  const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
+type SaveProviderSheetResult = {
+  saved: number
+  rows: Record<string, unknown>[]
+  invoiceRecomputed: boolean
+}
 
-  if (!clinicId || !providerId || !selectedMonthKey) {
-    res.status(400).json({ error: 'Missing clinicId, providerId, or selectedMonthKey' })
-    return
-  }
-
+/** Saves provider sheet rows and awaits invoice recompute for the clinic/month/year. */
+async function saveProviderSheetRowsCore(
+  callerId: string,
+  clinicId: string,
+  providerId: string,
+  selectedMonthKey: string,
+  rows: unknown[],
+  knownDeletedIds?: string[],
+): Promise<SaveProviderSheetResult> {
   const parsed = parseMonthKey(selectedMonthKey)
   if (!parsed) {
-    res.status(400).json({ error: 'Invalid selectedMonthKey' })
-    return
+    throw new Error('Invalid selectedMonthKey')
   }
 
   const access = await pool.query(
@@ -301,8 +335,7 @@ serviceRoutes.post('/save-pending-provider-sheet', async (req, res) => {
     [callerId, clinicId, providerId, parsed.month, parsed.year, parsed.payroll],
   )
   if (!access.rowCount) {
-    res.status(404).json({ error: 'Sheet not found or access denied' })
-    return
+    throw new Error('Sheet not found or access denied')
   }
 
   const sheetQ = await pool.query<{ id: string }>(
@@ -314,56 +347,16 @@ serviceRoutes.post('/save-pending-provider-sheet', async (req, res) => {
   )
   const sheetId = sheetQ.rows[0]?.id
   if (!sheetId) {
-    res.status(404).json({ error: 'Sheet not found for this clinic/provider/month' })
-    return
+    throw new Error('Sheet not found for this clinic/provider/month')
   }
 
   const rowsToProcess = rows
     .filter((r: unknown) => typeof r === 'object' && r !== null && rowHasData(r as Record<string, unknown>))
     .map((r: unknown) => r as Record<string, unknown>)
 
-  if (rowsToProcess.length === 0) {
-    res.json({ success: true, saved: 0 })
-    return
-  }
-
+  const cols = PROVIDER_SHEET_ROW_COLS
   const savedIds: string[] = []
-  const cols = [
-    'sheet_id',
-    'sort_order',
-    'patient_id',
-    'appointment_date',
-    'appointment_time',
-    'visit_type',
-    'notes',
-    'billing_code',
-    'billing_code_color',
-    'cpt_code',
-    'cpt_code_color',
-    'appointment_status',
-    'appointment_status_color',
-    'claim_status',
-    'claim_status_color',
-    'submit_date',
-    'insurance_payment',
-    'insurance_adjustment',
-    'invoice_amount',
-    'collected_from_patient',
-    'patient_pay_status',
-    'patient_pay_status_color',
-    'payment_date',
-    'payment_date_color',
-    'ar_type',
-    'ar_amount',
-    'ar_date',
-    'ar_date_color',
-    'ar_notes',
-    'provider_payment_amount',
-    'provider_payment_date',
-    'provider_payment_notes',
-    'highlight_color',
-    'total',
-  ] as const
+  const savedRows: Record<string, unknown>[] = []
 
   for (let i = 0; i < rowsToProcess.length; i++) {
     const row = rowsToProcess[i]
@@ -376,44 +369,106 @@ serviceRoutes.post('/save-pending-provider-sheet', async (req, res) => {
         .filter((c) => c !== 'sheet_id')
         .map((c, idx) => `"${c}" = $${idx + 1}`)
       const setParams = cols.filter((c) => c !== 'sheet_id').map((c) => payload[c])
-      const uq = await pool.query(
+      const uq = await pool.query<Record<string, unknown>>(
         `UPDATE public.provider_sheet_rows SET ${setParts.join(', ')}, "updated_at" = now()
          WHERE id = $${setParams.length + 1}::uuid AND sheet_id = $${setParams.length + 2}::uuid
-         RETURNING id`,
+         RETURNING *`,
         [...setParams, id, sheetId],
       )
-      if (uq.rows[0]?.id) savedIds.push(uq.rows[0].id)
-      else savedIds.push(id)
+      if (uq.rows[0]) {
+        savedIds.push(String(uq.rows[0].id))
+        savedRows.push(uq.rows[0])
+      } else {
+        savedIds.push(id)
+      }
     } else {
       const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(', ')
-      const iq = await pool.query<{ id: string }>(
+      const iq = await pool.query<Record<string, unknown>>(
         `INSERT INTO public.provider_sheet_rows (${cols.map((c) => `"${c}"`).join(', ')})
          VALUES (${placeholders})
-         RETURNING id`,
+         RETURNING *`,
         values,
       )
-      if (iq.rows[0]?.id) savedIds.push(iq.rows[0].id)
+      if (iq.rows[0]) {
+        savedIds.push(String(iq.rows[0].id))
+        savedRows.push(iq.rows[0])
+      }
     }
   }
 
-  const existing = await pool.query<{ id: string }>(
-    `SELECT id FROM public.provider_sheet_rows WHERE sheet_id = $1::uuid`,
-    [sheetId],
-  )
-  const existingIds = existing.rows.map((r) => r.id)
-  const idsToDelete = existingIds.filter((id) => !savedIds.includes(id))
-  if (idsToDelete.length > 0) {
-    await pool.query(`DELETE FROM public.provider_sheet_rows WHERE id = ANY($1::uuid[])`, [idsToDelete])
+  if (knownDeletedIds !== undefined) {
+    const toDelete = knownDeletedIds.filter((id) => isUuid(String(id)))
+    if (toDelete.length > 0) {
+      await pool.query(
+        `DELETE FROM public.provider_sheet_rows WHERE id = ANY($1::uuid[]) AND sheet_id = $2::uuid`,
+        [toDelete, sheetId],
+      )
+    }
+  } else {
+    const existing = await pool.query<{ id: string }>(
+      `SELECT id FROM public.provider_sheet_rows WHERE sheet_id = $1::uuid`,
+      [sheetId],
+    )
+    const existingIds = existing.rows.map((r) => r.id)
+    const idsToDelete = existingIds.filter((id) => !savedIds.includes(id))
+    if (idsToDelete.length > 0) {
+      await pool.query(`DELETE FROM public.provider_sheet_rows WHERE id = ANY($1::uuid[])`, [idsToDelete])
+    }
   }
 
-  // Near-real-time: recompute invoice summary for this clinic/month/year after saving rows.
-  recomputeClinicInvoice(clinicId, parsed.month, parsed.year).catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error('[invoice] recompute failed after sheet save:', err)
-  })
+  await recomputeClinicInvoice(clinicId, parsed.month, parsed.year)
 
-  res.json({ success: true, saved: savedIds.length })
-})
+  return {
+    saved: savedIds.length,
+    rows: savedRows,
+    invoiceRecomputed: true,
+  }
+}
+
+async function handleSaveProviderSheetRows(req: import('express').Request, res: import('express').Response) {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const clinicId = typeof req.body?.clinicId === 'string' ? req.body.clinicId.trim() : ''
+  const providerId = typeof req.body?.providerId === 'string' ? req.body.providerId.trim() : ''
+  const selectedMonthKey = typeof req.body?.selectedMonthKey === 'string' ? req.body.selectedMonthKey.trim() : ''
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
+  const knownDeletedIds = Array.isArray(req.body?.knownDeletedIds)
+    ? req.body.knownDeletedIds.map((id: unknown) => String(id)).filter((id: string) => isUuid(id))
+    : undefined
+
+  if (!clinicId || !providerId || !selectedMonthKey) {
+    res.status(400).json({ error: 'Missing clinicId, providerId, or selectedMonthKey' })
+    return
+  }
+
+  try {
+    const result = await saveProviderSheetRowsCore(
+      callerId,
+      clinicId,
+      providerId,
+      selectedMonthKey,
+      rows,
+      knownDeletedIds,
+    )
+    res.json({ success: true, saved: result.saved, rows: result.rows, invoiceRecomputed: result.invoiceRecomputed })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Save failed'
+    const status = msg.includes('not found') || msg.includes('denied') ? 404 : msg.includes('Invalid') ? 400 : 500
+    if (status === 500) {
+      // eslint-disable-next-line no-console
+      console.error('[provider-sheet] save failed:', err)
+    }
+    res.status(status).json({ error: msg })
+  }
+}
+
+serviceRoutes.post('/save-provider-sheet-rows', handleSaveProviderSheetRows)
+/** @deprecated Use /save-provider-sheet-rows — kept for page-unload keepalive callers */
+serviceRoutes.post('/save-pending-provider-sheet', handleSaveProviderSheetRows)
 
 // ---------------------------------------------------------------------------
 // Invoice recompute helpers
@@ -425,9 +480,16 @@ function parseNumericCell(v: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+/** Provider Pay row indices (matches Provider Pay tab / paystub PDF). */
+const PP_ROW_PATIENT = 1
+const PP_ROW_INSURANCE = 2
+const PP_ROW_AR = 3
+
 /**
  * Recomputes and upserts the `invoices` row for a given clinic+month+year.
- * Computed fields are always overwritten; payment_status/payment_date/due_date are preserved on conflict.
+ * Primary source: sum of all `provider_pay_rows` (all providers, all payroll periods).
+ * Fallback: `provider_sheet_rows` for providers with no `provider_pay` header that month.
+ * Computed fields are always overwritten; payment_date and due_date are preserved on conflict.
  */
 async function recomputeClinicInvoice(clinicId: string, month: number, year: number): Promise<void> {
   // 1. Clinic invoice_rate
@@ -439,36 +501,50 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
     ? parseFloat(String(clinicQ.rows[0].invoice_rate))
     : 0
 
-  // 2. All provider sheets for this clinic/month/year (all payroll periods)
-  const sheetsQ = await pool.query<{ id: string }>(
-    `SELECT id FROM public.provider_sheets WHERE clinic_id = $1::uuid AND month = $2 AND year = $3`,
-    [clinicId, month, year],
-  )
-  const sheetIds = sheetsQ.rows.map((r) => r.id)
-
   let insuranceTotal = 0
   let patientTotal = 0
   let arTotal = 0
 
-  if (sheetIds.length > 0) {
-    const rowsQ = await pool.query<{
-      insurance_payment: string | null
-      collected_from_patient: string | null
-      ar_amount: string | null
-    }>(
-      `SELECT insurance_payment, collected_from_patient, ar_amount
-       FROM public.provider_sheet_rows
-       WHERE sheet_id = ANY($1::uuid[])`,
-      [sheetIds],
-    )
-    for (const r of rowsQ.rows) {
-      insuranceTotal += parseNumericCell(r.insurance_payment)
-      patientTotal += parseNumericCell(r.collected_from_patient)
-      arTotal += parseNumericCell(r.ar_amount)
-    }
+  // 2. Provider Pay (primary): aggregate rows 1=Patient, 2=Insurance, 3=A/R across every payroll period
+  const payRowsQ = await pool.query<{ row_index: number; amount: string | null }>(
+    `SELECT ppr.row_index, ppr.amount
+     FROM public.provider_pay pp
+     INNER JOIN public.provider_pay_rows ppr ON ppr.provider_pay_id = pp.id
+     WHERE pp.clinic_id = $1::uuid AND pp.month = $2 AND pp.year = $3
+       AND ppr.row_index IN ($4, $5, $6)`,
+    [clinicId, month, year, PP_ROW_PATIENT, PP_ROW_INSURANCE, PP_ROW_AR],
+  )
+  for (const r of payRowsQ.rows) {
+    const amt = parseNumericCell(r.amount)
+    if (r.row_index === PP_ROW_PATIENT) patientTotal += amt
+    else if (r.row_index === PP_ROW_INSURANCE) insuranceTotal += amt
+    else if (r.row_index === PP_ROW_AR) arTotal += amt
   }
 
-  // 3. clinic_invoice_notes for additional_fee and note
+  // 3. Provider sheets (fallback): providers with no provider_pay record for this clinic/month/year
+  const sheetRowsQ = await pool.query<{
+    insurance_payment: string | null
+    collected_from_patient: string | null
+    ar_amount: string | null
+  }>(
+    `SELECT psr.insurance_payment, psr.collected_from_patient, psr.ar_amount
+     FROM public.provider_sheet_rows psr
+     INNER JOIN public.provider_sheets ps ON ps.id = psr.sheet_id
+     WHERE ps.clinic_id = $1::uuid AND ps.month = $2 AND ps.year = $3
+       AND ps.provider_id NOT IN (
+         SELECT DISTINCT pp.provider_id
+         FROM public.provider_pay pp
+         WHERE pp.clinic_id = $1::uuid AND pp.month = $2 AND pp.year = $3
+       )`,
+    [clinicId, month, year],
+  )
+  for (const r of sheetRowsQ.rows) {
+    insuranceTotal += parseNumericCell(r.insurance_payment)
+    patientTotal += parseNumericCell(r.collected_from_patient)
+    arTotal += parseNumericCell(r.ar_amount)
+  }
+
+  // 4. clinic_invoice_notes for additional_fee and note
   const notesQ = await pool.query<{ additional_fee: string | null; note: string | null }>(
     `SELECT additional_fee, note FROM public.clinic_invoice_notes
      WHERE clinic_id = $1::uuid AND month = $2 AND year = $3 LIMIT 1`,
@@ -479,16 +555,16 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
     : 0
   const note = notesQ.rows[0]?.note ?? null
 
-  // 4. Compute totals
+  // 5. Compute totals
   const subtotal = insuranceTotal + patientTotal + arTotal + additionalFee
   const invoiceTotal = subtotal * (Number.isFinite(invoiceRate) ? invoiceRate : 0)
 
-  // 5. Default due_date = 15th of the following month
+  // 6. Default due_date = 15th of the following month
   const dueYear = month === 12 ? year + 1 : year
   const dueMonth = month === 12 ? 1 : month + 1
   const defaultDueDate = `${dueYear}-${String(dueMonth).padStart(2, '0')}-15`
 
-  // 6. Upsert: INSERT preserves due_date default; UPDATE preserves editable fields
+  // 7. Upsert: INSERT preserves due_date default; UPDATE preserves editable fields
   await pool.query(
     `INSERT INTO public.invoices (
        clinic_id, month, year,
@@ -551,13 +627,25 @@ serviceRoutes.post('/upsert-clinic-invoice', async (req, res) => {
   }
 })
 
+async function requireSuperAdmin(callerId: string): Promise<boolean> {
+  const q = await pool.query<{ role: string }>(
+    `SELECT role FROM public.users WHERE id = $1::uuid LIMIT 1`,
+    [callerId],
+  )
+  return q.rows[0]?.role === 'super_admin'
+}
+
 /** POST /api/recompute-invoices-for-month  { month, year }
- * Recomputes invoices for ALL clinics for the given month/year (super admin use).
+ * Recomputes invoices for every clinic that has provider_pay or provider_sheets in that month/year.
  */
 serviceRoutes.post('/recompute-invoices-for-month', async (req, res) => {
   const callerId = getUserIdFromBearer(req.headers.authorization)
   if (!callerId) {
     res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  if (!(await requireSuperAdmin(callerId))) {
+    res.status(403).json({ error: 'Super admin only' })
     return
   }
   const month = Number(req.body?.month)
@@ -567,15 +655,61 @@ serviceRoutes.post('/recompute-invoices-for-month', async (req, res) => {
     return
   }
   try {
-    const clinicsQ = await pool.query<{ id: string }>(`SELECT id FROM public.clinics`)
+    const pairsQ = await pool.query<{ clinic_id: string }>(
+      `SELECT DISTINCT clinic_id FROM (
+         SELECT clinic_id FROM public.provider_sheets WHERE month = $1 AND year = $2
+         UNION
+         SELECT clinic_id FROM public.provider_pay WHERE month = $1 AND year = $2
+       ) AS clinic_ids`,
+      [month, year],
+    )
     const results = await Promise.allSettled(
-      clinicsQ.rows.map((c) => recomputeClinicInvoice(c.id, month, year)),
+      pairsQ.rows.map((r) => recomputeClinicInvoice(r.clinic_id, month, year)),
     )
     const failed = results.filter((r) => r.status === 'rejected').length
-    res.json({ success: true, total: clinicsQ.rows.length, failed })
+    res.json({ success: true, total: pairsQ.rows.length, failed })
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[invoice] recompute-invoices-for-month failed:', err)
+    res.status(500).json({ error: 'Failed to recompute invoices' })
+  }
+})
+
+/** POST /api/recompute-all-invoices
+ * Backfill: recompute invoices for every clinic+month+year that has provider_pay or provider_sheets data.
+ */
+serviceRoutes.post('/recompute-all-invoices', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  if (!(await requireSuperAdmin(callerId))) {
+    res.status(403).json({ error: 'Super admin only' })
+    return
+  }
+  try {
+    const pairsQ = await pool.query<{ clinic_id: string; month: number; year: number }>(
+      `SELECT DISTINCT clinic_id, month, year FROM (
+         SELECT clinic_id, month, year FROM public.provider_sheets
+         UNION
+         SELECT clinic_id, month, year FROM public.provider_pay
+       ) AS periods
+       ORDER BY year, month`,
+    )
+    const results = await Promise.allSettled(
+      pairsQ.rows.map((r) => recomputeClinicInvoice(r.clinic_id, r.month, r.year)),
+    )
+    const failed = results.filter((r) => r.status === 'rejected').length
+    res.json({
+      success: true,
+      total: pairsQ.rows.length,
+      failed,
+      periods: pairsQ.rows.length,
+    })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[invoice] recompute-all-invoices failed:', err)
     res.status(500).json({ error: 'Failed to recompute invoices' })
   }
 })

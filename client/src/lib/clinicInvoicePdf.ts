@@ -14,7 +14,6 @@ export interface ClinicInvoiceSummaryRow {
   total: number
   invoice_total: number
   invoice_rate: number | null
-  payment_status: string
   payment_date: string | null
   due_date?: string | null
   note?: string
@@ -23,7 +22,6 @@ export interface ClinicInvoiceSummaryRow {
 /** Per-provider data for the paystub page (page 2+). */
 export interface PaystubEntry {
   provider_name: string
-  emp_id: string
   stub_no: string
   pay_period: string
   pay_date: string
@@ -64,6 +62,14 @@ async function loadLogoAsDataUrl(): Promise<string> {
 
 function formatDateShort(d: Date): string {
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
+}
+
+/** Format stored invoice/payment date for PDF (M/D/YYYY). */
+export function formatInvoicePdfDate(isoDate: string | null | undefined): string {
+  if (!isoDate?.trim()) return '—'
+  const d = new Date(isoDate.includes('T') ? isoDate : `${isoDate.trim()}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return '—'
+  return formatDateShort(d)
 }
 
 function addPaystubPage(doc: jsPDF, entry: PaystubEntry, logoDataUrl: string | null): void {
@@ -116,14 +122,15 @@ function addPaystubPage(doc: jsPDF, entry: PaystubEntry, logoDataUrl: string | n
   doc.setFillColor(173, 216, 230)
   doc.rect(14, bandY, pageW - 28, bandH, 'F')
 
+  const bandTextY = bandY + bandH / 2 + 3
   doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
   doc.setTextColor(0, 0, 0)
-  doc.text(entry.provider_name, 18, bandY + 7)
+  doc.text(entry.provider_name, 18, bandTextY)
   doc.setFontSize(9)
   doc.setFont('helvetica', 'normal')
-  doc.text(`Emp. ID: ${entry.emp_id}`, pageW - 14 - doc.getTextWidth(`Emp. ID: ${entry.emp_id}`) -6, bandY + 6)
-  doc.text(`Stub No: ${entry.stub_no}`, pageW - 14 - doc.getTextWidth(`Stub No: ${entry.stub_no}`) -6, bandY + 12)
+  const stubLabel = `Stub No: ${entry.stub_no}`
+  doc.text(stubLabel, pageW - 14 - doc.getTextWidth(stubLabel) - 6, bandTextY)
 
   // ── Earnings table ───────────────────────────────────────────────────────
   const tableStartY = bandY + bandH + 6
@@ -234,14 +241,19 @@ export async function generateClinicInvoicePdf(
   const invoiceNum = `#${row.clinic_id.slice(0, 6).toUpperCase()}-${selectedMonth.getFullYear()}${String(selectedMonth.getMonth() + 1).padStart(2, '0')}`
   doc.setFontSize(11)
   doc.text(invoiceNum, pageW - 14 - doc.getTextWidth(invoiceNum), 30)
-  const invoiceDate = formatDateShort(new Date())
   const dueDate = row.due_date
-    ? new Date(row.due_date + 'T00:00:00')
+    ? new Date(row.due_date.includes('T') ? row.due_date : `${row.due_date}T00:00:00`)
     : new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 15)
-  doc.text(`Date: ${invoiceDate}`, pageW - 14 - doc.getTextWidth(`Date: ${invoiceDate}`), 36)
-  doc.text(`Due Date: ${formatDateShort(dueDate)}`, pageW - 14 - doc.getTextWidth(`Due Date: ${formatDateShort(dueDate)}`), 42)
+  let headerY = 36
+  const paymentDateText = formatInvoicePdfDate(row.payment_date)
+  const paymentLabel = `Payment Date: ${paymentDateText}`
+  doc.text(paymentLabel, pageW - 14 - doc.getTextWidth(paymentLabel), headerY)
+  headerY += 6
+  const dueLabel = `Due Date: ${formatDateShort(dueDate)}`
+  doc.text(dueLabel, pageW - 14 - doc.getTextWidth(dueLabel), headerY)
+  headerY += 6
 
-  y = 48
+  y = Math.max(52, headerY + 4)
   doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
   doc.text('Bill To:', 14, y)
