@@ -37,8 +37,12 @@ export interface PaystubEntry {
   ar_total_owed: number
   /** Year-to-date total owed (null if unknown) */
   ytd: number | null
-  /** Direct deposit / net pay */
+  /** Direct deposit / net pay (already includes `additional_fee` if any). */
   direct_deposit_amount: number
+  /** Per-paystub fee (+) or deduction (−) entered in the Provider Pay tab. Already folded into `direct_deposit_amount`; surfaced separately in the Notes section. Default 0. */
+  additional_fee?: number
+  /** Free-form note rendered in the Notes section of the paystub page. */
+  note?: string
 }
 
 const LOGO_X = 14
@@ -252,6 +256,32 @@ function addPaystubPage(
 
   doc.setTextColor(0, 0, 0)
   doc.setFont('helvetica', 'normal')
+
+  // ── Notes section (additional fee + free-form note) ──────────────────────
+  // Mirrors the invoice Notes block: prints "Additional fee: $X.XX" if non-zero,
+  // then the note text below. The fee is already included in Direct Deposit Amount above.
+  const fee = entry.additional_fee != null ? Number(entry.additional_fee) : 0
+  const noteText = (entry.note?.trim() ?? '')
+  if (fee !== 0 || noteText.length > 0) {
+    let notesY = afterTableY + ddBandH + 8
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(10)
+    doc.text('Notes:', 14, notesY)
+    doc.setFont('helvetica', 'normal')
+    notesY += 6
+    if (fee !== 0) {
+      doc.text(`Additional fee: ${formatCurrency(fee)}`, 14, notesY)
+      notesY += 6
+    }
+    if (noteText.length > 0) {
+      const maxWidth = pageW - 28
+      const lines = doc.splitTextToSize(noteText, maxWidth)
+      for (const line of lines) {
+        doc.text(line, 14, notesY)
+        notesY += 6
+      }
+    }
+  }
 
   if (isLastPaystub) {
     addPaystubClosingFooter(doc)

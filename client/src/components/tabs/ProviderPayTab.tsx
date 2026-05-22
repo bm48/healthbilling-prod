@@ -139,6 +139,10 @@ export default function ProviderPayTab({
   const [tableData, setTableData] = useState<string[][]>(() => INITIAL_TABLE_DATA.map(row => [...row]))
   const [providerPayDataVersion, setProviderPayDataVersion] = useState(0)
   const [sideNotes, setSideNotes] = useState('')
+  /** Free-form text the super-admin types in the toolbar; persisted to provider_pay.paystub_additional_fee (parsed on save). */
+  const [paystubFeeText, setPaystubFeeText] = useState('')
+  /** Free-form note shown on the paystub PDF; persisted to provider_pay.paystub_note. */
+  const [paystubNote, setPaystubNote] = useState('')
   const [wholeSheetLocked, setWholeSheetLocked] = useState(false)
   const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(1)
   // Tracks which month/provider/payroll the in-memory form data belongs to.
@@ -150,6 +154,8 @@ export default function ProviderPayTab({
     payPeriodFrom: string
     payPeriodTo: string
     sideNotes: string
+    paystubFeeText: string
+    paystubNote: string
     tableData: string[][]
     wholeSheetLocked: boolean
   }
@@ -181,6 +187,9 @@ export default function ProviderPayTab({
     payPeriodTo: string
     tableData: string[][]
     sideNotes: string
+    paystubFee: number
+    paystubFeeText: string
+    paystubNote: string
     payrollForSave: number
   } | null>(null)
   const lockData = isLockProviderPay || null
@@ -252,6 +261,8 @@ export default function ProviderPayTab({
       payPeriodFromVal: string,
       payPeriodToVal: string,
       notesVal: string,
+      paystubFeeTextVal: string,
+      paystubNoteVal: string,
       rows: string[][],
       wholeLocked: boolean
     ) => {
@@ -260,6 +271,8 @@ export default function ProviderPayTab({
       setPayPeriodFrom(payPeriodFromVal)
       setPayPeriodTo(payPeriodToVal)
       setSideNotes(notesVal)
+      setPaystubFeeText(paystubFeeTextVal)
+      setPaystubNote(paystubNoteVal)
       setTableData(rows)
       setWholeSheetLocked(wholeLocked)
       setProviderPayDataVersion((v) => v + 1)
@@ -267,7 +280,15 @@ export default function ProviderPayTab({
     }
 
     const processFetchResult = (
-      data: { payDate: string; payPeriod: string; notes: string; wholeSheetLocked: boolean; rows: string[][] } | null
+      data: {
+        payDate: string
+        payPeriod: string
+        notes: string
+        paystubAdditionalFee: number
+        paystubNote: string
+        wholeSheetLocked: boolean
+        rows: string[][]
+      } | null
     ): CachedPay => {
       if (data) {
         let payPeriodFromVal = ''
@@ -300,6 +321,8 @@ export default function ProviderPayTab({
           payPeriodFrom: payPeriodFromVal,
           payPeriodTo: payPeriodToVal,
           sideNotes: data.notes ?? '',
+          paystubFeeText: data.paystubAdditionalFee ? String(data.paystubAdditionalFee) : '',
+          paystubNote: data.paystubNote ?? '',
           wholeSheetLocked: data.wholeSheetLocked,
           tableData: rows,
         }
@@ -314,7 +337,7 @@ export default function ProviderPayTab({
       for (const r of [1, 2, 3]) {
         if (initial[r]?.[1] != null && initial[r][1] !== '') initial[r][1] = formatAmount(initial[r][1])
       }
-      return { payDate: '', payPeriodFrom: '', payPeriodTo: '', sideNotes: '', wholeSheetLocked: false, tableData: initial }
+      return { payDate: '', payPeriodFrom: '', payPeriodTo: '', sideNotes: '', paystubFeeText: '', paystubNote: '', wholeSheetLocked: false, tableData: initial }
     }
 
     const cached = providerPayCache[cacheKey]
@@ -331,6 +354,8 @@ export default function ProviderPayTab({
         cached.payPeriodFrom,
         cached.payPeriodTo,
         cached.sideNotes,
+        cached.paystubFeeText ?? '',
+        cached.paystubNote ?? '',
         cached.tableData.map((r) => [...r]),
         cached.wholeSheetLocked ?? false
       )
@@ -361,6 +386,8 @@ export default function ProviderPayTab({
           entry.payPeriodFrom,
           entry.payPeriodTo,
           entry.sideNotes,
+          entry.paystubFeeText,
+          entry.paystubNote,
           entry.tableData.map((r) => [...r]),
           entry.wholeSheetLocked
         )
@@ -389,6 +416,8 @@ export default function ProviderPayTab({
         payPeriodFrom?: string
         payPeriodTo?: string
         sideNotes?: string
+        paystubFeeText?: string
+        paystubNote?: string
         tableData?: string[][]
       }
       if (!payload || !Array.isArray(payload.tableData)) return
@@ -405,6 +434,8 @@ export default function ProviderPayTab({
       setPayPeriodFrom(payload.payPeriodFrom ?? '')
       setPayPeriodTo(payload.payPeriodTo ?? '')
       setSideNotes(payload.sideNotes ?? '')
+      setPaystubFeeText(payload.paystubFeeText ?? '')
+      setPaystubNote(payload.paystubNote ?? '')
       setTableData(rows)
       setProviderPayDataVersion((v) => v + 1)
       setHydratedScopeKey(scopeKey)
@@ -478,7 +509,19 @@ export default function ProviderPayTab({
       payDate: p.payDate,
       payPeriod: p.payPeriod,
     })
-    saveProviderPay(p.clinicId, p.effectiveProviderId, p.year, p.month, p.payDate, p.payPeriod, p.tableData, p.sideNotes, p.payrollForSave)
+    saveProviderPay(
+      p.clinicId,
+      p.effectiveProviderId,
+      p.year,
+      p.month,
+      p.payDate,
+      p.payPeriod,
+      p.tableData,
+      p.sideNotes,
+      p.payrollForSave,
+      p.paystubFee,
+      p.paystubNote
+    )
       .then(() => {
         logProviderPay('save success', { cacheKey, pendingKey, rows: p.tableData.length })
         setProviderPayCache((prev) => ({
@@ -488,6 +531,8 @@ export default function ProviderPayTab({
             payPeriodFrom: p.payPeriodFrom,
             payPeriodTo: p.payPeriodTo,
             sideNotes: p.sideNotes,
+            paystubFeeText: p.paystubFeeText,
+            paystubNote: p.paystubNote,
             tableData: p.tableData.map((r) => [...r]),
             wholeSheetLocked: prev[cacheKey]?.wholeSheetLocked ?? false,
           },
@@ -510,6 +555,12 @@ export default function ProviderPayTab({
       return
     }
     const payrollForSave = clinicPayroll === 2 ? selectedPayroll : 1
+    const parsedPaystubFee = (() => {
+      const trimmed = paystubFeeText.trim()
+      if (trimmed === '') return 0
+      const n = parseFloat(trimmed)
+      return Number.isFinite(n) ? n : 0
+    })()
     savePayloadRef.current = {
       clinicId,
       effectiveProviderId,
@@ -521,6 +572,9 @@ export default function ProviderPayTab({
       payPeriodTo,
       tableData: tableData.map((r) => [...r]),
       sideNotes,
+      paystubFee: parsedPaystubFee,
+      paystubFeeText,
+      paystubNote,
       payrollForSave,
     }
     try {
@@ -531,6 +585,8 @@ export default function ProviderPayTab({
           payPeriodFrom,
           payPeriodTo,
           sideNotes,
+          paystubFeeText,
+          paystubNote,
           tableData,
           savedAt: Date.now(),
         })
@@ -568,7 +624,7 @@ export default function ProviderPayTab({
         saveTimeoutRef.current = null
       }
     }
-  }, [clinicId, effectiveProviderId, year, month, effectiveCanEdit, loading, payDate, payPeriod, payPeriodFrom, payPeriodTo, tableData, sideNotes, clinicPayroll, selectedPayroll, runSave, pendingStorageKey, logProviderPay, scopeKey, hydratedScopeKey])
+  }, [clinicId, effectiveProviderId, year, month, effectiveCanEdit, loading, payDate, payPeriod, payPeriodFrom, payPeriodTo, tableData, sideNotes, paystubFeeText, paystubNote, clinicPayroll, selectedPayroll, runSave, pendingStorageKey, logProviderPay, scopeKey, hydratedScopeKey])
 
   // Flush pending save when provider/month/payroll scope changes.
   useEffect(() => {
@@ -640,7 +696,19 @@ export default function ProviderPayTab({
         clearTimeout(saveTimeoutRef.current)
         saveTimeoutRef.current = null
         savePayloadRef.current = null
-        saveProviderPay(p.clinicId, p.effectiveProviderId, p.year, p.month, p.payDate, p.payPeriod, p.tableData, p.sideNotes, p.payrollForSave)
+        saveProviderPay(
+          p.clinicId,
+          p.effectiveProviderId,
+          p.year,
+          p.month,
+          p.payDate,
+          p.payPeriod,
+          p.tableData,
+          p.sideNotes,
+          p.payrollForSave,
+          p.paystubFee,
+          p.paystubNote
+        )
       }
     }
     window.addEventListener('beforeunload', onBeforeUnload)
@@ -1046,6 +1114,49 @@ export default function ProviderPayTab({
             </div>
           </div>
         )}
+        {/* Paystub Additional Fee + Note — written to provider_pay.paystub_additional_fee / paystub_note.
+            The fee is added to Direct Deposit on the paystub PDF; the note prints below the amounts. */}
+        <div
+          className={
+            isInSplitScreen
+              ? 'flex flex-col gap-2 px-2 py-2 min-w-0'
+              : 'flex items-center gap-3 px-4 py-2 flex-wrap'
+          }
+        >
+          <div className={isInSplitScreen ? 'flex flex-col gap-1 min-w-0' : 'flex items-center gap-2 shrink-0'}>
+            <label className={isInSplitScreen ? 'text-xs font-medium opacity-90' : 'font-bold w-28 shrink-0'}>
+              Paystub Fee:
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              value={paystubFeeText}
+              onChange={(e) => setPaystubFeeText(e.target.value)}
+              disabled={!effectiveCanEdit}
+              placeholder="e.g. -50 for deduction"
+              className={`bg-white/10 border border-slate-500 rounded px-2 py-1 text-sm placeholder-white/40 disabled:opacity-50 ${
+                isInSplitScreen ? 'w-full' : 'w-[10rem]'
+              }`}
+              style={{ color: headerStyle.textColor }}
+            />
+          </div>
+          <div className={isInSplitScreen ? 'flex flex-col gap-1 min-w-0' : 'flex items-center gap-2 flex-1 min-w-[12rem]'}>
+            <label className={isInSplitScreen ? 'text-xs font-medium opacity-90' : 'font-medium opacity-90 whitespace-nowrap'}>
+              Paystub Note:
+            </label>
+            <input
+              type="text"
+              value={paystubNote}
+              onChange={(e) => setPaystubNote(e.target.value)}
+              disabled={!effectiveCanEdit}
+              placeholder="Shown on the paystub PDF"
+              className={`bg-white/10 border border-slate-500 rounded px-2 py-1 text-sm placeholder-white/40 disabled:opacity-50 ${
+                isInSplitScreen ? 'w-full' : 'flex-1 min-w-0'
+              }`}
+              style={{ color: headerStyle.textColor }}
+            />
+          </div>
+        </div>
       </div>
 
       <div

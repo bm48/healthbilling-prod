@@ -739,6 +739,7 @@ export default function ProviderSheetPage() {
           isProviderView={true}
           providerLevel={providerLevel}
           showVisitTypeColumn={provider?.show_visit_type_column ?? false}
+          showCopayCoinsuranceColumns={clinic?.show_copay_coinsurance_columns ?? true}
           patientAssignmentRevision={patientAssignmentRevision}
           onUpdateProviderSheetRow={handleUpdateProviderSheetRow}
           onReplaceProviderSheetRows={handleReplaceProviderSheetRows}

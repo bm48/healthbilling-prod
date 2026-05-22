@@ -4,6 +4,10 @@ import { toDisplayValue, toDisplayDate } from '@/lib/utils'
 /** Layout flags must match `ProvidersTab` column / row mapping. */
 export type ProviderSheetUiExportLayout = {
   showVisitTypeColumn: boolean
+  /** When false, Co-pay (index 4) and Co-Ins (index 5) are dropped from headers and CSV rows.
+   *  `sheetRowsToUiMatrix` always emits the full row so the data shape Handsontable receives stays stable;
+   *  the drop happens only at the CSV / header layer. */
+  showCopayCoinsuranceColumns: boolean
   officeStaffView: boolean
   isProviderView: boolean
   providerLevel: 1 | 2
@@ -29,9 +33,16 @@ function escapeCsvCell(val: string | number | boolean): string {
   return s
 }
 
+/** Drop indices 4 (Co-pay) and 5 (Co-Ins) from a layout row when the clinic flag is off. Visit Type stays where the
+ *  base-array insertion put it because that happens at index 9 — strictly past indices 4 / 5. */
+function dropCopayCoinsCols<T>(arr: T[], showCopayCoinsuranceColumns: boolean): T[] {
+  if (showCopayCoinsuranceColumns) return arr
+  return [...arr.slice(0, 4), ...arr.slice(6)]
+}
+
 /** Same header order as `ProvidersTab` `columnTitles` for the given layout. */
 export function providerSheetUiExportHeaders(layout: ProviderSheetUiExportLayout): string[] {
-  const { showVisitTypeColumn, officeStaffView, isProviderView, providerLevel, isCondensed } = layout
+  const { showVisitTypeColumn, showCopayCoinsuranceColumns, officeStaffView, isProviderView, providerLevel, isCondensed } = layout
   const showCondenseButton = !officeStaffView && !isProviderView
 
   const columnTitlesFullBase = [
@@ -57,9 +68,14 @@ export function providerSheetUiExportHeaders(layout: ProviderSheetUiExportLayout
     ? [...columnTitlesOfficeStaffBase.slice(0, 9), 'Visit Type', ...columnTitlesOfficeStaffBase.slice(9)]
     : columnTitlesOfficeStaffBase
 
-  if (officeStaffView) return columnTitlesOfficeStaff
-  if (isProviderView) return providerLevel === 2 ? columnTitlesFull : columnTitlesProviderView
-  return showCondenseButton && isCondensed ? columnTitlesFull.slice(0, 9) : columnTitlesFull
+  // Condensed slice runs on the full headers (index 9 boundary excludes everything past Appt/Note Status incl. Visit Type when on),
+  // so this is the right place to drop Co-pay / Co-Ins — after the slice would shift the condense boundary by 2.
+  const chooseLayout = (): string[] => {
+    if (officeStaffView) return columnTitlesOfficeStaff
+    if (isProviderView) return providerLevel === 2 ? columnTitlesFull : columnTitlesProviderView
+    return showCondenseButton && isCondensed ? columnTitlesFull.slice(0, 9) : columnTitlesFull
+  }
+  return dropCopayCoinsCols(chooseLayout(), showCopayCoinsuranceColumns)
 }
 
 /**
@@ -194,8 +210,11 @@ export function sheetRowsToUiCsv(rows: SheetRow[], patients: Patient[], layout: 
     matrix.pop()
   }
   const headers = providerSheetUiExportHeaders(layout)
+  const trimmedMatrix = layout.showCopayCoinsuranceColumns
+    ? matrix
+    : matrix.map((r) => dropCopayCoinsCols(r, false))
   const lines = [headers.map(escapeCsvCell).join(',')]
-  for (const row of matrix) {
+  for (const row of trimmedMatrix) {
     lines.push(row.map(formatCellForCsv).join(','))
   }
   return lines.join('\n')

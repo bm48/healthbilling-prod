@@ -3446,6 +3446,7 @@ export default function ClinicDetail() {
                     const layout =
                       providerSheetExportLayoutRef.current ?? {
                         showVisitTypeColumn: providersTabShowVisitTypeColumn,
+                        showCopayCoinsuranceColumns: clinic?.show_copay_coinsurance_columns ?? true,
                         officeStaffView: isOfficeStaff,
                         isProviderView: false,
                         providerLevel: 1,
@@ -3515,6 +3516,7 @@ export default function ClinicDetail() {
               restrictEditToSchedulingColumns={restrictProviderSheetEditToScheduling}
               officeStaffView={isOfficeStaff}
               showVisitTypeColumn={providersTabShowVisitTypeColumn}
+              showCopayCoinsuranceColumns={clinic?.show_copay_coinsurance_columns ?? true}
               isViewingBackup={!!selectedBackupVersion}
               backupVersionKey={backupViewKey}
               patientAssignmentRevision={patientAssignmentRevision}

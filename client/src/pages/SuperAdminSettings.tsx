@@ -767,6 +767,10 @@ export default function SuperAdminSettings() {
             ein: clinicData.ein ?? editingClinic.ein ?? null,
             payroll: clinicData.payroll ?? editingClinic.payroll ?? 1,
             invoice_rate: clinicData.invoice_rate !== undefined ? clinicData.invoice_rate : editingClinic.invoice_rate ?? null,
+            show_copay_coinsurance_columns:
+              clinicData.show_copay_coinsurance_columns !== undefined
+                ? clinicData.show_copay_coinsurance_columns
+                : editingClinic.show_copay_coinsurance_columns ?? true,
             updated_at: new Date().toISOString(),
           })
           .eq('id', editingClinic.id)
@@ -783,6 +787,7 @@ export default function SuperAdminSettings() {
             ein: clinicData.ein ?? null,
             payroll: clinicData.payroll ?? 1,
             invoice_rate: clinicData.invoice_rate ?? null,
+            show_copay_coinsurance_columns: clinicData.show_copay_coinsurance_columns ?? true,
           })
 
         if (error) throw error
@@ -2285,6 +2290,7 @@ function ClinicFormModal({
     ein: clinic?.ein ?? '',
     payroll: (clinic?.payroll ?? 1) as 1 | 2,
     invoice_rate: clinic?.invoice_rate != null ? (Math.round(clinic.invoice_rate * 10000) / 100).toFixed(2) : '',
+    show_copay_coinsurance_columns: clinic?.show_copay_coinsurance_columns ?? true,
   })
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -2302,6 +2308,7 @@ function ClinicFormModal({
       ein: formData.ein.trim() || null,
       payroll: formData.payroll,
       invoice_rate: rateNum != null && Number.isFinite(rateNum) ? rateNum / 100 : null,
+      show_copay_coinsurance_columns: formData.show_copay_coinsurance_columns,
     })
     onClose()
   }
@@ -2394,6 +2401,21 @@ function ClinicFormModal({
                 placeholder="e.g. 5 for 5%"
               />
               <p className="text-xs text-gray-500 mt-1">Used on Invoices page: Invoice Total = (Insurance + Patient + AR) × this rate. Leave empty for none.</p>
+            </div>
+            <div className="md:col-span-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="show_copay_coinsurance_columns"
+                  checked={formData.show_copay_coinsurance_columns}
+                  onChange={(e) => setFormData({ ...formData, show_copay_coinsurance_columns: e.target.checked })}
+                  className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
+                <label htmlFor="show_copay_coinsurance_columns" className="text-sm font-medium text-gray-700">
+                  Show Co-pay and Co-Ins columns on the billing sheet
+                </label>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">When off, both columns are hidden clinic-wide on the Providers tab. Underlying patient values are preserved.</p>
             </div>
           </div>
 

@@ -518,9 +518,10 @@ export default function Invoices() {
       >((providersData || []).map((p: any) => [p.id, p]))
 
       // Provider Pay + sheets Jan–current month (YTD and current-month owed use same sources)
+      // Also pulls paystub_additional_fee / paystub_note so the current-month paystub picks them up.
       const { data: ytdPpData } = await apiClient
         .from('provider_pay')
-        .select('id, provider_id, month')
+        .select('id, provider_id, month, paystub_additional_fee, paystub_note')
         .eq('clinic_id', row.clinic_id)
         .eq('year', year)
         .lte('month', month)
@@ -528,7 +529,25 @@ export default function Invoices() {
         id: string
         provider_id: string
         month: number
+        paystub_additional_fee?: number | string | null
+        paystub_note?: string | null
       }[]
+      // Sum fee + concat note for the current-month rows per provider (handles payroll=2 → two rows/month).
+      const paystubExtrasByProvider = new Map<string, { fee: number; note: string }>()
+      for (const h of ytdPpHeaders) {
+        if (h.month !== month) continue
+        const prev = paystubExtrasByProvider.get(h.provider_id) ?? { fee: 0, note: '' }
+        const feeNum = h.paystub_additional_fee == null
+          ? 0
+          : typeof h.paystub_additional_fee === 'number'
+            ? h.paystub_additional_fee
+            : parseFloat(String(h.paystub_additional_fee)) || 0
+        const noteStr = (h.paystub_note ?? '').trim()
+        paystubExtrasByProvider.set(h.provider_id, {
+          fee: prev.fee + feeNum,
+          note: [prev.note, noteStr].filter((s) => s.length > 0).join('\n'),
+        })
+      }
       const ytdPpIds = ytdPpHeaders.map((p) => p.id)
       const ytdPpRowsMap = new Map<string, PayRowLite[]>()
       if (ytdPpIds.length > 0) {
@@ -610,6 +629,9 @@ export default function Invoices() {
           ytdRowsBySheetId,
         )
 
+        const extras = paystubExtrasByProvider.get(pid)
+        const additionalFee = extras?.fee ?? 0
+        const note = extras?.note ?? ''
         paystubs.push({
           provider_name: providerName,
           stub_no: generatePaystubStubNo(downloadedAt, empIndex - 1),
@@ -624,7 +646,11 @@ export default function Invoices() {
           ar_amount_collected: arCollected,
           ar_total_owed: arOwed,
           ytd: ytdTotal,
-          direct_deposit_amount: directDeposit,
+          // Fold the per-paystub fee/deduction into the Direct Deposit Amount.
+          // PDF surfaces the fee separately in the Notes section so the math is visible.
+          direct_deposit_amount: directDeposit + additionalFee,
+          additional_fee: additionalFee,
+          note,
         })
         empIndex++
       }

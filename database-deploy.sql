@@ -892,23 +892,25 @@ CREATE TABLE "public"."clinics" (
   "npi" text COLLATE "pg_catalog"."default",
   "ein" text COLLATE "pg_catalog"."default",
   "payroll" int2 NOT NULL DEFAULT 1,
-  "invoice_rate" numeric(6,4) DEFAULT NULL::numeric
+  "invoice_rate" numeric(6,4) DEFAULT NULL::numeric,
+  "show_copay_coinsurance_columns" bool NOT NULL DEFAULT true
 )
 ;
 COMMENT ON COLUMN "public"."clinics"."fax" IS 'Clinic fax number';
 COMMENT ON COLUMN "public"."clinics"."npi" IS 'National Provider Identifier for the clinic';
 COMMENT ON COLUMN "public"."clinics"."ein" IS 'Employer Identification Number';
 COMMENT ON COLUMN "public"."clinics"."invoice_rate" IS 'Decimal rate for invoice total (e.g. 0.05 = 5%). Invoice Total = (Ins Pay + Patient Pay + AR) * invoice_rate. Set in Clinic Management.';
+COMMENT ON COLUMN "public"."clinics"."show_copay_coinsurance_columns" IS 'When true, billing sheet (Providers tab) shows Co-pay and Co-Ins columns. When false, both are hidden clinic-wide. Toggled in Clinic Management.';
 
 -- ----------------------------
 -- Records of clinics
 -- ----------------------------
-INSERT INTO "public"."clinics" VALUES ('3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'Transcend Mind-Body Wellness IA', '319-553-6919', '2026-02-26 13:59:46.083074-08', '2026-02-26 13:59:46.083074-08', NULL, '1326526641', '82-3179052', 2, 0.0525);
-INSERT INTO "public"."clinics" VALUES ('8cf4f148-1724-41f6-86a0-0da21a775b59', 'Focus Path, LLC', '603-441-0000', '2026-03-01 10:05:25.672005-08', '2026-03-01 10:05:25.672005-08', '603-600-0633', '1316770886', '992515345', 1, 0.0525);
-INSERT INTO "public"."clinics" VALUES ('9c542bda-d9b7-4903-9bcb-37eecca7720d', 'Central Medical Clinic', '(214) 555-1010', '2026-01-15 14:32:51.865241-08', '2026-03-04 12:48:06.680647-08', '79854r23175472', '423789054789', '07528930789543', 1, 0.0700);
-INSERT INTO "public"."clinics" VALUES ('31debb33-9b78-4304-9109-c042b0ff1579', 'Silvercrest Mental Health', '971-306-9305', '2026-02-21 07:51:26.852558-08', '2026-02-24 09:55:52.694284-08', '971-758-5726', '1750255451', '39-4254632', 1, 0.0600);
-INSERT INTO "public"."clinics" VALUES ('39ac8ddc-6d40-43ec-8872-20a2482456a1', 'Transcend Mind-Body Wellness OR', '503-647-6501', '2026-02-19 10:45:13.155271-08', '2026-02-24 09:56:05.252258-08', '503-388-7702', '1801765581', '41-2338742', 1, 0.0800);
-INSERT INTO "public"."clinics" VALUES ('dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f', 'Summerland Mental Health', '702-608-6403', '2026-02-20 22:53:18.798367-08', '2026-02-25 11:07:07.237151-08', '702-608-9046', '1336980937', '99-2859307', 1, 0.0750);
+INSERT INTO "public"."clinics" VALUES ('3f0b4f2a-54fd-4b27-bb9f-4263c317288a', 'Transcend Mind-Body Wellness IA', '319-553-6919', '2026-02-26 13:59:46.083074-08', '2026-02-26 13:59:46.083074-08', NULL, '1326526641', '82-3179052', 2, 0.0525, 't');
+INSERT INTO "public"."clinics" VALUES ('8cf4f148-1724-41f6-86a0-0da21a775b59', 'Focus Path, LLC', '603-441-0000', '2026-03-01 10:05:25.672005-08', '2026-03-01 10:05:25.672005-08', '603-600-0633', '1316770886', '992515345', 1, 0.0525, 't');
+INSERT INTO "public"."clinics" VALUES ('9c542bda-d9b7-4903-9bcb-37eecca7720d', 'Central Medical Clinic', '(214) 555-1010', '2026-01-15 14:32:51.865241-08', '2026-03-04 12:48:06.680647-08', '79854r23175472', '423789054789', '07528930789543', 1, 0.0700, 't');
+INSERT INTO "public"."clinics" VALUES ('31debb33-9b78-4304-9109-c042b0ff1579', 'Silvercrest Mental Health', '971-306-9305', '2026-02-21 07:51:26.852558-08', '2026-02-24 09:55:52.694284-08', '971-758-5726', '1750255451', '39-4254632', 1, 0.0600, 't');
+INSERT INTO "public"."clinics" VALUES ('39ac8ddc-6d40-43ec-8872-20a2482456a1', 'Transcend Mind-Body Wellness OR', '503-647-6501', '2026-02-19 10:45:13.155271-08', '2026-02-24 09:56:05.252258-08', '503-388-7702', '1801765581', '41-2338742', 1, 0.0800, 't');
+INSERT INTO "public"."clinics" VALUES ('dffc9993-77ee-4ec6-83ec-fd0ed6ffd65f', 'Summerland Mental Health', '702-608-6403', '2026-02-20 22:53:18.798367-08', '2026-02-25 11:07:07.237151-08', '702-608-9046', '1336980937', '99-2859307', 1, 0.0750, 't');
 
 -- ----------------------------
 -- Table structure for providers (placed early: referenced by provider_id across the dump)
@@ -2579,15 +2581,19 @@ CREATE TABLE "public"."provider_pay" (
   "updated_at" timestamptz(6) DEFAULT now(),
   "notes" text COLLATE "pg_catalog"."default",
   "payroll" int2 NOT NULL DEFAULT 1,
-  "whole_sheet_locked" bool NOT NULL DEFAULT false
+  "whole_sheet_locked" bool NOT NULL DEFAULT false,
+  "paystub_additional_fee" numeric(12,2) NOT NULL DEFAULT 0,
+  "paystub_note" text COLLATE "pg_catalog"."default"
 )
 ;
 COMMENT ON COLUMN "public"."provider_pay"."whole_sheet_locked" IS 'When true and the viewed period is in the past, provider pay is read-only until an admin unlocks.';
+COMMENT ON COLUMN "public"."provider_pay"."paystub_additional_fee" IS 'Per-paystub fee (+) or deduction (−) added to the Direct Deposit Amount on the generated paystub PDF. Edited in Provider Pay tab; mirrors clinic_invoice_notes.additional_fee for invoices.';
+COMMENT ON COLUMN "public"."provider_pay"."paystub_note" IS 'Free-form note rendered in the Notes section of the paystub PDF. Distinct from provider_pay.notes (side notes for the Provider Pay sheet).';
 
 -- ----------------------------
 -- Records of provider_pay
 -- ----------------------------
-INSERT INTO "public"."provider_pay" VALUES ('789e3a64-1dc2-445a-a9bd-ec221d388fc5', '9c542bda-d9b7-4903-9bcb-37eecca7720d', '0a5eff08-1b54-4987-8956-a46d6296bff5', 2026, 4, '2026-05-01', '2026-04-07 to 2026-04-06', '2026-04-30 01:27:57.49479-07', '2026-04-30 01:28:18.015-07', NULL, 1, false);
+INSERT INTO "public"."provider_pay" VALUES ('789e3a64-1dc2-445a-a9bd-ec221d388fc5', '9c542bda-d9b7-4903-9bcb-37eecca7720d', '0a5eff08-1b54-4987-8956-a46d6296bff5', 2026, 4, '2026-05-01', '2026-04-07 to 2026-04-06', '2026-04-30 01:27:57.49479-07', '2026-04-30 01:28:18.015-07', NULL, 1, false, 0, NULL);
 
 -- ----------------------------
 -- Table structure for provider_pay_backups

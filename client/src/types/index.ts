@@ -63,6 +63,8 @@ export interface Clinic {
   payroll?: 1 | 2
   /** Decimal rate for invoice total (e.g. 0.05 = 5%). Invoice Total = (Ins + Patient + AR) * invoice_rate. Set in Clinic Management. */
   invoice_rate?: number | null
+  /** When false, Co-pay and Co-Ins columns are hidden clinic-wide on the billing sheet (Providers tab). Default true. Toggled in Clinic Management. */
+  show_copay_coinsurance_columns?: boolean
   created_at: string
   updated_at: string
 }
@@ -252,6 +254,10 @@ export interface ProviderPay {
   pay_period: string | null
   /** Freeform notes/description for the Provider Pay sheet (shown on the right side). */
   notes?: string | null
+  /** Per-paystub fee (+) or deduction (−) added to the Direct Deposit Amount on the paystub PDF. Default 0. */
+  paystub_additional_fee?: number | null
+  /** Free-form note rendered in the Notes section of the paystub PDF. Distinct from `notes` (Provider Pay sheet side notes). */
+  paystub_note?: string | null
   created_at: string
   updated_at: string
 }

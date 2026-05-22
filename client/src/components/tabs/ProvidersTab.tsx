@@ -264,6 +264,8 @@ interface ProvidersTabProps {
   userHighlightColor?: string | null
   /** When true, show an extra "Visit Type" column (In-person / Telehealth) after Appt/Note Status. Set per provider in User Management. */
   showVisitTypeColumn?: boolean
+  /** When false, Co-pay (data index 4) and Co-Ins (data index 5) columns are hidden clinic-wide. Set per clinic in Clinic Management. Default true. */
+  showCopayCoinsuranceColumns?: boolean
   /** When true, parent is showing backup override rows; always use props and do not prefer ref (so backup data displays after edits). */
   isViewingBackup?: boolean
   /** When viewing backup, a value that changes when the user selects a different version (e.g. version number), so the grid refreshes. */
@@ -313,6 +315,7 @@ export default function ProvidersTab({
   canEditComment = false,
   userHighlightColor = '#eab308',
   showVisitTypeColumn = false,
+  showCopayCoinsuranceColumns = true,
   isViewingBackup = false,
   backupVersionKey = 0,
   patientAssignmentRevision = 0,
@@ -341,15 +344,22 @@ export default function ProvidersTab({
 
   const showCondenseButton = !officeStaffView && !isProviderView
 
+  /** Drop visual positions 4 (Co-pay) and 5 (Co-Ins) from any visual-order array when the clinic flag is off.
+   *  Source data positions are preserved (Handsontable still reads source col 4/5 via column `data` props for rows that
+   *  still hold per-patient values) — only the rendered/visual layout drops them. */
+  const dropCopayCoinsFromVisualArr = <T,>(arr: T[]): T[] =>
+    showCopayCoinsuranceColumns ? arr : [...arr.slice(0, 4), ...arr.slice(6)]
+
   const providerSheetUiLayout = useMemo(
     (): ProviderSheetUiExportLayout => ({
       showVisitTypeColumn,
+      showCopayCoinsuranceColumns,
       officeStaffView,
       isProviderView,
       providerLevel,
       isCondensed,
     }),
-    [showVisitTypeColumn, officeStaffView, isProviderView, providerLevel, isCondensed]
+    [showVisitTypeColumn, showCopayCoinsuranceColumns, officeStaffView, isProviderView, providerLevel, isCondensed]
   )
 
   useEffect(() => {
@@ -788,32 +798,43 @@ export default function ProvidersTab({
   const formatCurrency = (n: number) =>
     new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 
-  // Column field names mapping to is_lock_providers table columns (visit_type is optional, not in IsLockProviders)
+  // Column field names mapping to is_lock_providers table columns (visit_type is optional, not in IsLockProviders).
+  // These arrays are in VISUAL column order and must stay in lockstep with `columnTitles` (used by the
+  // right-click-to-lock handler that maps header text → columnIndex → columnFields[idx]).
   const columnFieldsFullBase: Array<keyof IsLockProviders> = [
     'patient_id', 'first_name', 'last_initial', 'insurance', 'copay', 'coinsurance',
     'date_of_service', 'cpt_code', 'appointment_note_status', 'claim_status',
     'most_recent_submit_date', 'ins_pay', 'ins_pay_date', 'pt_res', 'collected_from_pt',
     'pt_pay_status', 'pt_payment_ar_ref_date', 'total', 'notes'
   ]
-  const columnFieldsFull = showVisitTypeColumn
-    ? ([...columnFieldsFullBase.slice(0, 9), 'visit_type', ...columnFieldsFullBase.slice(9)] as string[])
+  const columnFieldsFullWithVisitType: string[] = showVisitTypeColumn
+    ? [...columnFieldsFullBase.slice(0, 9), 'visit_type', ...columnFieldsFullBase.slice(9)]
     : columnFieldsFullBase
-  const columnFieldsProviderView = showVisitTypeColumn
-    ? (['patient_id', 'first_name', 'last_initial', 'insurance', 'copay', 'coinsurance', 'date_of_service', 'cpt_code', 'appointment_note_status', 'visit_type'] as const)
-    : (['patient_id', 'first_name', 'last_initial', 'insurance', 'copay', 'coinsurance', 'date_of_service', 'cpt_code', 'appointment_note_status'] as const)
+  const columnFieldsFull = dropCopayCoinsFromVisualArr(columnFieldsFullWithVisitType)
+  // Kept in lockstep with `columnTitlesProviderView` in `providerSheetUiExportHeaders`. The partial view itself
+  // never renders Insurance / Co-pay / Co-Ins headers, but the titles array still includes them so right-click
+  // lock attachment via `columnTitles.findIndex` aligns with the existing field order. When the clinic flag is
+  // off, both arrays drop Co-pay and Co-Ins together.
+  const columnFieldsProviderViewWithVisitType: string[] = showVisitTypeColumn
+    ? ['patient_id', 'first_name', 'last_initial', 'insurance', 'copay', 'coinsurance', 'date_of_service', 'cpt_code', 'appointment_note_status', 'visit_type']
+    : ['patient_id', 'first_name', 'last_initial', 'insurance', 'copay', 'coinsurance', 'date_of_service', 'cpt_code', 'appointment_note_status']
+  const columnFieldsProviderView = dropCopayCoinsFromVisualArr(columnFieldsProviderViewWithVisitType)
   const columnFieldsOfficeStaffBase: Array<keyof IsLockProviders> = [
     'patient_id', 'first_name', 'last_initial', 'insurance', 'copay', 'coinsurance',
     'date_of_service', 'cpt_code', 'appointment_note_status',
     'collected_from_pt', 'pt_pay_status', 'pt_payment_ar_ref_date'
   ]
-  const columnFieldsOfficeStaff = showVisitTypeColumn
-    ? ([...columnFieldsOfficeStaffBase.slice(0, 9), 'visit_type', ...columnFieldsOfficeStaffBase.slice(9)] as string[])
+  const columnFieldsOfficeStaffWithVisitType: string[] = showVisitTypeColumn
+    ? [...columnFieldsOfficeStaffBase.slice(0, 9), 'visit_type', ...columnFieldsOfficeStaffBase.slice(9)]
     : columnFieldsOfficeStaffBase
+  const columnFieldsOfficeStaff = dropCopayCoinsFromVisualArr(columnFieldsOfficeStaffWithVisitType)
   const columnFields = officeStaffView
     ? columnFieldsOfficeStaff
     : isProviderView
       ? (providerLevel === 2 ? columnFieldsFull : columnFieldsProviderView)
-      : (showCondenseButton && isCondensed ? columnFieldsFull.slice(0, 9) : columnFieldsFull)
+      : (showCondenseButton && isCondensed
+          ? columnFieldsFull.slice(0, showCopayCoinsuranceColumns ? 9 : 7)
+          : columnFieldsFull)
   const columnTitles = useMemo(
     () => providerSheetUiExportHeaders(providerSheetUiLayout),
     [providerSheetUiLayout]
@@ -845,6 +866,8 @@ export default function ProvidersTab({
       'total',
       'notes',
     ]
+    // dropCopayCoinsFromVisualArr is closed over `showCopayCoinsuranceColumns`; safe inside this memo because
+    // the useMemo deps below include the flag.
     if (officeStaffView) {
       const office: Array<keyof IsLockProviders | null> = [
         'patient_id',
@@ -858,7 +881,7 @@ export default function ProvidersTab({
       ]
       if (showVisitTypeColumn) office.push(null)
       office.push('appointment_note_status', 'collected_from_pt', 'pt_pay_status', 'pt_payment_ar_ref_date')
-      return office
+      return dropCopayCoinsFromVisualArr(office)
     }
     if (isProviderView && providerLevel !== 2) {
       const partial: Array<keyof IsLockProviders | null> = [
@@ -875,11 +898,15 @@ export default function ProvidersTab({
     const fullVisible: Array<keyof IsLockProviders | null> = [...full.slice(0, 8)]
     if (showVisitTypeColumn) fullVisible.push(null)
     fullVisible.push(...full.slice(8))
+    const fullVisibleFiltered = dropCopayCoinsFromVisualArr(fullVisible)
     if (!isProviderView && showCondenseButton && isCondensed) {
-      return fullVisible.slice(0, showVisitTypeColumn ? 10 : 9)
+      // Condense keeps the first 9 (or 10 with visit type) visible columns of the full layout. When co-pay/co-ins
+      // are off, the same "through Appt/Note Status (+ Visit Type)" slice ends 2 columns earlier.
+      const condensedCount = (showVisitTypeColumn ? 10 : 9) - (showCopayCoinsuranceColumns ? 0 : 2)
+      return fullVisibleFiltered.slice(0, condensedCount)
     }
-    return fullVisible
-  }, [officeStaffView, isProviderView, providerLevel, showVisitTypeColumn, showCondenseButton, isCondensed])
+    return fullVisibleFiltered
+  }, [officeStaffView, isProviderView, providerLevel, showVisitTypeColumn, showCopayCoinsuranceColumns, showCondenseButton, isCondensed])
 
   /** Bumps when lock flags change so Handsontable re-renders headers (see `afterGetColHeader` + `colHeaderRefreshKey`). */
   const providerLocksKey = useMemo(() => {
@@ -1291,6 +1318,13 @@ export default function ProvidersTab({
           readOnly,
         })
       : null
+    /** Drop the visible Co-pay (data:4) and Co-Ins (data:5) column entries when the clinic flag is off.
+     *  Source 2D data still has those positions (Handsontable reads other columns by data prop), so the
+     *  data-index offsets used elsewhere (visit type at 9, claim status at 10, etc.) don't shift. */
+    const filterHiddenCopayCoins = <C extends { data: number | string }>(cols: C[]): C[] =>
+      showCopayCoinsuranceColumns
+        ? cols
+        : cols.filter((c) => c.data !== 4 && c.data !== 5)
     const officeStaffColOffset = showVisitTypeColumn ? 1 : 0
     if (officeStaffView) {
       const base = [
@@ -1308,7 +1342,7 @@ export default function ProvidersTab({
         { data: 10 + officeStaffColOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, readOnly: getReadOnlyForColumn(10 + officeStaffColOffset, !canEdit || getReadOnly('pt_pay_status')) },
         { data: 11 + officeStaffColOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyForColumn(11 + officeStaffColOffset, !canEdit || getReadOnly('pt_payment_ar_ref_date')) },
       ]
-      return base
+      return filterHiddenCopayCoins(base)
     }
     const pvOffset = showVisitTypeColumn ? 1 : 0
     if (isProviderView && providerLevel !== 2) {
@@ -1324,10 +1358,11 @@ export default function ProvidersTab({
         ...(visitTypeCol ? [visitTypeCol(getReadOnlyProviderView(9))] : []),
         { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyProviderView(8) || getReadOnly('appointment_note_status') },
       ]
-      return base
+      // Partial provider view already excludes data:3/4/5; filter is a no-op but consistent.
+      return filterHiddenCopayCoins(base)
     }
     if (isProviderView && providerLevel === 2) {
-      return [
+      return filterHiddenCopayCoins([
         { data: 0, title: 'ID', type: 'text' as const, width: 60, readOnly: getReadOnlyProviderView(0) || getReadOnly('patient_id') },
         { data: 1, title: 'First Name', type: 'text' as const, width: 90, readOnly: true },
         { data: 2, title: 'LI', type: 'text' as const, width: 40, readOnly: true },
@@ -1348,10 +1383,10 @@ export default function ProvidersTab({
         { data: 16 + pvOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyProviderView(16 + pvOffset) || getReadOnly('pt_payment_ar_ref_date') },
         { data: 17 + pvOffset, title: 'Total', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(17 + pvOffset) || getReadOnly('total') },
         { data: 18 + pvOffset, title: 'Notes', type: 'text' as const, width: 150, readOnly: getReadOnlyProviderView(18 + pvOffset) || getReadOnly('notes') },
-      ]
+      ])
     }
-    
-    const fullProviderColumns = [
+
+    const fullProviderColumns = filterHiddenCopayCoins([
       { 
         data: 0, 
         title: 'ID', 
@@ -1500,16 +1535,22 @@ export default function ProvidersTab({
         renderer: currencyCellRenderer,
         readOnly: getReadOnlyForColumn(17 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('total'))
       },
-      { 
-        data: 18 + (showVisitTypeColumn ? 1 : 0), 
-        title: 'Notes', 
-        type: 'text' as const, 
+      {
+        data: 18 + (showVisitTypeColumn ? 1 : 0),
+        title: 'Notes',
+        type: 'text' as const,
         width: 150,
         readOnly: getReadOnlyForColumn(18 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('notes'))
       },
-    ]
-    return (showCondenseButton && isCondensed) ? fullProviderColumns.slice(0, showVisitTypeColumn ? 10 : 9) : fullProviderColumns
-  }, [activeProvider, clinicPayroll, billingCodes, statusColors, getCPTColor, getStatusColor, getMonthColor, patients, canEdit, lockData, getReadOnly, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, restrictEditToSchedulingColumns])
+    ])
+    if (showCondenseButton && isCondensed) {
+      // Condense shows ID through Appt/Note Status (+ Visit Type when on). With Co-pay/Co-Ins hidden,
+      // that's 2 fewer columns at the front of the array, so the slice end shrinks by 2.
+      const condensedCount = (showVisitTypeColumn ? 10 : 9) - (showCopayCoinsuranceColumns ? 0 : 2)
+      return fullProviderColumns.slice(0, condensedCount)
+    }
+    return fullProviderColumns
+  }, [activeProvider, clinicPayroll, billingCodes, statusColors, getCPTColor, getStatusColor, getMonthColor, patients, canEdit, lockData, getReadOnly, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, showCopayCoinsuranceColumns, restrictEditToSchedulingColumns])
 
   const afterGetProviderColHeader = useCallback(
     (col: number, TH: HTMLTableCellElement, headerLevel?: number) => {
