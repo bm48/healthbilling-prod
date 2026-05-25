@@ -39,9 +39,11 @@ export interface PaystubEntry {
   ytd: number | null
   /** Direct deposit / net pay (already includes the sum of `adjustments` amounts). */
   direct_deposit_amount: number
-  /** Free-form rows from the Provider Pay sheet (row_index >= 7, non-empty Description) — printed as an
-   *  Adjustments table between the earnings table and the Direct Deposit band. Amounts are signed:
-   *  positive = added to Direct Deposit, negative = deducted. Notes are optional per row. */
+  /** "Paystub Additional Pay" rows from the Provider Pay grid (the dedicated row range
+   *  PP_ROW_ADJUSTMENTS_START..PP_ROW_ADJUSTMENTS_END with a non-empty Description). Printed
+   *  inline as extra rows in the main earnings table (one per entry) with `Amount Collected`
+   *  blank and `Total Owed` = `amount`. Amounts are signed: positive = added, negative = deducted.
+   *  Notes are optional per row. */
   adjustments?: Array<{ description: string; amount: number; notes: string }>
 }
 
@@ -184,7 +186,22 @@ function addPaystubPage(
   const col2W = tableWidth * 0.25
   const col3W = tableWidth - col0W - col1W - col2W
   const ytdCell = entry.ytd != null ? formatCurrency(entry.ytd) : '—'
-  const totalOwed = formatCurrency(entry.month_total_owed + entry.ar_total_owed)
+  // Layout per Jenali's mockup: month payments row, A/R row, one row per "Paystub Additional Pay"
+  // entry (Amount Collected blank, Total Owed = the user-typed amount, sign preserved), then a
+  // Total row that sums Total Owed including those adjustments.
+  const adjustments = (entry.adjustments ?? []).filter((a) => a.description.trim().length > 0)
+  const adjustmentsTotal = adjustments.reduce(
+    (s, a) => s + (Number.isFinite(a.amount) ? a.amount : 0),
+    0,
+  )
+  const grandTotalOwed = entry.month_total_owed + entry.ar_total_owed + adjustmentsTotal
+  const adjustmentRows = adjustments.map((a) => [
+    a.description,
+    ' ', // Amount Collected blank — "Just Total Owed" per Jenali's annotation
+    formatCurrency(a.amount),
+    a.notes && a.notes.trim().length > 0 ? a.notes : ' ',
+  ])
+  const totalOwed = formatCurrency(grandTotalOwed)
 
   autoTable(doc, {
     theme: 'grid',
@@ -207,10 +224,11 @@ function addPaystubPage(
         formatCurrency(entry.ar_total_owed),
         '—',
       ],
+      ...adjustmentRows,
       [
+        { content: 'Total', styles: { fontStyle: 'bold' as const, halign: 'left' as const } },
         '\u00a0',
-        '\u00a0',
-        totalOwed,
+        { content: totalOwed, styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
         ytdCell,
       ],
     ],
@@ -242,65 +260,10 @@ function addPaystubPage(
     margin: { left: tableMargin, right: tableMargin },
   })
 
-  let afterTableY: number = (doc as any).lastAutoTable.finalY + 6
-
-  // ── Adjustments table (Provider Pay free-form rows: Description / Amount / Notes) ────────
-  // Only rows the user actually typed something into appear here; blank grid rows are skipped
-  // upstream in Invoices.tsx. The sum is already folded into entry.direct_deposit_amount so the
-  // DDA band below reads true. We print the subtotal so the math is visible to the provider.
-  const adjustments = (entry.adjustments ?? []).filter((a) => a.description.trim().length > 0)
-  if (adjustments.length > 0) {
-    const adjSubtotal = adjustments.reduce((s, a) => s + (Number.isFinite(a.amount) ? a.amount : 0), 0)
-    const adjCol0 = tableWidth * 0.45
-    const adjCol1 = tableWidth * 0.20
-    const adjCol2 = tableWidth - adjCol0 - adjCol1
-    autoTable(doc, {
-      theme: 'grid',
-      head: [[
-        { content: 'Adjustments', styles: { halign: 'left' } },
-        { content: 'Amount', styles: { halign: 'right' } },
-        { content: 'Notes', styles: { halign: 'left' } },
-      ]],
-      body: [
-        ...adjustments.map((a) => [
-          a.description,
-          formatCurrency(a.amount),
-          a.notes ?? '',
-        ]),
-        [
-          { content: 'Subtotal', styles: { fontStyle: 'bold' as const, halign: 'left' as const } },
-          { content: formatCurrency(adjSubtotal), styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
-          '',
-        ],
-      ],
-      startY: afterTableY,
-      tableWidth,
-      styles: {
-        fontSize: 9,
-        lineColor: [0, 0, 0],
-        lineWidth: 0.2,
-        cellPadding: 3,
-      },
-      headStyles: {
-        fillColor: [240, 240, 240],
-        textColor: [0, 0, 0],
-        fontStyle: 'bold',
-        lineColor: [0, 0, 0],
-        lineWidth: 0.2,
-      },
-      bodyStyles: {
-        lineColor: [0, 0, 0],
-        lineWidth: 0.2,
-      },
-      columnStyles: {
-        0: { cellWidth: adjCol0, halign: 'left' },
-        1: { cellWidth: adjCol1, halign: 'right' },
-        2: { cellWidth: adjCol2, halign: 'left' },
-      },
-      margin: { left: tableMargin, right: tableMargin },
-    })
-    afterTableY = (doc as any).lastAutoTable.finalY + 6
-  }
+  const afterTableY: number = (doc as any).lastAutoTable.finalY + 6
+  // (Paystub Additional Pay rows are now part of the main earnings table above, so there is no
+  // longer a separate Adjustments table here. The Direct Deposit Amount band already reflects
+  // the same grand total via entry.direct_deposit_amount.)
 
   // ── Direct Deposit Amount band ───────────────────────────────────────────
   const ddBandH = 14

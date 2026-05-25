@@ -216,25 +216,29 @@ export async function saveProviderPay(
   })
 }
 
+// Keep in sync with INITIAL_TABLE_DATA / PAYSTUB_ADDITIONAL_HEADER_LABEL in ProviderPayTab.tsx.
+// Row 7 holds the read-only "Paystub Additional Pay" section header. Rows 8..16 are the slots
+// that flow onto the provider's paystub PDF; rows 17+ are internal workspace.
+const PAYSTUB_ADDITIONAL_HEADER_LABEL = '── Paystub Additional Pay ──'
 const DEFAULT_ROW_TEMPLATE: string[][] = [
-  ['Description', 'Amount', 'Notes'],
-  ['Patient Payments', '', ''],
-  ['Insurance Payments', '', ''],
-  ['A/R Payments', '', ''],
-  ['', '', ''],
-  ['Total Payments', '', ''],
-  ['Provider Cut', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
-  ['', '', ''],
+  ['Description', 'Amount', 'Notes'],         // row 0
+  ['Patient Payments', '', ''],               // row 1
+  ['Insurance Payments', '', ''],             // row 2
+  ['A/R Payments', '', ''],                   // row 3
+  ['', '', ''],                               // row 4
+  ['Total Payments', '', ''],                 // row 5
+  ['Provider Cut', '', ''],                   // row 6
+  [PAYSTUB_ADDITIONAL_HEADER_LABEL, '', ''],  // row 7 - section header
+  ['', '', ''], // row 8  - paystub additional pay
+  ['', '', ''], // row 9
+  ['', '', ''], // row 10
+  ['', '', ''], // row 11
+  ['', '', ''], // row 12
+  ['', '', ''], // row 13
+  ['', '', ''], // row 14
+  ['', '', ''], // row 15
+  ['', '', ''], // row 16 - last paystub additional slot
+  ['', '', ''], // row 17+ - internal workspace
 ]
 
 function buildEmptyRows(): string[][] {
@@ -264,8 +268,10 @@ function buildRowsFromDb(rowsData: RowRecord[]): string[][] {
   while (rows.length < DEFAULT_ROW_TEMPLATE.length) {
     rows.push(['', '', ''])
   }
-  // Keep fixed row labels stable even if older DB rows stored blank descriptions.
-  const fixedDescriptionRows = [0, 1, 2, 3, 5, 6]
+  // Keep fixed row labels stable even if older DB rows stored blank descriptions. Row 7 is the
+  // section header; the ProviderPayTab migration shifts user content off it on load, but we still
+  // re-assert the label here so a fresh fetch from any code path lands correct.
+  const fixedDescriptionRows = [0, 1, 2, 3, 5, 6, 7]
   for (const rowIndex of fixedDescriptionRows) {
     if (!rows[rowIndex]) rows[rowIndex] = ['', '', '']
     if (!String(rows[rowIndex][0] ?? '').trim()) {

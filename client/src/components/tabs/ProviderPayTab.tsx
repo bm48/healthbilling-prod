@@ -20,6 +20,17 @@ const ROWS_FOR_TOTAL = [1, 2, 3] as const // Patient Payments, Insurance Payment
 const ROW_TOTAL_PAYMENTS = 5
 const ROW_PROVIDER_CUT = 6
 
+/**
+ * Row 7 is a fixed, read-only section header marking the start of the "Paystub Additional Pay"
+ * range. Rows 8..16 (inclusive) are user-editable additional-pay slots — these are the ONLY rows
+ * that flow into the paystub PDF (see PP_ROW_ADJUSTMENTS_START / _END in Invoices.tsx). Rows 17+
+ * are free-form workspace that never appears on the paystub.
+ */
+export const ROW_PAYSTUB_ADDITIONAL_HEADER = 7
+export const ROW_PAYSTUB_ADDITIONAL_FIRST = 8
+export const ROW_PAYSTUB_ADDITIONAL_LAST = 16
+export const PAYSTUB_ADDITIONAL_HEADER_LABEL = '── Paystub Additional Pay ──'
+
 const DEFAULT_PROVIDER_CUT_PERCENT = 0.7
 
 function parseAmount(val: unknown): number {
@@ -54,27 +65,56 @@ function computeProviderCut(totalAmount: number, percent: number): string {
 const INITIAL_TABLE_DATA: string[][] = (() => {
   const rows: string[][] = [
     ['Description', 'Amount', 'Notes'], // row 0 - header
-    ['Patient Payments', '', ''],
-    ['Insurance Payments', '', ''],
-    ['A/R Payments', '', ''],
-    ['', '', ''],
-    // ['', '', ''],
-    // ['', '', ''],
-    ['Total Payments', '', ''],
-    ['Provider Cut', '', ''],
-    ['', '', ''],
-    ['', '', ''],
-    ['', '', ''],
-    ['', '', ''],
-    ['', '', ''],
-    ['', '', ''],
-    ['', '', ''],
-    ['', '', ''],
-    ['', '', ''],
-    ['', '', ''],
+    ['Patient Payments', '', ''],       // row 1
+    ['Insurance Payments', '', ''],     // row 2
+    ['A/R Payments', '', ''],           // row 3
+    ['', '', ''],                       // row 4
+    ['Total Payments', '', ''],         // row 5 - calculated
+    ['Provider Cut', '', ''],           // row 6 - calculated
+    [PAYSTUB_ADDITIONAL_HEADER_LABEL, '', ''], // row 7 - section header (read-only)
+    ['', '', ''], // row 8  - paystub additional pay (editable)
+    ['', '', ''], // row 9  - paystub additional pay
+    ['', '', ''], // row 10 - paystub additional pay
+    ['', '', ''], // row 11 - paystub additional pay
+    ['', '', ''], // row 12 - paystub additional pay
+    ['', '', ''], // row 13 - paystub additional pay
+    ['', '', ''], // row 14 - paystub additional pay
+    ['', '', ''], // row 15 - paystub additional pay
+    ['', '', ''], // row 16 - paystub additional pay (last paystub slot)
+    ['', '', ''], // row 17+ - internal workspace, not on paystub
   ]
   return rows
 })()
+
+/**
+ * One-time data migration applied whenever rows come back from the DB. Old layouts had no section
+ * header at row 7, so users typed paystub adjustments starting at row 7. With the new layout, row
+ * 7 is reserved for the section header label. If we find user content at row 7 that isn't the
+ * header label, shift rows 7..15 down by one (row 7 → 8, 8 → 9, ...) and force row 7 to the label.
+ * Idempotent: once row 7 is the header label, no shift happens.
+ */
+function applyPaystubSectionHeaderMigration(rows: string[][]): string[][] {
+  const out = rows.map((r) => [...r])
+  const headerSlot = out[ROW_PAYSTUB_ADDITIONAL_HEADER]
+  const headerHasUserContent =
+    headerSlot &&
+    (headerSlot[0] ?? '').trim() !== '' &&
+    (headerSlot[0] ?? '').trim() !== PAYSTUB_ADDITIONAL_HEADER_LABEL
+  const headerAmountFilled = headerSlot && (headerSlot[1] ?? '').trim() !== ''
+  const headerNotesFilled = headerSlot && (headerSlot[2] ?? '').trim() !== ''
+  if (headerHasUserContent || headerAmountFilled || headerNotesFilled) {
+    // Shift right-to-left so we don't clobber. The cell at ROW_PAYSTUB_ADDITIONAL_LAST is overwritten
+    // (or dropped) if the whole paystub block is full — that's the same fixed-9-slot constraint a
+    // user would hit with a fresh layout, and it never hides data they put further down.
+    for (let i = ROW_PAYSTUB_ADDITIONAL_LAST; i > ROW_PAYSTUB_ADDITIONAL_HEADER; i--) {
+      while (out.length <= i) out.push(['', '', ''])
+      out[i] = out[i - 1] ? [...out[i - 1]] : ['', '', '']
+    }
+  }
+  while (out.length <= ROW_PAYSTUB_ADDITIONAL_HEADER) out.push(['', '', ''])
+  out[ROW_PAYSTUB_ADDITIONAL_HEADER] = [PAYSTUB_ADDITIONAL_HEADER_LABEL, '', '']
+  return out
+}
 
 export interface ProviderPayTabProps {
   clinicId: string
@@ -291,7 +331,8 @@ export default function ProviderPayTab({
         } else if (datePart.test(raw)) {
           payPeriodFromVal = raw
         }
-        const rows = data.rows.map((r) => [...r])
+        // Shift any pre-section-header content out of row 7 before applying calc rows / formatting.
+        const rows = applyPaystubSectionHeaderMigration(data.rows.map((r) => [...r]))
         if (rows.length > ROW_TOTAL_PAYMENTS) {
           rows[ROW_TOTAL_PAYMENTS][1] = formatAmount(computeTotalPayments(rows))
         }
@@ -785,6 +826,14 @@ export default function ProviderPayTab({
         props.readOnly = true
         return props
       }
+      // Section header row marking the start of the "Paystub Additional Pay" range.
+      // All three columns are read-only and visually distinct so users know the rows below
+      // (up to ROW_PAYSTUB_ADDITIONAL_LAST) are the ones that flow onto the provider's paystub.
+      if (row === ROW_PAYSTUB_ADDITIONAL_HEADER) {
+        props.className = 'provider-pay-table-section-header-row'
+        props.readOnly = true
+        return props
+      }
       if (col === 0) {
         props.readOnly = row <= 6 ? true : !effectiveCanEdit
       }
@@ -816,6 +865,9 @@ export default function ProviderPayTab({
           const newVal = change[3]
           if (row <= 0 || row >= next.length || col < 0 || col >= 3) continue
           if (col === 0 && row <= 6) continue
+          // Section header is read-only — drop any edit that slips past the cellsCallback guard
+          // (e.g., from a paste range that spans it) so the label stays canonical.
+          if (row === ROW_PAYSTUB_ADDITIONAL_HEADER) continue
           let val = newVal == null ? '' : String(newVal)
           if (col === 1 && (row === 1 || row === 2 || row === 3)) val = formatAmount(val)
           if (next[row][col] !== val) next[row][col] = val
@@ -1128,6 +1180,14 @@ export default function ProviderPayTab({
           background: var(--provider-pay-header-bg, rgba(30, 41, 59, 0.95)) !important;
           color: var(--provider-pay-header-text, #fff) !important;
           font-weight: bold !important;
+        }
+        .provider-pay-table .provider-pay-table-section-header-row,
+        .provider-pay-table td.provider-pay-table-section-header-row.htDimmed {
+          background: var(--provider-pay-section-header-bg, rgba(59, 130, 246, 0.18)) !important;
+          color: var(--provider-pay-section-header-text, #1e3a8a) !important;
+          font-weight: 600 !important;
+          font-style: italic !important;
+          text-align: center !important;
         }
         .provider-pay-table .htCore td {
           border-color: rgba(0,0,0,0.2);

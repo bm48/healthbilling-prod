@@ -87,12 +87,14 @@ type PayRowLite = {
   notes?: string | null
 }
 
-/** Row index threshold for free-form "Adjustments" rows on the paystub PDF. Rows 0–6 are
- *  the fixed Provider Pay layout (header + Patient/Insurance/A-R + the editable adjustment row
- *  that already feeds Total Payments / Provider Cut). Rows 7+ are the user's free-form bucket
- *  beneath Provider Cut and don't roll into the calculated totals — those are what print as
- *  per-paystub adjustments and modify the Direct Deposit Amount. */
-const PP_ROW_ADJUSTMENTS_START = 7
+/**
+ *  Row range for "Paystub Additional Pay" entries that flow into the paystub PDF. Row 7 is a
+ *  read-only section header in the Provider Pay grid (see ROW_PAYSTUB_ADDITIONAL_HEADER in
+ *  ProviderPayTab.tsx); rows 8..16 (inclusive) are the editable slots. Anything outside this
+ *  range is workspace and must NOT appear on the provider's paystub.
+ */
+const PP_ROW_ADJUSTMENTS_START = 8
+const PP_ROW_ADJUSTMENTS_END = 16
 
 function payRowAmount(ppRows: PayRowLite[], rowIdx: number): number {
   const r = ppRows.find((x) => x.row_index === rowIdx)
@@ -557,15 +559,17 @@ export default function Invoices() {
         })
       }
 
-      // Per-provider adjustments for the current month (paystub-only): collect free-form rows
-      // (row_index >= PP_ROW_ADJUSTMENTS_START) whose Description is non-empty, across all
-      // provider_pay headers for the month (handles payroll=2 → two headers per month).
+      // Per-provider adjustments for the current month (paystub-only): collect rows ONLY from the
+      // dedicated "Paystub Additional Pay" slots (PP_ROW_ADJUSTMENTS_START..PP_ROW_ADJUSTMENTS_END)
+      // whose Description is non-empty, across all provider_pay headers for the month (handles
+      // payroll=2 → two headers per month). Rows outside that range are workspace and never appear
+      // on the provider's paystub, even if a user typed a Description there.
       const adjustmentsByProvider = new Map<string, Array<{ description: string; amount: number; notes: string }>>()
       for (const h of ytdPpHeaders) {
         if (h.month !== month) continue
         const rows = ytdPpRowsMap.get(h.id) ?? []
         for (const r of rows) {
-          if (r.row_index < PP_ROW_ADJUSTMENTS_START) continue
+          if (r.row_index < PP_ROW_ADJUSTMENTS_START || r.row_index > PP_ROW_ADJUSTMENTS_END) continue
           const desc = (r.description ?? '').trim()
           if (desc.length === 0) continue
           const amt = parseNum(r.amount)
