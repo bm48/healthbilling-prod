@@ -2581,19 +2581,15 @@ CREATE TABLE "public"."provider_pay" (
   "updated_at" timestamptz(6) DEFAULT now(),
   "notes" text COLLATE "pg_catalog"."default",
   "payroll" int2 NOT NULL DEFAULT 1,
-  "whole_sheet_locked" bool NOT NULL DEFAULT false,
-  "paystub_additional_fee" numeric(12,2) NOT NULL DEFAULT 0,
-  "paystub_note" text COLLATE "pg_catalog"."default"
+  "whole_sheet_locked" bool NOT NULL DEFAULT false
 )
 ;
 COMMENT ON COLUMN "public"."provider_pay"."whole_sheet_locked" IS 'When true and the viewed period is in the past, provider pay is read-only until an admin unlocks.';
-COMMENT ON COLUMN "public"."provider_pay"."paystub_additional_fee" IS 'Per-paystub fee (+) or deduction (−) added to the Direct Deposit Amount on the generated paystub PDF. Edited in Provider Pay tab; mirrors clinic_invoice_notes.additional_fee for invoices.';
-COMMENT ON COLUMN "public"."provider_pay"."paystub_note" IS 'Free-form note rendered in the Notes section of the paystub PDF. Distinct from provider_pay.notes (side notes for the Provider Pay sheet).';
 
 -- ----------------------------
 -- Records of provider_pay
 -- ----------------------------
-INSERT INTO "public"."provider_pay" VALUES ('789e3a64-1dc2-445a-a9bd-ec221d388fc5', '9c542bda-d9b7-4903-9bcb-37eecca7720d', '0a5eff08-1b54-4987-8956-a46d6296bff5', 2026, 4, '2026-05-01', '2026-04-07 to 2026-04-06', '2026-04-30 01:27:57.49479-07', '2026-04-30 01:28:18.015-07', NULL, 1, false, 0, NULL);
+INSERT INTO "public"."provider_pay" VALUES ('789e3a64-1dc2-445a-a9bd-ec221d388fc5', '9c542bda-d9b7-4903-9bcb-37eecca7720d', '0a5eff08-1b54-4987-8956-a46d6296bff5', 2026, 4, '2026-05-01', '2026-04-07 to 2026-04-06', '2026-04-30 01:27:57.49479-07', '2026-04-30 01:28:18.015-07', NULL, 1, false);
 
 -- ----------------------------
 -- Table structure for provider_pay_backups

@@ -256,8 +256,9 @@ interface HandsontableWrapperProps {
   /**
    * Called after Handsontable undo/redo completes. Use to sync React state from the grid without triggering
    * updateSettings({ data }) in the same tick (that would clear Handsontable's redo stack).
+   * `direction` lets callers reverse the action (call `hot.redo()` after a cancelled undo and vice-versa).
    */
-  onAfterUndoRedoSync?: () => void
+  onAfterUndoRedoSync?: (direction?: 'undo' | 'redo') => void
 }
 
 export default function HandsontableWrapper({
@@ -339,10 +340,10 @@ export default function HandsontableWrapper({
     }
   }, [])
 
-  const runUndoRedoSyncFromParent = () => {
+  const runUndoRedoSyncFromParent = (direction?: 'undo' | 'redo') => {
     if (!onAfterUndoRedoSync) return
     suppressProgrammaticDataPushRef.current = true
-    onAfterUndoRedoSync()
+    onAfterUndoRedoSync(direction)
     // If only cell values changed, data.length/dataVersion may be unchanged so the data effect never runs;
     // clear suppress after two frames so a later real structure change is not wrongly skipped.
     requestAnimationFrame(() => {
@@ -954,8 +955,8 @@ export default function HandsontableWrapper({
     ...(afterRemoveRow ? { afterRemoveRow } : {}),
     ...(onAfterUndoRedoSync
       ? {
-          afterUndo: () => runUndoRedoSyncFromParent(),
-          afterRedo: () => runUndoRedoSyncFromParent(),
+          afterUndo: () => runUndoRedoSyncFromParent('undo'),
+          afterRedo: () => runUndoRedoSyncFromParent('redo'),
         }
       : {}),
 

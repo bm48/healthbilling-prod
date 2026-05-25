@@ -79,7 +79,20 @@ const PP_ROW_PATIENT = 1
 const PP_ROW_INSURANCE = 2
 const PP_ROW_AR = 3
 
-type PayRowLite = { row_index: number; amount: string | null }
+type PayRowLite = {
+  row_index: number
+  amount: string | null
+  /** Only populated for rows used in paystub Adjustments rendering; safe to ignore elsewhere. */
+  description?: string | null
+  notes?: string | null
+}
+
+/** Row index threshold for free-form "Adjustments" rows on the paystub PDF. Rows 0–6 are
+ *  the fixed Provider Pay layout (header + Patient/Insurance/A-R + the editable adjustment row
+ *  that already feeds Total Payments / Provider Cut). Rows 7+ are the user's free-form bucket
+ *  beneath Provider Cut and don't roll into the calculated totals — those are what print as
+ *  per-paystub adjustments and modify the Direct Deposit Amount. */
+const PP_ROW_ADJUSTMENTS_START = 7
 
 function payRowAmount(ppRows: PayRowLite[], rowIdx: number): number {
   const r = ppRows.find((x) => x.row_index === rowIdx)
@@ -518,10 +531,9 @@ export default function Invoices() {
       >((providersData || []).map((p: any) => [p.id, p]))
 
       // Provider Pay + sheets Jan–current month (YTD and current-month owed use same sources)
-      // Also pulls paystub_additional_fee / paystub_note so the current-month paystub picks them up.
       const { data: ytdPpData } = await apiClient
         .from('provider_pay')
-        .select('id, provider_id, month, paystub_additional_fee, paystub_note')
+        .select('id, provider_id, month')
         .eq('clinic_id', row.clinic_id)
         .eq('year', year)
         .lte('month', month)
@@ -529,38 +541,38 @@ export default function Invoices() {
         id: string
         provider_id: string
         month: number
-        paystub_additional_fee?: number | string | null
-        paystub_note?: string | null
       }[]
-      // Sum fee + concat note for the current-month rows per provider (handles payroll=2 → two rows/month).
-      const paystubExtrasByProvider = new Map<string, { fee: number; note: string }>()
-      for (const h of ytdPpHeaders) {
-        if (h.month !== month) continue
-        const prev = paystubExtrasByProvider.get(h.provider_id) ?? { fee: 0, note: '' }
-        const feeNum = h.paystub_additional_fee == null
-          ? 0
-          : typeof h.paystub_additional_fee === 'number'
-            ? h.paystub_additional_fee
-            : parseFloat(String(h.paystub_additional_fee)) || 0
-        const noteStr = (h.paystub_note ?? '').trim()
-        paystubExtrasByProvider.set(h.provider_id, {
-          fee: prev.fee + feeNum,
-          note: [prev.note, noteStr].filter((s) => s.length > 0).join('\n'),
-        })
-      }
       const ytdPpIds = ytdPpHeaders.map((p) => p.id)
       const ytdPpRowsMap = new Map<string, PayRowLite[]>()
       if (ytdPpIds.length > 0) {
         const { data: ytdPpRowsData } = await apiClient
           .from('provider_pay_rows')
-          .select('provider_pay_id, row_index, amount')
+          .select('provider_pay_id, row_index, amount, description, notes')
           .in('provider_pay_id', ytdPpIds)
           .order('row_index')
-        ;(ytdPpRowsData || []).forEach((r: { provider_pay_id: string; row_index: number; amount: string | null }) => {
+        ;(ytdPpRowsData || []).forEach((r: { provider_pay_id: string; row_index: number; amount: string | null; description: string | null; notes: string | null }) => {
           const arr = ytdPpRowsMap.get(r.provider_pay_id) ?? []
-          arr.push(r)
+          arr.push({ row_index: r.row_index, amount: r.amount, description: r.description, notes: r.notes })
           ytdPpRowsMap.set(r.provider_pay_id, arr)
         })
+      }
+
+      // Per-provider adjustments for the current month (paystub-only): collect free-form rows
+      // (row_index >= PP_ROW_ADJUSTMENTS_START) whose Description is non-empty, across all
+      // provider_pay headers for the month (handles payroll=2 → two headers per month).
+      const adjustmentsByProvider = new Map<string, Array<{ description: string; amount: number; notes: string }>>()
+      for (const h of ytdPpHeaders) {
+        if (h.month !== month) continue
+        const rows = ytdPpRowsMap.get(h.id) ?? []
+        for (const r of rows) {
+          if (r.row_index < PP_ROW_ADJUSTMENTS_START) continue
+          const desc = (r.description ?? '').trim()
+          if (desc.length === 0) continue
+          const amt = parseNum(r.amount)
+          const list = adjustmentsByProvider.get(h.provider_id) ?? []
+          list.push({ description: desc, amount: amt, notes: (r.notes ?? '').trim() })
+          adjustmentsByProvider.set(h.provider_id, list)
+        }
       }
 
       const { data: ytdSheetsData } = await apiClient
@@ -629,9 +641,11 @@ export default function Invoices() {
           ytdRowsBySheetId,
         )
 
-        const extras = paystubExtrasByProvider.get(pid)
-        const additionalFee = extras?.fee ?? 0
-        const note = extras?.note ?? ''
+        const adjustments = adjustmentsByProvider.get(pid) ?? []
+        const adjustmentsSum = adjustments.reduce(
+          (s, a) => s + (Number.isFinite(a.amount) ? a.amount : 0),
+          0,
+        )
         paystubs.push({
           provider_name: providerName,
           stub_no: generatePaystubStubNo(downloadedAt, empIndex - 1),
@@ -646,11 +660,10 @@ export default function Invoices() {
           ar_amount_collected: arCollected,
           ar_total_owed: arOwed,
           ytd: ytdTotal,
-          // Fold the per-paystub fee/deduction into the Direct Deposit Amount.
-          // PDF surfaces the fee separately in the Notes section so the math is visible.
-          direct_deposit_amount: directDeposit + additionalFee,
-          additional_fee: additionalFee,
-          note,
+          // Fold paystub adjustments into the Direct Deposit Amount. The PDF prints the
+          // Adjustments table with a Subtotal so the math is visible.
+          direct_deposit_amount: directDeposit + adjustmentsSum,
+          adjustments,
         })
         empIndex++
       }

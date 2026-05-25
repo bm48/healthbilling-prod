@@ -17,14 +17,12 @@ export async function fetchProviderPay(
   payDate: string
   payPeriod: string
   notes: string
-  paystubAdditionalFee: number
-  paystubNote: string
   wholeSheetLocked: boolean
   rows: string[][]
 } | null> {
   const { data: header, error: headerError } = await apiClient
     .from('provider_pay')
-    .select('id, pay_date, pay_period, notes, whole_sheet_locked, paystub_additional_fee, paystub_note')
+    .select('id, pay_date, pay_period, notes, whole_sheet_locked')
     .eq('clinic_id', clinicId)
     .eq('provider_id', providerId)
     .eq('year', year)
@@ -44,14 +42,7 @@ export async function fetchProviderPay(
     pay_period: string | null
     notes: string | null
     whole_sheet_locked?: boolean
-    paystub_additional_fee?: number | string | null
-    paystub_note?: string | null
   }
-  const paystubFeeNum = headerExt.paystub_additional_fee == null
-    ? 0
-    : typeof headerExt.paystub_additional_fee === 'number'
-      ? headerExt.paystub_additional_fee
-      : parseFloat(String(headerExt.paystub_additional_fee)) || 0
 
   const { data: rowsData, error: rowsError } = await apiClient
     .from('provider_pay_rows')
@@ -65,8 +56,6 @@ export async function fetchProviderPay(
       payDate: headerExt.pay_date ?? '',
       payPeriod: headerExt.pay_period ?? '',
       notes: headerExt.notes ?? '',
-      paystubAdditionalFee: paystubFeeNum,
-      paystubNote: headerExt.paystub_note ?? '',
       wholeSheetLocked: Boolean(headerExt.whole_sheet_locked),
       rows: buildEmptyRows(),
     }
@@ -77,8 +66,6 @@ export async function fetchProviderPay(
     payDate: headerExt.pay_date ?? '',
     payPeriod: headerExt.pay_period ?? '',
     notes: headerExt.notes ?? '',
-    paystubAdditionalFee: paystubFeeNum,
-    paystubNote: headerExt.paystub_note ?? '',
     wholeSheetLocked: Boolean(headerExt.whole_sheet_locked),
     rows,
   }
@@ -147,9 +134,7 @@ export async function saveProviderPay(
   payPeriod: string,
   tableData: string[][],
   notes: string,
-  payroll: number = 1,
-  paystubAdditionalFee: number = 0,
-  paystubNote: string = ''
+  payroll: number = 1
 ): Promise<void> {
   const { data: existing, error: fetchError } = await apiClient
     .from('provider_pay')
@@ -166,8 +151,6 @@ export async function saveProviderPay(
     throw fetchError
   }
 
-  const safePaystubFee = Number.isFinite(paystubAdditionalFee) ? paystubAdditionalFee : 0
-
   let providerPayId: string
   if (existing) {
     const { error: updateError } = await apiClient
@@ -176,8 +159,6 @@ export async function saveProviderPay(
         pay_date: payDate || null,
         pay_period: payPeriod || null,
         notes: notes || null,
-        paystub_additional_fee: safePaystubFee,
-        paystub_note: paystubNote || null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', existing.id)
@@ -195,8 +176,6 @@ export async function saveProviderPay(
         pay_date: payDate || null,
         pay_period: payPeriod || null,
         notes: notes || null,
-        paystub_additional_fee: safePaystubFee,
-        paystub_note: paystubNote || null,
         whole_sheet_locked: false,
       })
       .select('id')

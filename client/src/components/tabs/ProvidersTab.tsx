@@ -1338,7 +1338,7 @@ export default function ProvidersTab({
         { data: 7, title: 'CPT Code', type: 'dropdown' as const, width: 160, editor: MultiSelectCptEditor, selectOptions: billingCodes.map(c => c.code), renderer: createMultiBubbleDropdownRenderer((val) => getCPTColor(val)) as any, readOnly: getReadOnlyForColumn(7, !canEdit || getReadOnly('cpt_code')) },
         ...(visitTypeCol ? [visitTypeCol(getReadOnlyForColumn(9, !canEdit))] : []),
         { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyForColumn(8, !canEdit || getReadOnly('appointment_note_status')) },
-        { data: 9 + officeStaffColOffset, title: 'Collected from PT', type: 'numeric' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyForColumn(9 + officeStaffColOffset, !canEdit || getReadOnly('collected_from_pt')) },
+        { data: 9 + officeStaffColOffset, title: 'Collected from PT', type: 'text' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyForColumn(9 + officeStaffColOffset, !canEdit || getReadOnly('collected_from_pt')) },
         { data: 10 + officeStaffColOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, readOnly: getReadOnlyForColumn(10 + officeStaffColOffset, !canEdit || getReadOnly('pt_pay_status')) },
         { data: 11 + officeStaffColOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyForColumn(11 + officeStaffColOffset, !canEdit || getReadOnly('pt_payment_ar_ref_date')) },
       ]
@@ -1375,13 +1375,13 @@ export default function ProvidersTab({
         { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyProviderView(8) || getReadOnly('appointment_note_status') },
         { data: 9 + pvOffset, title: 'Claim Status', type: 'dropdown' as const, width: 90, selectOptions: ['Claim Sent', 'RS', 'IP', 'Pending Pay', 'Paid', 'Deductible', 'N/A', 'PP', 'Denial', 'Rejected', 'No Coverage'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'claim')) as any, readOnly: getReadOnlyProviderView(9 + pvOffset) || getReadOnly('claim_status') },
         { data: 10 + pvOffset, title: 'Most Recent Submit Date', type: 'text' as const, width: 120, editor: 'text', readOnly: getReadOnlyProviderView(10 + pvOffset) || getReadOnly('most_recent_submit_date') },
-        { data: 11 + pvOffset, title: 'Ins Pay', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(11 + pvOffset) || getReadOnly('ins_pay') },
+        { data: 11 + pvOffset, title: 'Ins Pay', type: 'text' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(11 + pvOffset) || getReadOnly('ins_pay') },
         { data: 12 + pvOffset, title: 'Ins Pay Date', type: 'dropdown' as const, width: 100, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyProviderView(12 + pvOffset) || getReadOnly('ins_pay_date') },
-        { data: 13 + pvOffset, title: 'PT RES', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(13 + pvOffset) || getReadOnly('pt_res') },
-        { data: 14 + pvOffset, title: 'Collected from PT', type: 'numeric' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(14 + pvOffset) || getReadOnly('collected_from_pt') },
+        { data: 13 + pvOffset, title: 'PT RES', type: 'text' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(13 + pvOffset) || getReadOnly('pt_res') },
+        { data: 14 + pvOffset, title: 'Collected from PT', type: 'text' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(14 + pvOffset) || getReadOnly('collected_from_pt') },
         { data: 15 + pvOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, readOnly: getReadOnlyProviderView(15 + pvOffset) || getReadOnly('pt_pay_status') },
         { data: 16 + pvOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyProviderView(16 + pvOffset) || getReadOnly('pt_payment_ar_ref_date') },
-        { data: 17 + pvOffset, title: 'Total', type: 'numeric' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(17 + pvOffset) || getReadOnly('total') },
+        { data: 17 + pvOffset, title: 'Total', type: 'text' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(17 + pvOffset) || getReadOnly('total') },
         { data: 18 + pvOffset, title: 'Notes', type: 'text' as const, width: 150, readOnly: getReadOnlyProviderView(18 + pvOffset) || getReadOnly('notes') },
       ])
     }
@@ -1476,10 +1476,10 @@ export default function ProvidersTab({
         editor: 'text',
         readOnly: getReadOnlyForColumn(10 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('most_recent_submit_date'))
       },
-      { 
-        data: 11 + (showVisitTypeColumn ? 1 : 0), 
-        title: 'Ins Pay', 
-        type: 'numeric' as const, 
+      {
+        data: 11 + (showVisitTypeColumn ? 1 : 0),
+        title: 'Ins Pay',
+        type: 'text' as const,
         width: 100,
         renderer: currencyCellRenderer,
         readOnly: getReadOnlyForColumn(11 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('ins_pay'))
@@ -1493,18 +1493,18 @@ export default function ProvidersTab({
         renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any,
         readOnly: getReadOnlyForColumn(12 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('ins_pay_date'))
       },
-      { 
-        data: 13 + (showVisitTypeColumn ? 1 : 0), 
-        title: 'PT RES', 
-        type: 'numeric' as const, 
+      {
+        data: 13 + (showVisitTypeColumn ? 1 : 0),
+        title: 'PT RES',
+        type: 'text' as const,
         width: 100,
         renderer: currencyCellRenderer,
         readOnly: getReadOnlyForColumn(13 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('pt_res'))
       },
-      { 
-        data: 14 + (showVisitTypeColumn ? 1 : 0), 
-        title: 'PT Paid', 
-        type: 'numeric' as const, 
+      {
+        data: 14 + (showVisitTypeColumn ? 1 : 0),
+        title: 'PT Paid',
+        type: 'text' as const,
         width: 120,
         renderer: currencyCellRenderer,
         readOnly: getReadOnlyForColumn(14 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('collected_from_pt'))
@@ -1527,10 +1527,10 @@ export default function ProvidersTab({
         renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any,
         readOnly: getReadOnlyForColumn(16 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('pt_payment_ar_ref_date'))
       },
-      { 
-        data: 17 + (showVisitTypeColumn ? 1 : 0), 
-        title: 'Total', 
-        type: 'numeric' as const, 
+      {
+        data: 17 + (showVisitTypeColumn ? 1 : 0),
+        title: 'Total',
+        type: 'text' as const,
         width: 100,
         renderer: currencyCellRenderer,
         readOnly: getReadOnlyForColumn(17 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('total'))
@@ -1962,18 +1962,36 @@ export default function ProvidersTab({
           updatedRows[row] = { ...sheetRow, id: newId, [field]: strValue, updated_at: new Date().toISOString() } as SheetRow
           setDraftFromRow(updatedRows[row] as SheetRow)
         } else if (field === 'total') {
-          const numValue = (newValue === '' || newValue === null || newValue === 'null') ? null : (typeof newValue === 'number' ? newValue : parseFloat(String(newValue)) || null)
+          // Accept pasted currency formats ("$300.00", "1,250", "  300 ") — strip $, commas, whitespace before parsing.
+          const parseCurrency = (v: unknown): number | null => {
+            if (v === '' || v === null || v === undefined || v === 'null') return null
+            if (typeof v === 'number') return Number.isFinite(v) ? v : null
+            const cleaned = String(v).replace(/[$,\s]/g, '')
+            if (cleaned === '' || cleaned === '-') return null
+            const n = parseFloat(cleaned)
+            return Number.isFinite(n) ? n : null
+          }
+          const numValue = parseCurrency(newValue)
           updatedRows[row] = { ...sheetRow, id: newId, [field]: numValue, updated_at: new Date().toISOString() } as SheetRow
         } else if (field === 'insurance_payment' || field === 'collected_from_patient') {
           hadTotalAutoUpdate = true
-          const numValue = (newValue === '' || newValue === null || newValue === 'null' || newValue === undefined) ? null : (typeof newValue === 'number' ? newValue : parseFloat(String(newValue)))
-          const insPay = field === 'insurance_payment' ? (numValue ?? NaN) : parseFloat(String(sheetRow.insurance_payment ?? '')) || 0
-          const collected = field === 'collected_from_patient' ? (numValue ?? NaN) : parseFloat(String(sheetRow.collected_from_patient ?? '')) || 0
+          // Accept pasted currency formats ("$300.00", "1,250", "  300 ") — strip $, commas, whitespace before parsing.
+          const parseCurrency = (v: unknown): number | null => {
+            if (v === '' || v === null || v === undefined || v === 'null') return null
+            if (typeof v === 'number') return Number.isFinite(v) ? v : null
+            const cleaned = String(v).replace(/[$,\s]/g, '')
+            if (cleaned === '' || cleaned === '-') return null
+            const n = parseFloat(cleaned)
+            return Number.isFinite(n) ? n : null
+          }
+          const numValue = parseCurrency(newValue)
+          const insPay = field === 'insurance_payment' ? (numValue ?? NaN) : (parseCurrency(sheetRow.insurance_payment) ?? 0)
+          const collected = field === 'collected_from_patient' ? (numValue ?? NaN) : (parseCurrency(sheetRow.collected_from_patient) ?? 0)
           const totalSum = (Number.isFinite(insPay) ? insPay : 0) + (Number.isFinite(collected) ? collected : 0)
           updatedRows[row] = {
             ...sheetRow,
             id: newId,
-            [field]: numValue ?? null,
+            [field]: numValue,
             total: String(totalSum),
             updated_at: new Date().toISOString(),
           } as SheetRow
@@ -1982,11 +2000,20 @@ export default function ProvidersTab({
           const value = (newValue === '' || newValue === 'null') ? null : parseDateOfServiceInput(String(newValue))
           updatedRows[row] = { ...sheetRow, id: newId, [field]: value, updated_at: new Date().toISOString() } as SheetRow
         } else if (field === 'appointment_status') {
-          // Only accept valid dropdown options; reject boolean/"true"/"false" (can appear when fill/drag copies from Visit Type column)
+          // Reject only the Visit Type fill-down leakage (literal booleans). Trim/case-fold and canonicalize
+          // to the official spelling so copy-paste from rows that picked up stray whitespace still lands.
+          // Unknown strings are kept as-typed (color will be null) rather than silently dropped, which
+          // previously caused "the value shows up then disappears" when pasted/duplicated values had a
+          // trailing space or capitalization difference.
           const validStatuses = ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete']
           if (newValue === true || newValue === false || newValue === 'true' || newValue === 'false') return
-          const strVal = (newValue === '' || newValue === 'null') ? null : String(newValue)
-          if (strVal !== null && !validStatuses.includes(strVal)) return
+          let strVal: string | null
+          if (newValue === '' || newValue === null || newValue === undefined || newValue === 'null') {
+            strVal = null
+          } else {
+            const raw = String(newValue).trim()
+            strVal = validStatuses.find((s) => s.toLowerCase() === raw.toLowerCase()) ?? raw
+          }
           updatedRows[row] = { ...sheetRow, id: newId, [field]: strVal, updated_at: new Date().toISOString() } as SheetRow
         } else if (field === 'visit_type') {
           const value = newValue === true ? 'Telehealth' : 'In-person'
@@ -2009,7 +2036,15 @@ export default function ProvidersTab({
         const finalRow = updatedRows[row]
         const rowId = finalRow?.id ?? sheetRow?.id ?? `row-${row}`
         const colKey = field === 'insurance_payment' ? 'ins_pay' : 'collected_from_pt'
-        const num = (newValue === '' || newValue === null || newValue === undefined) ? null : (typeof newValue === 'number' ? newValue : parseFloat(String(newValue)))
+        const parseForHighlight = (v: unknown): number | null => {
+          if (v === '' || v === null || v === undefined) return null
+          if (typeof v === 'number') return Number.isFinite(v) ? v : null
+          const cleaned = String(v).replace(/[$,\s]/g, '')
+          if (cleaned === '' || cleaned === '-') return null
+          const n = parseFloat(cleaned)
+          return Number.isFinite(n) ? n : null
+        }
+        const num = parseForHighlight(newValue)
         const isZero = num === 0
         const highlightColor = (userHighlightColor || '').trim() || YELLOW_HIGHLIGHT
         // PT Paid (collected_from_patient): 0 or "0" or "00" → yellow. Ins Pay: 0 → user color.
@@ -2316,8 +2351,8 @@ export default function ProvidersTab({
     [canEdit, activeProvider, activeProviderRows, onDeleteRow]
   )
 
-  const syncProvidersFromHotAfterUndoRedo = useCallback(() => {
-    const hot = hotInstanceRef.current as (Handsontable & { isDestroyed?: boolean }) | null
+  const syncProvidersFromHotAfterUndoRedo = useCallback((direction?: 'undo' | 'redo') => {
+    const hot = hotInstanceRef.current as (Handsontable & { isDestroyed?: boolean; undo?: () => void; redo?: () => void }) | null
     if (!hot || hot.isDestroyed) return
     if (!canEdit || !activeProvider || isViewingBackup) return
     try {
@@ -2339,6 +2374,59 @@ export default function ProvidersTab({
           merged.push(createEmptySheetRowForSync(activeProvider.id, existingEmptyCount + i))
         }
       }
+
+      // Guardrail: a single Cmd+Z can wipe an entire pasted block, and this handler used to save that
+      // empty state to the DB before the user could react. Count non-empty cells that were cleared by
+      // the undo/redo and, if it's a large change, ask before persisting it.
+      const isEmptyVal = (v: unknown) => v === null || v === undefined || v === ''
+      let cellsCleared = 0
+      const rowsToCompare = Math.min(prevRows.length, merged.length)
+      for (let i = 0; i < rowsToCompare; i++) {
+        const a = prevRows[i]
+        const b = merged[i]
+        if (!a || !b) continue
+        for (const f of fields) {
+          if (!f) continue
+          const av = (a as unknown as Record<string, unknown>)[f as string]
+          const bv = (b as unknown as Record<string, unknown>)[f as string]
+          if (!isEmptyVal(av) && isEmptyVal(bv)) cellsCleared++
+        }
+      }
+      const UNDO_CONFIRM_THRESHOLD = 20
+      if (cellsCleared > UNDO_CONFIRM_THRESHOLD) {
+        // Snapshot pre-change rows to localStorage as a safety net before we even prompt — if the browser
+        // crashes mid-confirm or the user closes the tab, the data is still recoverable.
+        try {
+          const cid = clinicIdForPendingRef.current
+          const mk = selectedMonthKeyForPendingRef.current
+          if (cid && mk) {
+            const snapshotKey = `provider_sheet_undo_snapshot_${cid}_${activeProvider.id}_${mk}`
+            localStorage.setItem(
+              snapshotKey,
+              JSON.stringify({ rows: prevRows, savedAt: Date.now(), direction: direction ?? 'unknown', cellsCleared })
+            )
+          }
+        } catch (e) {
+          console.warn('[ProvidersTab] undo snapshot localStorage write failed:', e)
+        }
+        const proceed = window.confirm(
+          `This ${direction === 'redo' ? 'redo' : 'undo'} will clear ${cellsCleared} cells of data. Continue?\n\nClick Cancel to keep your data and reverse this action.`
+        )
+        if (!proceed) {
+          // Reverse the action: after a cancelled undo we redo, after a cancelled redo we undo.
+          try {
+            if (direction === 'redo') {
+              hot.undo?.()
+            } else {
+              hot.redo?.()
+            }
+          } catch (e) {
+            console.error('[ProvidersTab] failed to reverse undo/redo after cancel', e)
+          }
+          return
+        }
+      }
+
       latestProviderRowsRef.current = { providerId: activeProvider.id, rows: merged }
       latestTableDataRef.current = getTableDataFromRows(merged)
       matrixSourceRevisionsRef.current = {

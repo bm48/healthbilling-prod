@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
-import { fetchSheetRows, saveSheetRows } from '@/lib/providerSheetRows'
+import { fetchSheetRows, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
 import { useAuth } from '@/contexts/AuthContext'
 import {
@@ -291,7 +291,9 @@ export default function ProviderSheetPage() {
     providerSheetRowsRef.current = providerSheetRows
   }, [providerSheetRows])
 
-  const selectedMonthKeyForLocks = useMemo(() => {
+  // Matches the key format ProvidersTab/ClinicDetail use for the localStorage pending-rows backup so
+  // restore-on-mount and the pagehide keepalive POST line up with what the unmount cleanup writes.
+  const selectedMonthKey = useMemo(() => {
     if (!clinic) return null
     const y = selectedMonth.getFullYear()
     const m = selectedMonth.getMonth() + 1
@@ -299,7 +301,7 @@ export default function ProviderSheetPage() {
   }, [clinic, selectedMonth])
 
   useEffect(() => {
-    if (!clinicId || !provider || !selectedMonthKeyForLocks) {
+    if (!clinicId || !provider || !selectedMonthKey) {
       setIsLockProviders(null)
       return
     }
@@ -309,7 +311,7 @@ export default function ProviderSheetPage() {
         .from('is_lock_providers')
         .select('*')
         .eq('clinic_id', clinicId)
-        .eq('month_key', selectedMonthKeyForLocks)
+        .eq('month_key', selectedMonthKey)
         .eq('provider_id', provider.id)
         .maybeSingle()
       if (cancelled) return
@@ -322,7 +324,7 @@ export default function ProviderSheetPage() {
     return () => {
       cancelled = true
     }
-  }, [clinicId, provider?.id, selectedMonthKeyForLocks])
+  }, [clinicId, provider?.id, selectedMonthKey])
 
   useEffect(() => {
     if (provider && clinic) fetchProviderSheetData()
@@ -461,17 +463,56 @@ export default function ProviderSheetPage() {
         return true
       })
 
+      // Built synchronously after saveSheetRows returns so pending-save replay can rewrite stale temp ids
+      // to the real UUIDs before re-sending — otherwise the replay re-INSERTS the same row and the orphan
+      // sweep deletes the previous version.
+      let savedTempIdToUuidMap: Map<string, string> | null = null
+
       try {
         console.log('[ProviderSheetPage:ProvidersSave] start', {
           providerId,
           rows: rowsToSave.length,
           processRows: rowsToProcess.length,
         })
-        await saveSheetRows(apiClient, currentSheet.id, rowsToProcess)
+        const savedRows = await saveSheetRows(apiClient, currentSheet.id, rowsToProcess, undefined, clinicId && selectedMonthKey ? { clinicId, providerId, selectedMonthKey } : undefined)
         console.log('[ProviderSheetPage:ProvidersSave] db save done', {
           providerId,
           processRows: rowsToProcess.length,
         })
+        try {
+          const pendingKey = `provider_sheet_pending_${clinicId}_${providerId}_${selectedMonthKey}`
+          localStorage.removeItem(pendingKey)
+        } catch (_) {}
+
+        savedTempIdToUuidMap = new Map<string, string>()
+        const savedRowsByOldId = new Map<string, SheetRow>()
+        rowsToProcess.forEach((row, i) => {
+          const saved = savedRows[i]
+          if (!saved) return
+          savedRowsByOldId.set(row.id, saved)
+          if (!isUuid(row.id) && isUuid(saved.id)) {
+            savedTempIdToUuidMap!.set(row.id, saved.id)
+          }
+        })
+
+        // Promote temp ids (new-*/empty-*) to real UUIDs in state so subsequent edits hit UPDATE not INSERT.
+        setProviderSheetRows((prev) => {
+          const currentRows = prev[providerId] || []
+          const updatedRows = currentRows.map((row) => {
+            const savedRow = savedRowsByOldId.get(row.id)
+            if (savedRow) {
+              return {
+                ...row,
+                id: savedRow.id,
+                created_at: savedRow.created_at,
+                updated_at: savedRow.updated_at,
+              }
+            }
+            return row
+          })
+          return { ...prev, [providerId]: updatedRows }
+        })
+
         const fresh = await refetchPatients()
         if (fresh && provider) {
           setProviderSheetRows((prev) => ({
@@ -490,17 +531,30 @@ export default function ProviderSheetPage() {
         })
         if (pending) {
           delete pendingProviderSheetSaveRef.current[providerId]
+          const idMap = savedTempIdToUuidMap
+          let toSave = pending
+          if (idMap && idMap.size > 0) {
+            toSave = pending.map((row) => {
+              if (!isUuid(row.id)) {
+                const newId = idMap.get(row.id)
+                if (newId) {
+                  return { ...row, id: newId, updated_at: new Date().toISOString() }
+                }
+              }
+              return row
+            })
+          }
           console.log('[ProviderSheetPage:ProvidersSave] replay pending', {
             providerId,
-            rows: pending.length,
+            rows: toSave.length,
           })
-          saveProviderSheetRows(providerId, pending).catch((err) =>
+          saveProviderSheetRows(providerId, toSave).catch((err) =>
             console.error('[ProviderSheetPage] pending save retry failed:', err)
           )
         }
       }
     },
-    [currentSheet, provider, selectedMonth, clinicId, refetchPatients]
+    [currentSheet, provider, selectedMonth, clinicId, selectedMonthKey, refetchPatients]
   )
 
   const saveProviderSheetRowsDirect = useCallback(
@@ -509,6 +563,99 @@ export default function ProviderSheetPage() {
     },
     [saveProviderSheetRows]
   )
+
+  // Restore provider sheet rows from localStorage after refresh: ProvidersTab.unmount writes a backup
+  // when a save is in flight, but the browser may abort the actual fetch. On next mount we replay it.
+  const PENDING_ROWS_KEY_PREFIX = 'provider_sheet_pending_'
+  const PENDING_ROWS_MAX_AGE_MS = 10 * 60 * 1000
+  const restoredPendingKeysRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!clinicId || !provider || !currentSheet || !selectedMonthKey) return
+    const key = `${PENDING_ROWS_KEY_PREFIX}${clinicId}_${provider.id}_${selectedMonthKey}`
+    if (restoredPendingKeysRef.current.has(key)) return
+    const now = Date.now()
+    try {
+      const raw = localStorage.getItem(key)
+      if (!raw) return
+      const data = JSON.parse(raw) as { rows: SheetRow[]; savedAt: number }
+      if (!data.rows?.length || !data.savedAt) return
+      if (now - data.savedAt > PENDING_ROWS_MAX_AGE_MS) {
+        localStorage.removeItem(key)
+        return
+      }
+      restoredPendingKeysRef.current.add(key)
+      saveProviderSheetRows(provider.id, data.rows)
+        .then(() => {
+          try { localStorage.removeItem(key) } catch (_) {}
+        })
+        .catch(err => {
+          console.error('[ProviderSheetPage] restore pending save failed:', err)
+          restoredPendingKeysRef.current.delete(key)
+        })
+    } catch (_) {
+      try { localStorage.removeItem(key) } catch (__) {}
+    }
+  }, [clinicId, provider, currentSheet, selectedMonthKey, saveProviderSheetRows])
+
+  // On page unload (refresh/close), send any pending provider sheet rows via keepalive fetch so the save
+  // can complete after the page is gone. Mirrors the handler on ClinicDetail for the super admin path.
+  useEffect(() => {
+    const PREFIX = 'provider_sheet_pending_'
+    const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+    const savePendingUrl = apiBase ? `${apiBase}/api/save-provider-sheet-rows` : '/api/save-provider-sheet-rows'
+
+    const onPageHide = () => {
+      let token: string | null = null
+      try {
+        const raw = localStorage.getItem('health-billing-auth')
+        if (raw) {
+          const data = JSON.parse(raw) as { currentSession?: { access_token?: string }; access_token?: string }
+          token = data?.currentSession?.access_token ?? data?.access_token ?? null
+        }
+      } catch (_) {}
+      if (!token) return
+
+      const keysToSend: string[] = []
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)
+          if (key?.startsWith(PREFIX)) keysToSend.push(key)
+        }
+      } catch (_) {}
+
+      keysToSend.forEach((key) => {
+        try {
+          const raw = localStorage.getItem(key)
+          if (!raw) return
+          const data = JSON.parse(raw) as {
+            rows?: SheetRow[]
+            clinicId?: string
+            providerId?: string
+            selectedMonthKey?: string
+          }
+          const cid = data.clinicId
+          const pid = data.providerId
+          const mk = data.selectedMonthKey
+          const rows = data.rows
+          if (!cid || !pid || !mk || !Array.isArray(rows) || rows.length === 0) return
+
+          const body = JSON.stringify({ clinicId: cid, providerId: pid, selectedMonthKey: mk, rows })
+          fetch(savePendingUrl, {
+            method: 'POST',
+            body,
+            keepalive: true,
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+          }).catch(() => {})
+        } catch (_) {}
+      })
+    }
+
+    window.addEventListener('pagehide', onPageHide)
+    return () => window.removeEventListener('pagehide', onPageHide)
+  }, [])
 
   const handleDeleteProviderSheetRow = useCallback(
     async (providerId: string, rowId: string) => {
@@ -732,6 +879,7 @@ export default function ProviderSheetPage() {
           statusColors={statusColors}
           patients={patients}
           selectedMonth={selectedMonth}
+          selectedMonthKey={selectedMonthKey ?? undefined}
           providerId={provider.id}
           currentProvider={provider}
           canEdit={true}

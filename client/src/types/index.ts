@@ -254,10 +254,6 @@ export interface ProviderPay {
   pay_period: string | null
   /** Freeform notes/description for the Provider Pay sheet (shown on the right side). */
   notes?: string | null
-  /** Per-paystub fee (+) or deduction (−) added to the Direct Deposit Amount on the paystub PDF. Default 0. */
-  paystub_additional_fee?: number | null
-  /** Free-form note rendered in the Notes section of the paystub PDF. Distinct from `notes` (Provider Pay sheet side notes). */
-  paystub_note?: string | null
   created_at: string
   updated_at: string
 }

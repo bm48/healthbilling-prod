@@ -17,7 +17,12 @@ export function currencyCellRenderer(
   const textRenderer = Handsontable.renderers.TextRenderer
   let display = ''
   if (value !== null && value !== undefined && value !== '' && value !== 'null') {
-    const num = typeof value === 'number' ? value : parseFloat(String(value))
+    // Accept pasted/typed currency formats ("$300.00", "1,250") so the cell renders the formatted amount
+    // immediately instead of briefly going blank before the input parser normalizes it to a number.
+    const num =
+      typeof value === 'number'
+        ? value
+        : parseFloat(String(value).replace(/[$,\s]/g, ''))
     if (!isNaN(num)) {
       display = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(num)
     }

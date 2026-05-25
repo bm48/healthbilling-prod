@@ -37,12 +37,12 @@ export interface PaystubEntry {
   ar_total_owed: number
   /** Year-to-date total owed (null if unknown) */
   ytd: number | null
-  /** Direct deposit / net pay (already includes `additional_fee` if any). */
+  /** Direct deposit / net pay (already includes the sum of `adjustments` amounts). */
   direct_deposit_amount: number
-  /** Per-paystub fee (+) or deduction (−) entered in the Provider Pay tab. Already folded into `direct_deposit_amount`; surfaced separately in the Notes section. Default 0. */
-  additional_fee?: number
-  /** Free-form note rendered in the Notes section of the paystub page. */
-  note?: string
+  /** Free-form rows from the Provider Pay sheet (row_index >= 7, non-empty Description) — printed as an
+   *  Adjustments table between the earnings table and the Direct Deposit band. Amounts are signed:
+   *  positive = added to Direct Deposit, negative = deducted. Notes are optional per row. */
+  adjustments?: Array<{ description: string; amount: number; notes: string }>
 }
 
 const LOGO_X = 14
@@ -242,7 +242,65 @@ function addPaystubPage(
     margin: { left: tableMargin, right: tableMargin },
   })
 
-  const afterTableY: number = (doc as any).lastAutoTable.finalY + 6
+  let afterTableY: number = (doc as any).lastAutoTable.finalY + 6
+
+  // ── Adjustments table (Provider Pay free-form rows: Description / Amount / Notes) ────────
+  // Only rows the user actually typed something into appear here; blank grid rows are skipped
+  // upstream in Invoices.tsx. The sum is already folded into entry.direct_deposit_amount so the
+  // DDA band below reads true. We print the subtotal so the math is visible to the provider.
+  const adjustments = (entry.adjustments ?? []).filter((a) => a.description.trim().length > 0)
+  if (adjustments.length > 0) {
+    const adjSubtotal = adjustments.reduce((s, a) => s + (Number.isFinite(a.amount) ? a.amount : 0), 0)
+    const adjCol0 = tableWidth * 0.45
+    const adjCol1 = tableWidth * 0.20
+    const adjCol2 = tableWidth - adjCol0 - adjCol1
+    autoTable(doc, {
+      theme: 'grid',
+      head: [[
+        { content: 'Adjustments', styles: { halign: 'left' } },
+        { content: 'Amount', styles: { halign: 'right' } },
+        { content: 'Notes', styles: { halign: 'left' } },
+      ]],
+      body: [
+        ...adjustments.map((a) => [
+          a.description,
+          formatCurrency(a.amount),
+          a.notes ?? '',
+        ]),
+        [
+          { content: 'Subtotal', styles: { fontStyle: 'bold' as const, halign: 'left' as const } },
+          { content: formatCurrency(adjSubtotal), styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
+          '',
+        ],
+      ],
+      startY: afterTableY,
+      tableWidth,
+      styles: {
+        fontSize: 9,
+        lineColor: [0, 0, 0],
+        lineWidth: 0.2,
+        cellPadding: 3,
+      },
+      headStyles: {
+        fillColor: [240, 240, 240],
+        textColor: [0, 0, 0],
+        fontStyle: 'bold',
+        lineColor: [0, 0, 0],
+        lineWidth: 0.2,
+      },
+      bodyStyles: {
+        lineColor: [0, 0, 0],
+        lineWidth: 0.2,
+      },
+      columnStyles: {
+        0: { cellWidth: adjCol0, halign: 'left' },
+        1: { cellWidth: adjCol1, halign: 'right' },
+        2: { cellWidth: adjCol2, halign: 'left' },
+      },
+      margin: { left: tableMargin, right: tableMargin },
+    })
+    afterTableY = (doc as any).lastAutoTable.finalY + 6
+  }
 
   // ── Direct Deposit Amount band ───────────────────────────────────────────
   const ddBandH = 14
@@ -256,32 +314,6 @@ function addPaystubPage(
 
   doc.setTextColor(0, 0, 0)
   doc.setFont('helvetica', 'normal')
-
-  // ── Notes section (additional fee + free-form note) ──────────────────────
-  // Mirrors the invoice Notes block: prints "Additional fee: $X.XX" if non-zero,
-  // then the note text below. The fee is already included in Direct Deposit Amount above.
-  const fee = entry.additional_fee != null ? Number(entry.additional_fee) : 0
-  const noteText = (entry.note?.trim() ?? '')
-  if (fee !== 0 || noteText.length > 0) {
-    let notesY = afterTableY + ddBandH + 8
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(10)
-    doc.text('Notes:', 14, notesY)
-    doc.setFont('helvetica', 'normal')
-    notesY += 6
-    if (fee !== 0) {
-      doc.text(`Additional fee: ${formatCurrency(fee)}`, 14, notesY)
-      notesY += 6
-    }
-    if (noteText.length > 0) {
-      const maxWidth = pageW - 28
-      const lines = doc.splitTextToSize(noteText, maxWidth)
-      for (const line of lines) {
-        doc.text(line, 14, notesY)
-        notesY += 6
-      }
-    }
-  }
 
   if (isLastPaystub) {
     addPaystubClosingFooter(doc)
