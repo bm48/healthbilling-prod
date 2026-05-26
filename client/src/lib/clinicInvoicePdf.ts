@@ -48,6 +48,12 @@ export interface PaystubEntry {
   /** Optional clinic-specific logo (data URL) to render in the paystub header. When omitted, NO
    *  logo is rendered — the American Medical Billing logo never appears on the provider's paystub. */
   clinic_logo_data_url?: string | null
+  /** Natural pixel width of the clinic logo (from `new Image().naturalWidth`). Used together with
+   *  `clinic_logo_natural_height` to fit the logo inside the paystub's bounding box without
+   *  stretching. Optional: if missing/zero, the renderer falls back to the bounding-box size. */
+  clinic_logo_natural_width?: number | null
+  /** Natural pixel height of the clinic logo. See `clinic_logo_natural_width`. */
+  clinic_logo_natural_height?: number | null
   /** Optional clinic-specific accent color as a "#rrggbb" hex string. Applied to the provider-name
    *  band and the Direct Deposit Amount band. Defaults to light blue (#add8e6) when omitted. */
   paystub_accent_color?: string | null
@@ -146,6 +152,7 @@ function addPaystubPage(
 
   // ── Header: left = clinic info, right = "Earnings Statement" block ──────
   let clinicLogoRendered = false
+  let renderedLogoH = 0
   if (entry.clinic_logo_data_url) {
     try {
       // Detect the actual image format from the data URL prefix; jsPDF needs the right format
@@ -156,8 +163,25 @@ function addPaystubPage(
         : mime === 'gif' ? 'GIF'
         : mime === 'webp' ? 'WEBP'
         : 'PNG'
-      doc.addImage(entry.clinic_logo_data_url, fmt, LOGO_X, LOGO_Y, PAYSTUB_LOGO_W, PAYSTUB_LOGO_H)
+      // Aspect-fit the logo inside the PAYSTUB_LOGO_W × PAYSTUB_LOGO_H bounding box so wide /
+      // tall / square logos all render at their natural proportions (no stretching). If the
+      // natural dimensions weren't supplied we fall back to the box size — same as before.
+      const naturalW = entry.clinic_logo_natural_width ?? 0
+      const naturalH = entry.clinic_logo_natural_height ?? 0
+      let drawW = PAYSTUB_LOGO_W
+      let drawH = PAYSTUB_LOGO_H
+      if (naturalW > 0 && naturalH > 0) {
+        const aspect = naturalW / naturalH
+        drawW = PAYSTUB_LOGO_W
+        drawH = drawW / aspect
+        if (drawH > PAYSTUB_LOGO_H) {
+          drawH = PAYSTUB_LOGO_H
+          drawW = drawH * aspect
+        }
+      }
+      doc.addImage(entry.clinic_logo_data_url, fmt, LOGO_X, LOGO_Y, drawW, drawH)
       clinicLogoRendered = true
+      renderedLogoH = drawH
     } catch (e) {
       // Unsupported format / corrupt data → fall through to no-logo layout
       console.warn('[clinicInvoicePdf] addImage failed for clinic logo, rendering paystub without logo:', e)
@@ -165,7 +189,8 @@ function addPaystubPage(
   }
 
   // When no clinic logo, drop the address block up by the logo's height so we don't leave a gap.
-  const clinicBlockY = (clinicLogoRendered ? LOGO_Y + PAYSTUB_LOGO_H + 6 : LOGO_Y + 4)
+  // When a logo is rendered, use the actual rendered height (aspect-fit may have shrunk it).
+  const clinicBlockY = clinicLogoRendered ? LOGO_Y + renderedLogoH + 6 : LOGO_Y + 4
   doc.setFontSize(10)
   doc.setFont('helvetica', 'bold')
   doc.text(entry.clinic_name, LOGO_X, clinicBlockY)

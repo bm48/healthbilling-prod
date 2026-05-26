@@ -631,6 +631,8 @@ export default function Invoices() {
       // "if there isn't a logo uploaded, nothing — not the American Medical Billing Logo").
       const clinicLogoSource: string | null = (clinicData as { paystub_logo_url?: string | null } | null)?.paystub_logo_url ?? null
       let clinicLogoDataUrl: string | null = null
+      let clinicLogoNaturalW: number | null = null
+      let clinicLogoNaturalH: number | null = null
       if (clinicLogoSource) {
         try {
           if (clinicLogoSource.startsWith('data:')) {
@@ -650,6 +652,24 @@ export default function Invoices() {
         } catch (e) {
           console.warn('[Invoices] failed to load clinic paystub logo, falling back to no logo:', e)
           clinicLogoDataUrl = null
+        }
+      }
+      // Measure the logo's natural pixel dimensions so the PDF renderer can aspect-fit it inside
+      // its bounding box instead of stretching square/wide/tall logos to a fixed rectangle.
+      if (clinicLogoDataUrl) {
+        try {
+          const dims = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+            const img = new Image()
+            img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+            img.onerror = () => reject(new Error('image decode failed'))
+            img.src = clinicLogoDataUrl!
+          })
+          if (dims.w > 0 && dims.h > 0) {
+            clinicLogoNaturalW = dims.w
+            clinicLogoNaturalH = dims.h
+          }
+        } catch (e) {
+          console.warn('[Invoices] could not measure clinic logo dimensions, will fall back to box size:', e)
         }
       }
 
@@ -726,6 +746,8 @@ export default function Invoices() {
           direct_deposit_amount: directDeposit + adjustmentsSum,
           adjustments,
           clinic_logo_data_url: clinicLogoDataUrl,
+          clinic_logo_natural_width: clinicLogoNaturalW,
+          clinic_logo_natural_height: clinicLogoNaturalH,
           paystub_accent_color: clinicPaystubAccent,
         })
         empIndex++
