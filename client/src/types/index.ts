@@ -65,6 +65,10 @@ export interface Clinic {
   invoice_rate?: number | null
   /** When false, Co-pay and Co-Ins columns are hidden clinic-wide on the billing sheet (Providers tab). Default true. Toggled in Clinic Management. */
   show_copay_coinsurance_columns?: boolean
+  /** Optional logo (https URL or data: URL) rendered on the paystub PDF for this clinic. NULL = no logo (the American Medical Billing logo is never used on paystubs). */
+  paystub_logo_url?: string | null
+  /** Optional accent color "#rrggbb" for the provider-name band and Direct Deposit band on this clinic's paystub PDF. NULL falls back to light blue. */
+  paystub_accent_color?: string | null
   created_at: string
   updated_at: string
 }

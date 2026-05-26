@@ -164,7 +164,32 @@ function providerMonthAmounts(
   }
 }
 
-/** Total owed for one provider in one month (Provider Pay rows 1–3 × cut %, or sheet fallback). */
+/** Sum of "Paystub Additional Pay" amounts (rows PP_ROW_ADJUSTMENTS_START..END with non-empty
+ *  Description) across all provider_pay headers for a provider+month. Used so the YTD math on the
+ *  paystub matches the table's grand Total Owed (which includes adjustments). */
+function adjustmentsTotalForProviderMonth(
+  providerId: string,
+  monthNum: number,
+  ppHeaders: { id: string; provider_id: string; month: number }[],
+  ppRowsByPayId: Map<string, PayRowLite[]>,
+): number {
+  let sum = 0
+  for (const h of ppHeaders) {
+    if (h.provider_id !== providerId || h.month !== monthNum) continue
+    const rows = ppRowsByPayId.get(h.id) ?? []
+    for (const r of rows) {
+      if (r.row_index < PP_ROW_ADJUSTMENTS_START || r.row_index > PP_ROW_ADJUSTMENTS_END) continue
+      const desc = (r.description ?? '').trim()
+      if (desc.length === 0) continue
+      sum += parseNum(r.amount)
+    }
+  }
+  return sum
+}
+
+/** Total owed for one provider in one month — regular monthCollected/arCollected × cut % plus the
+ *  "Paystub Additional Pay" rows. Used both per-month for "Total Owed" on the paystub table and
+ *  rolled up to YTD. */
 function totalOwedForProviderMonth(
   providerId: string,
   monthNum: number,
@@ -174,7 +199,7 @@ function totalOwedForProviderMonth(
   sheets: { id: string; provider_id: string; month: number }[],
   rowsBySheetId: Map<string, SheetRow[]>,
 ): number {
-  return providerMonthAmounts(
+  const base = providerMonthAmounts(
     providerId,
     monthNum,
     cutPercent,
@@ -183,6 +208,7 @@ function totalOwedForProviderMonth(
     sheets,
     rowsBySheetId,
   ).directDeposit
+  return base + adjustmentsTotalForProviderMonth(providerId, monthNum, ppHeaders, ppRowsByPayId)
 }
 
 /** Sum of total owed from January through `throughMonth` (inclusive). */
@@ -592,9 +618,40 @@ export default function Invoices() {
           ? await fetchSheetRowsForSheetIds(apiClient, ytdSheetIds)
           : new Map<string, SheetRow[]>()
 
-      const { data: clinicData } = await apiClient.from('clinics').select('phone, ein').eq('id', row.clinic_id).maybeSingle()
+      const { data: clinicData } = await apiClient
+        .from('clinics')
+        .select('phone, ein, paystub_logo_url, paystub_accent_color')
+        .eq('id', row.clinic_id)
+        .maybeSingle()
       const clinicPhone2 = clinicData?.phone ?? ''
       const clinicEin = clinicData?.ein ?? ''
+      const clinicPaystubAccent: string | null = (clinicData as { paystub_accent_color?: string | null } | null)?.paystub_accent_color ?? null
+      // Fetch the clinic-specific paystub logo as a data URL once per invoice so every paystub
+      // page reuses it without re-downloading. NULL on any failure → renders no logo (per Jenali:
+      // "if there isn't a logo uploaded, nothing — not the American Medical Billing Logo").
+      const clinicLogoSource: string | null = (clinicData as { paystub_logo_url?: string | null } | null)?.paystub_logo_url ?? null
+      let clinicLogoDataUrl: string | null = null
+      if (clinicLogoSource) {
+        try {
+          if (clinicLogoSource.startsWith('data:')) {
+            clinicLogoDataUrl = clinicLogoSource
+          } else {
+            const resp = await fetch(clinicLogoSource)
+            if (resp.ok) {
+              const blob = await resp.blob()
+              clinicLogoDataUrl = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader()
+                reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+                reader.onerror = () => reject(reader.error)
+                reader.readAsDataURL(blob)
+              })
+            }
+          }
+        } catch (e) {
+          console.warn('[Invoices] failed to load clinic paystub logo, falling back to no logo:', e)
+          clinicLogoDataUrl = null
+        }
+      }
 
       // Build paystub entries — one per unique provider
       const invoicePayDateStr = formatInvoicePdfDate(row.payment_date)
@@ -665,9 +722,11 @@ export default function Invoices() {
           ar_total_owed: arOwed,
           ytd: ytdTotal,
           // Fold paystub adjustments into the Direct Deposit Amount. The PDF prints the
-          // Adjustments table with a Subtotal so the math is visible.
+          // adjustments inline in the main earnings table so the math is visible.
           direct_deposit_amount: directDeposit + adjustmentsSum,
           adjustments,
+          clinic_logo_data_url: clinicLogoDataUrl,
+          paystub_accent_color: clinicPaystubAccent,
         })
         empIndex++
       }

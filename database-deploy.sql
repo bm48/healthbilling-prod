@@ -893,7 +893,9 @@ CREATE TABLE "public"."clinics" (
   "ein" text COLLATE "pg_catalog"."default",
   "payroll" int2 NOT NULL DEFAULT 1,
   "invoice_rate" numeric(6,4) DEFAULT NULL::numeric,
-  "show_copay_coinsurance_columns" bool NOT NULL DEFAULT true
+  "show_copay_coinsurance_columns" bool NOT NULL DEFAULT true,
+  "paystub_logo_url" text DEFAULT NULL,
+  "paystub_accent_color" text DEFAULT NULL
 )
 ;
 COMMENT ON COLUMN "public"."clinics"."fax" IS 'Clinic fax number';
@@ -901,6 +903,8 @@ COMMENT ON COLUMN "public"."clinics"."npi" IS 'National Provider Identifier for 
 COMMENT ON COLUMN "public"."clinics"."ein" IS 'Employer Identification Number';
 COMMENT ON COLUMN "public"."clinics"."invoice_rate" IS 'Decimal rate for invoice total (e.g. 0.05 = 5%). Invoice Total = (Ins Pay + Patient Pay + AR) * invoice_rate. Set in Clinic Management.';
 COMMENT ON COLUMN "public"."clinics"."show_copay_coinsurance_columns" IS 'When true, billing sheet (Providers tab) shows Co-pay and Co-Ins columns. When false, both are hidden clinic-wide. Toggled in Clinic Management.';
+COMMENT ON COLUMN "public"."clinics"."paystub_logo_url" IS 'Optional logo for this clinic''s paystub PDF (https URL or data: URL). NULL = no logo. The American Medical Billing logo is never used on paystubs.';
+COMMENT ON COLUMN "public"."clinics"."paystub_accent_color" IS 'Optional accent color (#rrggbb) for the provider-name and Direct Deposit bands on this clinic''s paystub PDF. NULL falls back to light blue.';
 
 -- ----------------------------
 -- Records of clinics

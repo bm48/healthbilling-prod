@@ -771,6 +771,14 @@ export default function SuperAdminSettings() {
               clinicData.show_copay_coinsurance_columns !== undefined
                 ? clinicData.show_copay_coinsurance_columns
                 : editingClinic.show_copay_coinsurance_columns ?? true,
+            paystub_logo_url:
+              clinicData.paystub_logo_url !== undefined
+                ? clinicData.paystub_logo_url
+                : editingClinic.paystub_logo_url ?? null,
+            paystub_accent_color:
+              clinicData.paystub_accent_color !== undefined
+                ? clinicData.paystub_accent_color
+                : editingClinic.paystub_accent_color ?? null,
             updated_at: new Date().toISOString(),
           })
           .eq('id', editingClinic.id)
@@ -788,6 +796,8 @@ export default function SuperAdminSettings() {
             payroll: clinicData.payroll ?? 1,
             invoice_rate: clinicData.invoice_rate ?? null,
             show_copay_coinsurance_columns: clinicData.show_copay_coinsurance_columns ?? true,
+            paystub_logo_url: clinicData.paystub_logo_url ?? null,
+            paystub_accent_color: clinicData.paystub_accent_color ?? null,
           })
 
         if (error) throw error
@@ -2291,6 +2301,8 @@ function ClinicFormModal({
     payroll: (clinic?.payroll ?? 1) as 1 | 2,
     invoice_rate: clinic?.invoice_rate != null ? (Math.round(clinic.invoice_rate * 10000) / 100).toFixed(2) : '',
     show_copay_coinsurance_columns: clinic?.show_copay_coinsurance_columns ?? true,
+    paystub_logo_url: clinic?.paystub_logo_url ?? '',
+    paystub_accent_color: clinic?.paystub_accent_color ?? '',
   })
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -2300,6 +2312,10 @@ function ClinicFormModal({
       return
     }
     const rateNum = formData.invoice_rate.trim() ? parseFloat(formData.invoice_rate) : null
+    // Normalize accent color: must be #rrggbb (6 hex digits) or empty/NULL. Strip "#" then re-add
+    // to canonicalize. Anything malformed → store NULL so the PDF falls back to the default.
+    const rawAccent = formData.paystub_accent_color.trim().replace(/^#/, '')
+    const accentToSave = /^[0-9a-fA-F]{6}$/.test(rawAccent) ? `#${rawAccent.toLowerCase()}` : null
     await onSave({
       name: formData.name.trim(),
       phone: formData.phone.trim() || null,
@@ -2309,6 +2325,8 @@ function ClinicFormModal({
       payroll: formData.payroll,
       invoice_rate: rateNum != null && Number.isFinite(rateNum) ? rateNum / 100 : null,
       show_copay_coinsurance_columns: formData.show_copay_coinsurance_columns,
+      paystub_logo_url: formData.paystub_logo_url.trim() || null,
+      paystub_accent_color: accentToSave,
     })
     onClose()
   }
@@ -2416,6 +2434,131 @@ function ClinicFormModal({
                 </label>
               </div>
               <p className="text-xs text-gray-500 mt-1">When off, both columns are hidden clinic-wide on the Providers tab. Underlying patient values are preserved.</p>
+            </div>
+            <div className="md:col-span-2 pt-2 border-t border-gray-200">
+              <h3 className="text-sm font-semibold text-gray-800 mb-2">Paystub Branding</h3>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Paystub Logo</label>
+              <div className="flex items-start gap-4">
+                {formData.paystub_logo_url ? (
+                  <div className="flex-shrink-0 w-24 h-24 border border-gray-300 rounded-lg bg-gray-50 flex items-center justify-center overflow-hidden">
+                    {/* eslint-disable-next-line jsx-a11y/img-redundant-alt */}
+                    <img
+                      src={formData.paystub_logo_url}
+                      alt="Clinic logo preview"
+                      className="max-w-full max-h-full object-contain"
+                    />
+                  </div>
+                ) : (
+                  <div className="flex-shrink-0 w-24 h-24 border border-dashed border-gray-300 rounded-lg bg-gray-50 flex items-center justify-center text-xs text-gray-400 text-center px-2">
+                    No logo
+                  </div>
+                )}
+                <div className="flex-1 flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <label className="inline-flex items-center px-3 py-2 bg-primary-600 text-white rounded-lg cursor-pointer hover:bg-primary-700 text-sm">
+                      Upload Logo
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/gif,image/webp"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0]
+                          // Reset the input so the same file can be re-selected after a Remove.
+                          e.target.value = ''
+                          if (!file) return
+                          // 2 MB raw → ~2.7 MB base64; well within DB row budget for one column.
+                          const MAX_BYTES = 2 * 1024 * 1024
+                          if (file.size > MAX_BYTES) {
+                            alert(`Logo file is ${(file.size / 1024 / 1024).toFixed(1)} MB. Please choose an image under 2 MB.`)
+                            return
+                          }
+                          try {
+                            const dataUrl = await new Promise<string>((resolve, reject) => {
+                              const reader = new FileReader()
+                              reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+                              reader.onerror = () => reject(reader.error)
+                              reader.readAsDataURL(file)
+                            })
+                            // Auto-downscale images wider than 600px so the stored data URL stays
+                            // small — the paystub renders the logo at ~40mm wide, so bigger source
+                            // pixels just bloat the DB row without improving print quality.
+                            const img = new Image()
+                            const downscaled: string = await new Promise((resolve) => {
+                              img.onload = () => {
+                                const maxW = 600
+                                if (img.width <= maxW) {
+                                  resolve(dataUrl)
+                                  return
+                                }
+                                const scale = maxW / img.width
+                                const canvas = document.createElement('canvas')
+                                canvas.width = Math.round(img.width * scale)
+                                canvas.height = Math.round(img.height * scale)
+                                const ctx = canvas.getContext('2d')
+                                if (!ctx) { resolve(dataUrl); return }
+                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+                                // PNG preserves transparency; JPEG would flatten alpha to black.
+                                resolve(canvas.toDataURL('image/png'))
+                              }
+                              img.onerror = () => resolve(dataUrl)
+                              img.src = dataUrl
+                            })
+                            setFormData((f) => ({ ...f, paystub_logo_url: downscaled }))
+                          } catch (err) {
+                            console.error('[ClinicForm] failed to read logo file:', err)
+                            alert('Could not read that image file. Try a different one.')
+                          }
+                        }}
+                      />
+                    </label>
+                    {formData.paystub_logo_url && (
+                      <button
+                        type="button"
+                        onClick={() => setFormData((f) => ({ ...f, paystub_logo_url: '' }))}
+                        className="px-3 py-2 text-sm text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    PNG, JPG, GIF, or WebP up to 2 MB. Shown top-left on every paystub PDF for this clinic. If no logo is uploaded, paystubs render with no logo — the American Medical Billing logo is never used.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Paystub Accent Color</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={/^#[0-9a-fA-F]{6}$/.test(formData.paystub_accent_color) ? formData.paystub_accent_color : '#add8e6'}
+                  onChange={(e) => setFormData({ ...formData, paystub_accent_color: e.target.value })}
+                  className="h-9 w-12 rounded border border-gray-300 cursor-pointer"
+                  title="Pick accent color"
+                />
+                <input
+                  type="text"
+                  placeholder="#add8e6"
+                  value={formData.paystub_accent_color}
+                  onChange={(e) => setFormData({ ...formData, paystub_accent_color: e.target.value })}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-primary-500 focus:border-primary-500 font-mono text-sm"
+                  maxLength={7}
+                />
+                {formData.paystub_accent_color.trim() !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, paystub_accent_color: '' })}
+                    className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+                    title="Reset to default"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Used for the provider-name and Direct Deposit bands. Empty = light blue default.</p>
             </div>
           </div>
 

@@ -45,6 +45,12 @@ export interface PaystubEntry {
    *  blank and `Total Owed` = `amount`. Amounts are signed: positive = added, negative = deducted.
    *  Notes are optional per row. */
   adjustments?: Array<{ description: string; amount: number; notes: string }>
+  /** Optional clinic-specific logo (data URL) to render in the paystub header. When omitted, NO
+   *  logo is rendered — the American Medical Billing logo never appears on the provider's paystub. */
+  clinic_logo_data_url?: string | null
+  /** Optional clinic-specific accent color as a "#rrggbb" hex string. Applied to the provider-name
+   *  band and the Direct Deposit Amount band. Defaults to light blue (#add8e6) when omitted. */
+  paystub_accent_color?: string | null
 }
 
 const LOGO_X = 14
@@ -112,24 +118,54 @@ function addPaystubClosingFooter(doc: jsPDF): void {
   }
 }
 
+/** Parse a "#rrggbb" hex string into a jsPDF-friendly [r, g, b] triple. Falls back to the default
+ *  light-blue accent ([173, 216, 230]) if the input is missing or malformed. */
+function parsePaystubAccent(hex: string | null | undefined): [number, number, number] {
+  const fallback: [number, number, number] = [173, 216, 230]
+  if (!hex) return fallback
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim())
+  if (!m) return fallback
+  const n = parseInt(m[1], 16)
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
+}
+
 function addPaystubPage(
   doc: jsPDF,
   entry: PaystubEntry,
-  logoDataUrl: string | null,
+  _invoiceLogoDataUrl: string | null,
   isLastPaystub: boolean,
 ): void {
+  // The American Medical Billing logo is intentionally NOT used on the paystub page (Jenali: "if
+  // there isn't a logo uploaded, nothing — not the American Medical Billing Logo"). Each paystub
+  // gets its own clinic logo from entry.clinic_logo_data_url, or no logo at all.
+  void _invoiceLogoDataUrl
   doc.addPage()
   const pageW = doc.internal.pageSize.getWidth()
   const pageH = doc.internal.pageSize.getHeight()
+  const [accentR, accentG, accentB] = parsePaystubAccent(entry.paystub_accent_color)
 
   // ── Header: left = clinic info, right = "Earnings Statement" block ──────
-  if (logoDataUrl) {
+  let clinicLogoRendered = false
+  if (entry.clinic_logo_data_url) {
     try {
-      doc.addImage(logoDataUrl, 'PNG', LOGO_X, LOGO_Y, PAYSTUB_LOGO_W, PAYSTUB_LOGO_H)
-    } catch { /* skip */ }
+      // Detect the actual image format from the data URL prefix; jsPDF needs the right format
+      // string ('PNG' | 'JPEG' | 'GIF' | 'WEBP'). Falls back to PNG for anything unrecognized.
+      const mime = /^data:image\/(png|jpeg|jpg|gif|webp)/i.exec(entry.clinic_logo_data_url)?.[1]?.toLowerCase()
+      const fmt =
+        mime === 'jpeg' || mime === 'jpg' ? 'JPEG'
+        : mime === 'gif' ? 'GIF'
+        : mime === 'webp' ? 'WEBP'
+        : 'PNG'
+      doc.addImage(entry.clinic_logo_data_url, fmt, LOGO_X, LOGO_Y, PAYSTUB_LOGO_W, PAYSTUB_LOGO_H)
+      clinicLogoRendered = true
+    } catch (e) {
+      // Unsupported format / corrupt data → fall through to no-logo layout
+      console.warn('[clinicInvoicePdf] addImage failed for clinic logo, rendering paystub without logo:', e)
+    }
   }
 
-  const clinicBlockY = LOGO_Y + PAYSTUB_LOGO_H + 6
+  // When no clinic logo, drop the address block up by the logo's height so we don't leave a gap.
+  const clinicBlockY = (clinicLogoRendered ? LOGO_Y + PAYSTUB_LOGO_H + 6 : LOGO_Y + 4)
   doc.setFontSize(10)
   doc.setFont('helvetica', 'bold')
   doc.text(entry.clinic_name, LOGO_X, clinicBlockY)
@@ -161,10 +197,10 @@ function addPaystubPage(
   doc.text(ppLabel, pageW - 14 - doc.getTextWidth(ppLabel), 37)
   doc.text(pdLabel, pageW - 14 - doc.getTextWidth(pdLabel), 43)
 
-  // ── Provider name band (light blue) ─────────────────────────────────────
+  // ── Provider name band (clinic-configurable accent color) ─────────────────
   const bandY = 58
   const bandH = 18
-  doc.setFillColor(173, 216, 230)
+  doc.setFillColor(accentR, accentG, accentB)
   doc.rect(14, bandY, pageW - 28, bandH, 'F')
 
   const bandTextY = bandY + bandH / 2 + 3
@@ -267,7 +303,7 @@ function addPaystubPage(
 
   // ── Direct Deposit Amount band ───────────────────────────────────────────
   const ddBandH = 14
-  doc.setFillColor(173, 216, 230)
+  doc.setFillColor(accentR, accentG, accentB)
   doc.rect(14, afterTableY, pageW - 28, ddBandH, 'F')
   doc.setFontSize(10)
   doc.setFont('helvetica', 'bold')
