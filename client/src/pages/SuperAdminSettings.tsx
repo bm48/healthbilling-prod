@@ -3,7 +3,7 @@ import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
 import { apiClient, createApiClientWithStorageKey } from '@/lib/apiClient'
 import { useAuth } from '@/contexts/AuthContext'
 import { User, BillingCode, Clinic, ProviderSheet, AuditLog, Provider } from '@/types'
-import { Users, Palette, FileText, Plus, Edit, Trash2, X, Unlock, Building2, Download, Link2, Check, Key, MapPin, Eye, EyeOff } from 'lucide-react'
+import { Users, Palette, FileText, Plus, Edit, Trash2, X, Unlock, Building2, Download, Link2, Check, Key, MapPin, Eye, EyeOff, Archive, ArchiveRestore } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 import { fetchClinicAddressesByClinicIds } from '@/lib/clinicAddresses'
 import MonthCloseTab from '@/components/MonthCloseTab'
@@ -112,11 +112,6 @@ export default function SuperAdminSettings() {
   const [editingClinic, setEditingClinic] = useState<Clinic | null>(null)
   const [assignClinicUser, setAssignClinicUser] = useState<User | null>(null)
   const [showAssignClinicModal, setShowAssignClinicModal] = useState(false)
-  const [userToDelete, setUserToDelete] = useState<User | null>(null)
-  const [showDeleteUserModal, setShowDeleteUserModal] = useState(false)
-  const [deleteUserPassword, setDeleteUserPassword] = useState('')
-  const [deleteUserError, setDeleteUserError] = useState('')
-  const [deleteUserLoading, setDeleteUserLoading] = useState(false)
   const [clinicToDelete, setClinicToDelete] = useState<Clinic | null>(null)
   const [showDeleteClinicModal, setShowDeleteClinicModal] = useState(false)
   const [deleteClinicPassword, setDeleteClinicPassword] = useState('')
@@ -683,52 +678,6 @@ export default function SuperAdminSettings() {
     }
   }
 
-  const handleConfirmDeleteUser = async () => {
-    if (!userToDelete || !userProfile?.email) return
-    if (userToDelete.id === userProfile.id) {
-      setDeleteUserError('You cannot delete your own account.')
-      return
-    }
-    if (!deleteUserPassword.trim()) {
-      setDeleteUserError('Please enter your password.')
-      return
-    }
-    setDeleteUserError('')
-    setDeleteUserLoading(true)
-    try {
-      const tempClient = createApiClientWithStorageKey('health-billing-auth-verify-password')
-      const { error: signInError } = await tempClient.auth.signInWithPassword({
-        email: userProfile.email,
-        password: deleteUserPassword,
-      })
-      await tempClient.auth.signOut()
-      if (signInError) {
-        setDeleteUserError('Incorrect password.')
-        setDeleteUserLoading(false)
-        return
-      }
-      const { error: deleteError } = await apiClient
-        .from('users')
-        .delete()
-        .eq('id', userToDelete.id)
-      if (deleteError) {
-        setDeleteUserError(deleteError.message || 'Failed to delete user. Please try again.')
-        setDeleteUserLoading(false)
-        return
-      }
-      setShowDeleteUserModal(false)
-      setUserToDelete(null)
-      setDeleteUserPassword('')
-      await fetchUsers()
-      if (variant === 'super_admin') await fetchClinics()
-    } catch (error) {
-      console.error('Error deleting user:', error)
-      setDeleteUserError('Failed to delete user. Please try again.')
-    } finally {
-      setDeleteUserLoading(false)
-    }
-  }
-
   const handleSaveBillingCode = async (codeData: Partial<BillingCode>) => {
     try {
       if (editingBillingCode) {
@@ -1151,17 +1100,12 @@ export default function SuperAdminSettings() {
                                   </button>
                                   {variant === 'super_admin' && user.id !== userProfile?.id && (
                                     <button
-                                      onClick={() => {
-                                        setUserToDelete(user)
-                                        setShowDeleteUserModal(true)
-                                        setDeleteUserPassword('')
-                                        setDeleteUserError('')
-                                      }}
-                                      className="text-red-400 hover:text-red-300"
+                                      onClick={() => openToggleActiveModal(user)}
+                                      className={user.active !== false ? 'text-amber-400 hover:text-amber-300' : 'text-emerald-400 hover:text-emerald-300'}
                                       style={{ padding: '4px' }}
-                                      title="Delete user"
+                                      title={user.active !== false ? 'Archive user' : 'Restore user'}
                                     >
-                                      <Trash2 size={16} />
+                                      {user.active !== false ? <Archive size={16} /> : <ArchiveRestore size={16} />}
                                     </button>
                                   )}
                                 </div>
@@ -1792,72 +1736,6 @@ export default function SuperAdminSettings() {
                   disabled={toggleActiveLoading}
                 >
                   {toggleActiveLoading ? 'Updating...' : 'Confirm'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showDeleteUserModal && userToDelete && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-            <div className="flex justify-between items-center p-6 border-b border-gray-200">
-              <h2 className="text-xl font-semibold text-gray-900">Delete user</h2>
-              <button
-                onClick={() => {
-                  setShowDeleteUserModal(false)
-                  setUserToDelete(null)
-                  setDeleteUserPassword('')
-                  setDeleteUserError('')
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X size={24} />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-gray-700">
-                Permanently delete <strong>{userToDelete.email}</strong>? This cannot be undone. Enter your password to confirm.
-              </p>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Your password (super admin)</label>
-                <input
-                  type="password"
-                  value={deleteUserPassword}
-                  onChange={(e) => {
-                    setDeleteUserPassword(e.target.value)
-                    setDeleteUserError('')
-                  }}
-                  placeholder="Enter your password"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-black"
-                  disabled={deleteUserLoading}
-                />
-                {deleteUserError && (
-                  <p className="text-sm text-red-600 mt-1">{deleteUserError}</p>
-                )}
-              </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowDeleteUserModal(false)
-                    setUserToDelete(null)
-                    setDeleteUserPassword('')
-                    setDeleteUserError('')
-                  }}
-                  className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
-                  disabled={deleteUserLoading}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmDeleteUser}
-                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
-                  disabled={deleteUserLoading}
-                >
-                  {deleteUserLoading ? 'Deleting...' : 'Delete user'}
                 </button>
               </div>
             </div>
