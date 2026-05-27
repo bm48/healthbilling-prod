@@ -268,6 +268,10 @@ export default function Invoices() {
   // ── non-admin state ──────────────────────────────────────────────────────
   const [invoices, setInvoices] = useState<InvoiceRow[]>([])
   const [loading, setLoading] = useState(true)
+  /** clinic_id currently generating a PDF, so we can swap that row's Download icon for a spinner.
+   *  Building the PDF (fetch all paystub data + jsPDF render) typically takes 1–4 s, long enough
+   *  that the user needs feedback or they'll click the button repeatedly. */
+  const [downloadingClinicId, setDownloadingClinicId] = useState<string | null>(null)
   const [clinics, setClinics] = useState<Clinic[]>([])
   const [selectedClinic, setSelectedClinic] = useState<string>('all')
   const [dateFilter, setDateFilter] = useState<'all' | 'this-month' | 'this-year'>('all')
@@ -526,6 +530,8 @@ export default function Invoices() {
   // ── PDF download ──────────────────────────────────────────────────────────
 
   async function handleDownloadClinicInvoice(row: ClinicInvoiceSummaryRow) {
+    if (downloadingClinicId) return // ignore double-clicks while a download is in flight
+    setDownloadingClinicId(row.clinic_id)
     try {
       const month = selectedMonth.getMonth() + 1
       const year = selectedMonth.getFullYear()
@@ -764,6 +770,8 @@ export default function Invoices() {
     } catch (e) {
       console.error(e)
       alert('Failed to generate PDF.')
+    } finally {
+      setDownloadingClinicId(null)
     }
   }
 
@@ -889,10 +897,22 @@ export default function Invoices() {
                               <button
                                 type="button"
                                 onClick={() => handleDownloadClinicInvoice(row)}
-                                className="p-1.5 text-black hover:bg-gray-200/60 rounded inline-flex items-center justify-center"
-                                title="Download invoice PDF (with provider paystubs)"
+                                disabled={downloadingClinicId !== null}
+                                className="p-1.5 text-black hover:bg-gray-200/60 rounded inline-flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+                                title={
+                                  downloadingClinicId === row.clinic_id
+                                    ? 'Generating PDF…'
+                                    : 'Download invoice PDF (with provider paystubs)'
+                                }
                               >
-                                <Download className="w-4 h-4" />
+                                {downloadingClinicId === row.clinic_id ? (
+                                  <span
+                                    className="inline-block w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"
+                                    aria-label="Generating PDF"
+                                  />
+                                ) : (
+                                  <Download className="w-4 h-4" />
+                                )}
                               </button>
                             </td>
                           </tr>

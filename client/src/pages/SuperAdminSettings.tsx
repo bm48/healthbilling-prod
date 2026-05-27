@@ -2304,9 +2304,14 @@ function ClinicFormModal({
     paystub_logo_url: clinic?.paystub_logo_url ?? '',
     paystub_accent_color: clinic?.paystub_accent_color ?? '',
   })
+  /** True while the parent's onSave promise is in flight. Disables the Save button + Cancel and
+   *  swaps the label to "Saving…" so the user knows the request is in progress (especially with
+   *  large logo data URLs the upsert can take 1–2 s). */
+  const [saving, setSaving] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (saving) return
     if (!formData.name.trim()) {
       alert('Clinic name is required')
       return
@@ -2316,19 +2321,28 @@ function ClinicFormModal({
     // to canonicalize. Anything malformed → store NULL so the PDF falls back to the default.
     const rawAccent = formData.paystub_accent_color.trim().replace(/^#/, '')
     const accentToSave = /^[0-9a-fA-F]{6}$/.test(rawAccent) ? `#${rawAccent.toLowerCase()}` : null
-    await onSave({
-      name: formData.name.trim(),
-      phone: formData.phone.trim() || null,
-      fax: formData.fax.trim() || null,
-      npi: formData.npi.trim() || null,
-      ein: formData.ein.trim() || null,
-      payroll: formData.payroll,
-      invoice_rate: rateNum != null && Number.isFinite(rateNum) ? rateNum / 100 : null,
-      show_copay_coinsurance_columns: formData.show_copay_coinsurance_columns,
-      paystub_logo_url: formData.paystub_logo_url.trim() || null,
-      paystub_accent_color: accentToSave,
-    })
-    onClose()
+    setSaving(true)
+    try {
+      await onSave({
+        name: formData.name.trim(),
+        phone: formData.phone.trim() || null,
+        fax: formData.fax.trim() || null,
+        npi: formData.npi.trim() || null,
+        ein: formData.ein.trim() || null,
+        payroll: formData.payroll,
+        invoice_rate: rateNum != null && Number.isFinite(rateNum) ? rateNum / 100 : null,
+        show_copay_coinsurance_columns: formData.show_copay_coinsurance_columns,
+        paystub_logo_url: formData.paystub_logo_url.trim() || null,
+        paystub_accent_color: accentToSave,
+      })
+      onClose()
+    } catch (err) {
+      // Surface the failure so the user can correct + retry instead of being stuck on a spinner.
+      console.error('[ClinicForm] save failed:', err)
+      alert('Could not save the clinic. Please try again.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -2566,15 +2580,23 @@ function ClinicFormModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+              disabled={saving}
+              className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
+              disabled={saving}
+              className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
             >
-              Save
+              {saving && (
+                <span
+                  className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"
+                  aria-hidden="true"
+                />
+              )}
+              {saving ? 'Saving…' : 'Save'}
             </button>
           </div>
         </form>
