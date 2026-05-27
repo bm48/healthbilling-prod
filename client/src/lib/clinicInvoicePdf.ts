@@ -63,8 +63,12 @@ const LOGO_X = 14
 const LOGO_Y = 10
 const INVOICE_LOGO_W = 52
 const INVOICE_LOGO_H = 26
-const PAYSTUB_LOGO_W = 40
-const PAYSTUB_LOGO_H = 20
+// Square bounding box for clinic paystub logos. Square logos fill it 30mm × 30mm; wide and tall
+// logos aspect-fit inside the same square area without stretching. (The earlier 40×20 wide box
+// stretched square logos 2:1 horizontally any time the natural-dimension measurement didn't
+// reach the renderer.)
+const PAYSTUB_LOGO_W = 30
+const PAYSTUB_LOGO_H = 30
 
 async function loadLogoAsDataUrl(): Promise<string> {
   const res = await fetch('/Logo.png')
@@ -135,12 +139,23 @@ function parsePaystubAccent(hex: string | null | undefined): [number, number, nu
   return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
 }
 
-function addPaystubPage(
+/** Read the natural pixel size of an image data URL via the browser's Image decoder. Returns
+ *  {0,0} if decoding fails — the caller treats that as "no dimensions, use the bounding box". */
+async function measureImageDataUrl(dataUrl: string): Promise<{ w: number; h: number }> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+    img.onerror = () => resolve({ w: 0, h: 0 })
+    img.src = dataUrl
+  })
+}
+
+async function addPaystubPage(
   doc: jsPDF,
   entry: PaystubEntry,
   _invoiceLogoDataUrl: string | null,
   isLastPaystub: boolean,
-): void {
+): Promise<void> {
   // The American Medical Billing logo is intentionally NOT used on the paystub page (Jenali: "if
   // there isn't a logo uploaded, nothing — not the American Medical Billing Logo"). Each paystub
   // gets its own clinic logo from entry.clinic_logo_data_url, or no logo at all.
@@ -164,10 +179,16 @@ function addPaystubPage(
         : mime === 'webp' ? 'WEBP'
         : 'PNG'
       // Aspect-fit the logo inside the PAYSTUB_LOGO_W × PAYSTUB_LOGO_H bounding box so wide /
-      // tall / square logos all render at their natural proportions (no stretching). If the
-      // natural dimensions weren't supplied we fall back to the box size — same as before.
-      const naturalW = entry.clinic_logo_natural_width ?? 0
-      const naturalH = entry.clinic_logo_natural_height ?? 0
+      // tall / square logos all render at their natural proportions (no stretching). The caller
+      // (Invoices.tsx) usually measures the natural dimensions for us; if those are missing or
+      // zero we re-measure here so the renderer is robust on its own.
+      let naturalW = entry.clinic_logo_natural_width ?? 0
+      let naturalH = entry.clinic_logo_natural_height ?? 0
+      if (naturalW <= 0 || naturalH <= 0) {
+        const measured = await measureImageDataUrl(entry.clinic_logo_data_url)
+        naturalW = measured.w
+        naturalH = measured.h
+      }
       let drawW = PAYSTUB_LOGO_W
       let drawH = PAYSTUB_LOGO_H
       if (naturalW > 0 && naturalH > 0) {
@@ -451,9 +472,9 @@ export async function generateClinicInvoicePdf(
 
   // ── Page 2+: Provider paystubs ───────────────────────────────────────────
   if (paystubs && paystubs.length > 0) {
-    paystubs.forEach((stub, index) => {
-      addPaystubPage(doc, stub, logoDataUrl, index === paystubs.length - 1)
-    })
+    for (let i = 0; i < paystubs.length; i++) {
+      await addPaystubPage(doc, paystubs[i], logoDataUrl, i === paystubs.length - 1)
+    }
   }
 
   return doc
