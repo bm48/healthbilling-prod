@@ -223,21 +223,41 @@ export default function Layout({ children }: LayoutProps) {
 
   const fetchAllProviders = async (clinicIds: string[]) => {
     try {
-      const { data, error } = await apiClient
-        .from('providers')
-        .select('*')
-        .eq('active', true)
-        .overlaps('clinic_ids', clinicIds)
-        .order('first_name')
-        .order('last_name')
-        .order('first_name')
+      const [providersRes, usersRes] = await Promise.all([
+        apiClient
+          .from('providers')
+          .select('*')
+          .eq('active', true)
+          .overlaps('clinic_ids', clinicIds)
+          .order('first_name')
+          .order('last_name')
+          .order('first_name'),
+        apiClient
+          .from('users')
+          .select('email')
+          .eq('active', true)
+          .eq('role', 'provider'),
+      ])
 
-      if (error) {
-        console.error('Error fetching all providers:', error)
-        throw error
+      if (providersRes.error) {
+        console.error('Error fetching all providers:', providersRes.error)
+        throw providersRes.error
       }
 
-      const providersList = data || []
+      // Only show providers whose email matches an active provider user; dedupe by email
+      const userEmails = new Set(
+        (usersRes.data || [])
+          .map(u => (u.email ?? '').trim().toLowerCase())
+          .filter(Boolean)
+      )
+      const seenEmails = new Set<string>()
+      const providersList = (providersRes.data || []).filter(p => {
+        const email = (p.email ?? '').trim().toLowerCase()
+        if (!email || !userEmails.has(email) || seenEmails.has(email)) return false
+        seenEmails.add(email)
+        return true
+      })
+
       // Group providers by clinic (a provider can appear in multiple clinics)
       const grouped: Record<string, Provider[]> = {}
       providersList.forEach(provider => {
@@ -260,20 +280,41 @@ export default function Layout({ children }: LayoutProps) {
     }
 
     try {
-      const { data, error } = await apiClient
-        .from('providers')
-        .select('*')
-        .eq('active', true)
-        .contains('clinic_ids', [clinicId])
-        .order('last_name')
-        .order('first_name')
+      const [providersRes, usersRes] = await Promise.all([
+        apiClient
+          .from('providers')
+          .select('*')
+          .eq('active', true)
+          .contains('clinic_ids', [clinicId])
+          .order('last_name')
+          .order('first_name'),
+        apiClient
+          .from('users')
+          .select('email')
+          .eq('active', true)
+          .eq('role', 'provider'),
+      ])
 
-      if (error) {
-        console.error('Error fetching providers for clinic:', clinicId, error)
-        throw error
+      if (providersRes.error) {
+        console.error('Error fetching providers for clinic:', clinicId, providersRes.error)
+        throw providersRes.error
       }
 
-      setClinicProviders(prev => ({ ...prev, [clinicId]: data || [] }))
+      // Only show providers whose email matches an active provider user; dedupe by email
+      const userEmails = new Set(
+        (usersRes.data || [])
+          .map(u => (u.email ?? '').trim().toLowerCase())
+          .filter(Boolean)
+      )
+      const seenEmails = new Set<string>()
+      const filtered = (providersRes.data || []).filter(p => {
+        const email = (p.email ?? '').trim().toLowerCase()
+        if (!email || !userEmails.has(email) || seenEmails.has(email)) return false
+        seenEmails.add(email)
+        return true
+      })
+
+      setClinicProviders(prev => ({ ...prev, [clinicId]: filtered }))
     } catch (error) {
       console.error('Error fetching providers:', error)
       setClinicProviders(prev => ({ ...prev, [clinicId]: [] }))
