@@ -279,6 +279,8 @@ interface ProvidersTabProps {
   onRegisterFlushBeforeTabLeave?: (flush: () => Promise<void>) => void
   /** Current grid layout for CSV export (backup download matches visible columns / condensed mode). */
   onExportLayoutChange?: (layout: ProviderSheetUiExportLayout) => void
+  /** Rendered inline with the colored "Billing sheet for ..." title pill (e.g. Select Version button). */
+  labelRightSlot?: React.ReactNode
 }
 
 export default function ProvidersTab({
@@ -322,6 +324,7 @@ export default function ProvidersTab({
   patientAssignmentRevision = 0,
   onRegisterFlushBeforeTabLeave,
   onExportLayoutChange,
+  labelRightSlot,
 }: ProvidersTabProps) {
   
   const { userProfile } = useAuth()
@@ -335,7 +338,16 @@ export default function ProvidersTab({
   const [commentModal, setCommentModal] = useState<{ row: number; col: number; rowId: string; colKey: string } | null>(null)
   const [commentText, setCommentText] = useState('')
   const [commentModalLoading, setCommentModalLoading] = useState(false)
-  const [isCondensed, setIsCondensed] = useState(false)
+  /**
+   * Tri-state condense:
+   *  - 'full'      → all columns
+   *  - 'condensed' → ID through Appt/Note Status (+ Visit Type when on)
+   *  - 'minimal'   → First Name, LI, Date of Service, then Claim Status onward
+   */
+  type CondenseMode = 'full' | 'condensed' | 'minimal'
+  const [condenseMode, setCondenseMode] = useState<CondenseMode>('full')
+  const isCondensed = condenseMode === 'condensed'
+  const isMinimal = condenseMode === 'minimal'
   const [arSumFromDb, setArSumFromDb] = useState<number | null>(null)
   /** Bumped to force Handsontable to resync from props. */
   const [structureVersion, setStructureVersion] = useState(0)
@@ -359,9 +371,18 @@ export default function ProvidersTab({
       isProviderView,
       providerLevel,
       isCondensed,
+      isMinimal,
     }),
-    [showVisitTypeColumn, showCopayCoinsuranceColumns, officeStaffView, isProviderView, providerLevel, isCondensed]
+    [showVisitTypeColumn, showCopayCoinsuranceColumns, officeStaffView, isProviderView, providerLevel, isCondensed, isMinimal]
   )
+
+  /** Indices kept (in the visual column order incl. Visit Type) for minimal-condense mode. */
+  const minimalVisualIndices = useMemo(() => {
+    const vtShift = showVisitTypeColumn ? 1 : 0
+    const indices: number[] = [1, 2, 6]
+    for (let i = 9 + vtShift; i <= 18 + vtShift; i++) indices.push(i)
+    return indices
+  }, [showVisitTypeColumn])
 
   useEffect(() => {
     onExportLayoutChange?.(providerSheetUiLayout)
@@ -725,9 +746,12 @@ export default function ProvidersTab({
       : fieldsOfficeStaffBase
     if (officeStaffView) return fieldsOfficeStaff
     if (isProviderView) return providerLevel === 2 ? fieldsFull : fieldsProviderView
+    if (showCondenseButton && isMinimal) {
+      return minimalVisualIndices.map((i) => fieldsFull[i]) as Array<keyof SheetRow>
+    }
     if (showCondenseButton && isCondensed) return fieldsFull.slice(0, showVisitTypeColumn ? 10 : 9) as Array<keyof SheetRow>
     return fieldsFull
-  }, [officeStaffView, isProviderView, providerLevel, showCondenseButton, isCondensed, showVisitTypeColumn])
+  }, [officeStaffView, isProviderView, providerLevel, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices, showVisitTypeColumn])
 
   // Sum of Ins Pay, Collected from PT, AR, Total (computed from current rows; not stored in DB)
   // For provider level 2 (full) we show full tally; for admin/billing we show insPay, collectedFromPt, total; AR only for provider level 2
@@ -829,13 +853,18 @@ export default function ProvidersTab({
     ? [...columnFieldsOfficeStaffBase.slice(0, 9), 'visit_type', ...columnFieldsOfficeStaffBase.slice(9)]
     : columnFieldsOfficeStaffBase
   const columnFieldsOfficeStaff = dropCopayCoinsFromVisualArr(columnFieldsOfficeStaffWithVisitType)
+  // columnFieldsFull is post-copayCoins-filter; positions 4 (Co-pay) and 5 (Co-Ins) are gone when the flag is off,
+  // so the original visual indices ≥ 6 shift down by 2. Indices < 4 stay the same.
+  const shiftForCopayCoins = (i: number) => (showCopayCoinsuranceColumns ? i : i >= 6 ? i - 2 : i)
   const columnFields = officeStaffView
     ? columnFieldsOfficeStaff
     : isProviderView
       ? (providerLevel === 2 ? columnFieldsFull : columnFieldsProviderView)
-      : (showCondenseButton && isCondensed
-          ? columnFieldsFull.slice(0, showCopayCoinsuranceColumns ? 9 : 7)
-          : columnFieldsFull)
+      : (showCondenseButton && isMinimal
+          ? minimalVisualIndices.map(shiftForCopayCoins).map((i) => columnFieldsFull[i])
+          : showCondenseButton && isCondensed
+            ? columnFieldsFull.slice(0, showCopayCoinsuranceColumns ? 9 : 7)
+            : columnFieldsFull)
   const columnTitles = useMemo(
     () => providerSheetUiExportHeaders(providerSheetUiLayout),
     [providerSheetUiLayout]
@@ -900,6 +929,12 @@ export default function ProvidersTab({
     if (showVisitTypeColumn) fullVisible.push(null)
     fullVisible.push(...full.slice(8))
     const fullVisibleFiltered = dropCopayCoinsFromVisualArr(fullVisible)
+    if (!isProviderView && showCondenseButton && isMinimal) {
+      // After dropCopayCoins, original indices ≥ 6 shift down by 2 when copayCoins is off (indices 4 and 5 are gone).
+      return minimalVisualIndices
+        .map((i) => (showCopayCoinsuranceColumns ? i : i >= 6 ? i - 2 : i))
+        .map((i) => fullVisibleFiltered[i] ?? null)
+    }
     if (!isProviderView && showCondenseButton && isCondensed) {
       // Condense keeps the first 9 (or 10 with visit type) visible columns of the full layout. When co-pay/co-ins
       // are off, the same "through Appt/Note Status (+ Visit Type)" slice ends 2 columns earlier.
@@ -907,7 +942,7 @@ export default function ProvidersTab({
       return fullVisibleFiltered.slice(0, condensedCount)
     }
     return fullVisibleFiltered
-  }, [officeStaffView, isProviderView, providerLevel, showVisitTypeColumn, showCopayCoinsuranceColumns, showCondenseButton, isCondensed])
+  }, [officeStaffView, isProviderView, providerLevel, showVisitTypeColumn, showCopayCoinsuranceColumns, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices])
 
   /** Bumps when lock flags change so Handsontable re-renders headers (see `afterGetColHeader` + `colHeaderRefreshKey`). */
   const providerLocksKey = useMemo(() => {
@@ -1544,6 +1579,15 @@ export default function ProvidersTab({
         readOnly: getReadOnlyForColumn(18 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('notes'))
       },
     ])
+    if (showCondenseButton && isMinimal) {
+      // Minimal keeps First Name (data:1), LI (data:2), DOS (data:6), and Claim Status onward.
+      // Each column's `data` prop is the underlying SheetRow array index, which is preserved across
+      // copay/coins hiding — so filtering by data:N is robust to that flag.
+      const VToffset = showVisitTypeColumn ? 1 : 0
+      const keep = new Set<number>([1, 2, 6])
+      for (let i = 9 + VToffset; i <= 18 + VToffset; i++) keep.add(i)
+      return fullProviderColumns.filter((c) => typeof c.data === 'number' && keep.has(c.data))
+    }
     if (showCondenseButton && isCondensed) {
       // Condense shows ID through Appt/Note Status (+ Visit Type when on). With Co-pay/Co-Ins hidden,
       // that's 2 fewer columns at the front of the array, so the slice end shrinks by 2.
@@ -1551,7 +1595,7 @@ export default function ProvidersTab({
       return fullProviderColumns.slice(0, condensedCount)
     }
     return fullProviderColumns
-  }, [activeProvider, clinicPayroll, billingCodes, statusColors, getCPTColor, getStatusColor, getMonthColor, patients, canEdit, lockData, getReadOnly, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, showCopayCoinsuranceColumns, restrictEditToSchedulingColumns])
+  }, [activeProvider, clinicPayroll, billingCodes, statusColors, getCPTColor, getStatusColor, getMonthColor, patients, canEdit, lockData, getReadOnly, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, showVisitTypeColumn, showCopayCoinsuranceColumns, restrictEditToSchedulingColumns])
 
   const afterGetProviderColHeader = useCallback(
     (col: number, TH: HTMLTableCellElement, headerLevel?: number) => {
@@ -1722,7 +1766,11 @@ export default function ProvidersTab({
       ? fieldsOfficeStaff
       : isProviderView
         ? (providerLevel === 2 ? fieldsFull : fieldsProviderView)
-        : (showCondenseButton && isCondensed ? fieldsFull.slice(0, showVisitTypeColumn ? 10 : 9) : fieldsFull)
+        : (showCondenseButton && isMinimal
+            ? (minimalVisualIndices.map((i) => fieldsFull[i]) as Array<keyof SheetRow>)
+            : showCondenseButton && isCondensed
+              ? fieldsFull.slice(0, showVisitTypeColumn ? 10 : 9)
+              : fieldsFull)
     
     const dateFields: (keyof SheetRow)[] = ['appointment_date', 'submit_date', 'payment_date', 'ar_date']
     // Start from latest ref when same provider so rapid edits accumulate (parent state may not have updated yet).
@@ -2225,7 +2273,7 @@ export default function ProvidersTab({
     if (hadPatientIdMerge || hadPatientIdClear || hadDateColumnEdit || hadTotalAutoUpdate || uniqueDeleteIds.length > 0) {
       setStructureVersion((v) => v + 1)
     }
-  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRow, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
+  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRow, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
 
   const createEmptySheetRowForSync = useCallback(
     (providerId: string, emptySuffix: number): SheetRow => ({
@@ -2574,7 +2622,10 @@ export default function ProvidersTab({
         ? ['#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#fce5cd', '#ead1dd', '#b191cd', '#b191cd', '#b191cd'] // Patient through Appt/Note Status, then PT payment columns
         : isProviderView
           ? ['#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#fce5cd', '#ead1dd'] // Patient info (pink), Date/CPT (orange/beige), Appt/Note Status (purple/pink)
-          : (showCondenseButton && isCondensed ? [fullHeaderColors[0], ...fullHeaderColors.slice(0, 9)] : [fullHeaderColors[0], ...fullHeaderColors])
+          : showCondenseButton && isMinimal
+            // Minimal: First Name, LI, DOS (all pink), then claim status onward (pulled from fullHeaderColors at indices 9..18).
+            ? [fullHeaderColors[0], '#f5cbcc', '#f5cbcc', '#f5cbcc', ...fullHeaderColors.slice(9)]
+            : (showCondenseButton && isCondensed ? [fullHeaderColors[0], ...fullHeaderColors.slice(0, 9)] : [fullHeaderColors[0], ...fullHeaderColors])
       
       // Apply header colors
       setTimeout(() => {
@@ -2591,7 +2642,7 @@ export default function ProvidersTab({
         })
       }, 100)
     }
-  }, [activeProvider, providerColumnsWithLocks, isProviderView, officeStaffView, showCondenseButton, isCondensed])
+  }, [activeProvider, providerColumnsWithLocks, isProviderView, officeStaffView, showCondenseButton, isCondensed, isMinimal])
 
   const tableContainerRef = useRef<HTMLDivElement>(null)
   const [tableHeight, setTableHeight] = useState(isInSplitScreen ? 400 : 600)
@@ -2627,6 +2678,7 @@ export default function ProvidersTab({
         statusColors={statusColors}
         label="Billing sheet for"
         isInSplitScreen={isInSplitScreen}
+        labelRightSlot={labelRightSlot}
         onChange={(date, payroll) => {
           if (onSelectMonth) {
             onSelectMonth(date, payroll)
@@ -2634,19 +2686,32 @@ export default function ProvidersTab({
         }}
       />
 
-      {showCondenseButton && (
-        <div className="flex justify-end -mt-6">
-          <button
-            type="button"
-            onClick={() => setIsCondensed(prev => !prev)}
-            className="w-7 h-6 flex items-center justify-center rounded border border-white/30 bg-white/10 text-white hover:bg-white/20 font-bold text-sm"
-            title={isCondensed ? 'Show all columns' : 'Condense (hide Claim Status through Notes)'}
-            aria-label={isCondensed ? 'Show all columns' : 'Condense columns'}
-          >
-            {isCondensed ? '+' : '−'}
-          </button>
-        </div>
-      )}
+      {showCondenseButton && (() => {
+        const nextMode: CondenseMode = condenseMode === 'full' ? 'condensed' : condenseMode === 'condensed' ? 'minimal' : 'full'
+        const titleByMode: Record<CondenseMode, string> = {
+          full: 'Condense (hide Claim Status through Notes)',
+          condensed: 'Show only First Name, LI, Date of Service + Claim Status onward',
+          minimal: 'Show all columns',
+        }
+        const labelByMode: Record<CondenseMode, string> = {
+          full: '−',
+          condensed: '⇥',
+          minimal: '+',
+        }
+        return (
+          <div className="flex justify-end -mt-6">
+            <button
+              type="button"
+              onClick={() => setCondenseMode(nextMode)}
+              className="w-7 h-6 flex items-center justify-center rounded border border-white/30 bg-white/10 text-white hover:bg-white/20 font-bold text-sm"
+              title={titleByMode[condenseMode]}
+              aria-label={titleByMode[condenseMode]}
+            >
+              {labelByMode[condenseMode]}
+            </button>
+          </div>
+        )
+      })()}
 
       <div 
         ref={tableContainerRef}

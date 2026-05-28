@@ -3380,59 +3380,62 @@ export default function ClinicDetail() {
             : providerSheetRows
         const canEditProviders = canEdit && !backupOverrideRows
         const currentSheetForBackup = providerId ? providerSheets[providerId] : null
+        const providersBackupBar = userProfile?.role === 'super_admin' && currentSheetForBackup?.id ? (
+          // Wrap with `mb-6` to cancel BackupVersionsBar's `-mb-6` so the inline placement
+          // next to the colored title doesn't pull the months row up over it.
+          <div className="mb-6 [&>div]:m-0 [&>div]:p-0">
+            <BackupVersionsBar
+              backupType="providers"
+              entityId={currentSheetForBackup.id}
+              viewingVersion={selectedBackupVersion}
+              getDownloadFilename={(v) => {
+                const providerName = currentProvider
+                  ? `${(currentProvider.first_name ?? '').trim()} ${(currentProvider.last_name ?? '').trim()}`.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Provider'
+                  : 'Provider'
+                const d = new Date(v.created_at)
+                const Y = d.getFullYear()
+                const M = String(d.getMonth() + 1).padStart(2, '0')
+                const D = String(d.getDate()).padStart(2, '0')
+                const h = String(d.getHours()).padStart(2, '0')
+                const m = String(d.getMinutes()).padStart(2, '0')
+                const dateTime = `${Y}-${M}-${D} ${h}.${m}`
+                return `${providerName}_Billing_${dateTime}.csv`
+              }}
+              getDownloadBlob={async (version) => {
+                const raw = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
+                const padded = padSheetRowsTo200(raw)
+                const layout =
+                  providerSheetExportLayoutRef.current ?? {
+                    showVisitTypeColumn: providersTabShowVisitTypeColumn,
+                    showCopayCoinsuranceColumns: clinic?.show_copay_coinsurance_columns ?? true,
+                    officeStaffView: isOfficeStaff,
+                    isProviderView: false,
+                    providerLevel: 1,
+                    isCondensed: false,
+                  }
+                const csv = sheetRowsToUiCsv(padded, patients, layout)
+                return new Blob([csv], { type: 'text/csv;charset=utf-8' })
+              }}
+              onSelectVersion={async (version) => {
+                const requestedId = version.id
+                lastRequestedBackupIdRef.current = requestedId
+                const rows = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
+                if (lastRequestedBackupIdRef.current !== requestedId) return
+                setBackupOverrideRows(padSheetRowsTo200(rows))
+                setSelectedBackupVersion(version)
+                setBackupViewKey((k) => k + 1)
+              }}
+              onBackToCurrent={() => {
+                setBackupOverrideRows(null)
+                setSelectedBackupVersion(null)
+              }}
+            />
+          </div>
+        ) : null
         return (
           <>
-            {userProfile?.role === 'super_admin' && currentSheetForBackup?.id && (
-              <div className="mb-4">
-                <BackupVersionsBar
-                  backupType="providers"
-                  entityId={currentSheetForBackup.id}
-                  viewingVersion={selectedBackupVersion}
-                  getDownloadFilename={(v) => {
-                    const providerName = currentProvider
-                      ? `${(currentProvider.first_name ?? '').trim()} ${(currentProvider.last_name ?? '').trim()}`.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Provider'
-                      : 'Provider'
-                    const d = new Date(v.created_at)
-                    const Y = d.getFullYear()
-                    const M = String(d.getMonth() + 1).padStart(2, '0')
-                    const D = String(d.getDate()).padStart(2, '0')
-                    const h = String(d.getHours()).padStart(2, '0')
-                    const m = String(d.getMinutes()).padStart(2, '0')
-                    const dateTime = `${Y}-${M}-${D} ${h}.${m}`
-                    return `${providerName}_Billing_${dateTime}.csv`
-                  }}
-                  getDownloadBlob={async (version) => {
-                    const raw = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
-                    const padded = padSheetRowsTo200(raw)
-                    const layout =
-                      providerSheetExportLayoutRef.current ?? {
-                        showVisitTypeColumn: providersTabShowVisitTypeColumn,
-                        showCopayCoinsuranceColumns: clinic?.show_copay_coinsurance_columns ?? true,
-                        officeStaffView: isOfficeStaff,
-                        isProviderView: false,
-                        providerLevel: 1,
-                        isCondensed: false,
-                      }
-                    const csv = sheetRowsToUiCsv(padded, patients, layout)
-                    return new Blob([csv], { type: 'text/csv;charset=utf-8' })
-                  }}
-                  onSelectVersion={async (version) => {
-                    const requestedId = version.id
-                    lastRequestedBackupIdRef.current = requestedId
-                    const rows = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
-                    if (lastRequestedBackupIdRef.current !== requestedId) return
-                    setBackupOverrideRows(padSheetRowsTo200(rows))
-                    setSelectedBackupVersion(version)
-                    setBackupViewKey((k) => k + 1)
-                  }}
-                  onBackToCurrent={() => {
-                    setBackupOverrideRows(null)
-                    setSelectedBackupVersion(null)
-                  }}
-                />
-              </div>
-            )}
             <ProvidersTab
+              labelRightSlot={providersBackupBar}
               key={selectedMonthKey}
               clinicId={clinicId}
               clinicPayroll={clinic?.payroll ?? 1}

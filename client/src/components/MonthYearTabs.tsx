@@ -10,6 +10,8 @@ interface MonthYearTabsProps {
   label?: string
   isInSplitScreen?: boolean
   rightSlot?: ReactNode
+  /** Rendered to the right of the colored title pill — e.g. the Select Version button. */
+  labelRightSlot?: ReactNode
   /** Year dropdown starts at this year (default 2024). */
   minYear?: number
 }
@@ -40,6 +42,7 @@ export default function MonthYearTabs({
   label,
   isInSplitScreen = false,
   rightSlot,
+  labelRightSlot,
   minYear = 2024,
 }: MonthYearTabsProps) {
   const monthColorByName = useMemo(() => {
@@ -86,20 +89,16 @@ export default function MonthYearTabs({
     : `${currentMonthName} ${currentYear}`
 
   return (
-    <div
-      className={`rounded-lg border border-slate-700 bg-slate-900/40 backdrop-blur-sm ${
-        isInSplitScreen ? 'p-2' : 'p-3'
-      } mb-3`}
-      style={{ width: '100%' }}
-    >
+    <div className={`${isInSplitScreen ? 'mb-2' : 'mb-3'}`} style={{ width: '100%' }}>
       {label && (
-        <div className="mb-2 flex justify-center">
+        <div className="mb-2 flex justify-center items-center gap-3 flex-wrap">
           <div
-            className="text-center text-sm font-semibold rounded px-3 py-1 inline-block"
+            className="text-center text-base font-semibold rounded px-3 py-1.5 inline-block"
             style={{ backgroundColor: activeBg, color: activeText }}
           >
             {label} {labelSuffix}
           </div>
+          {labelRightSlot && <div className="shrink-0">{labelRightSlot}</div>}
         </div>
       )}
       <div className={`flex items-center gap-2 ${isInSplitScreen ? 'flex-wrap' : 'flex-wrap md:flex-nowrap'}`}>
