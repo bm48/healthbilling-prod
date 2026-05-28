@@ -32,7 +32,27 @@ export default function ProviderSheetPage() {
   const [patientAssignmentRevision, setPatientAssignmentRevision] = useState(0)
   const [billingCodes, setBillingCodes] = useState<BillingCode[]>([])
   const [statusColors, setStatusColors] = useState<StatusColor[]>([])
-  const [selectedMonth, setSelectedMonth] = useState<Date>(new Date())
+  // Persist selectedMonth per (clinic, provider) so navigating between My Sheet / AR / Provider Pay
+  // (and back from outside routes) restores the same month instead of resetting to the current month.
+  const monthStorageKey = urlClinicId ? `provider-sheet-month-${urlClinicId}` : null
+  const [selectedMonth, setSelectedMonth] = useState<Date>(() => {
+    if (!monthStorageKey) return new Date()
+    try {
+      const raw = sessionStorage.getItem(monthStorageKey)
+      if (raw) return new Date(raw)
+    } catch {
+      // ignore
+    }
+    return new Date()
+  })
+  useEffect(() => {
+    if (!monthStorageKey) return
+    try {
+      sessionStorage.setItem(monthStorageKey, selectedMonth.toISOString())
+    } catch {
+      // sessionStorage may be unavailable; picker still works in-memory.
+    }
+  }, [monthStorageKey, selectedMonth])
   const providerSheetRowsRef = useRef<Record<string, SheetRow[]>>({})
   const saveProviderSheetInProgressRef = useRef<Set<string>>(new Set())
   const pendingProviderSheetSaveRef = useRef<Record<string, SheetRow[]>>({})
@@ -786,21 +806,9 @@ export default function ProviderSheetPage() {
     [providerSheetRows, saveProviderSheetRows]
   )
 
-  const formatMonthYear = (date: Date) =>
-    date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
   const filterRowsByMonth = (rows: SheetRow[]) => rows
-  const handlePreviousMonth = () =>
-    setSelectedMonth(d => {
-      const n = new Date(d)
-      n.setMonth(n.getMonth() - 1)
-      return n
-    })
-  const handleNextMonth = () =>
-    setSelectedMonth(d => {
-      const n = new Date(d)
-      n.setMonth(n.getMonth() + 1)
-      return n
-    })
+  const handleSelectMonth = (date: Date) =>
+    setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))
   if (authLoading || (userProfile?.role === 'provider' && loading && !provider)) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -895,9 +903,7 @@ export default function ProviderSheetPage() {
           onDeleteRow={handleDeleteProviderSheetRow}
           onAddRowBelow={handleAddProviderRowBelow}
           onAddRowAbove={handleAddProviderRowAbove}
-          onPreviousMonth={handlePreviousMonth}
-          onNextMonth={handleNextMonth}
-          formatMonthYear={formatMonthYear}
+          onSelectMonth={handleSelectMonth}
           filterRowsByMonth={filterRowsByMonth}
           isLockProviders={isLockProviders}
         />
@@ -922,9 +928,7 @@ export default function ProviderSheetPage() {
           canEdit={false}
           isInSplitScreen={false}
           selectedMonth={selectedMonth}
-          onPreviousMonth={handlePreviousMonth}
-          onNextMonth={handleNextMonth}
-          formatMonthYear={formatMonthYear}
+          onSelectMonth={handleSelectMonth}
           statusColors={statusColors}
         />
       )}

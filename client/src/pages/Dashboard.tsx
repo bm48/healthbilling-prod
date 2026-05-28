@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { apiClient } from '@/lib/apiClient'
 import { Clinic, Provider } from '@/types'
 import ClinicCard, { ClinicCardStats } from '@/components/ClinicCard'
+import { dedupeProvidersByUser, fetchActiveProviderUserEmails } from '@/lib/providerUserFilter'
 
 interface DashboardStats {
   totalClinics: number
@@ -188,18 +189,26 @@ export default function Dashboard() {
 
   const fetchProvidersForClinics = async (clinicIds: string[]) => {
     try {
-      const { data, error } = await apiClient
-        .from('providers')
-        .select('*')
-        .eq('active', true)
-        .overlaps('clinic_ids', clinicIds)
-        .order('last_name')
-        .order('first_name')
+      const [providersRes, userEmails] = await Promise.all([
+        apiClient
+          .from('providers')
+          .select('*')
+          .eq('active', true)
+          .overlaps('clinic_ids', clinicIds)
+          .order('last_name')
+          .order('first_name'),
+        fetchActiveProviderUserEmails(),
+      ])
 
-      if (error) throw error
+      if (providersRes.error) throw providersRes.error
+
+      const { displayedProviders } = dedupeProvidersByUser(
+        (providersRes.data || []) as Provider[],
+        userEmails
+      )
 
       const grouped: Record<string, Provider[]> = {}
-      data?.forEach((provider: Provider) => {
+      displayedProviders.forEach((provider) => {
         (provider.clinic_ids || []).forEach((cid: string) => {
           if (!grouped[cid]) grouped[cid] = []
           grouped[cid].push(provider)
@@ -221,6 +230,9 @@ export default function Dashboard() {
       const nextMonth = m === 12 ? [y + 1, 1] : [y, m + 1]
       const nextMonthStart = `${nextMonth[0]}-${String(nextMonth[1]).padStart(2, '0')}-01`
 
+      // Fetch the active provider user emails once and reuse across clinics
+      const userEmails = await fetchActiveProviderUserEmails()
+
       await Promise.all(
         clinicIds.map(async (clinicId) => {
           const [patientsResult, providersResult, todosResult, arResult] = await Promise.all([
@@ -230,7 +242,7 @@ export default function Dashboard() {
               .eq('clinic_id', clinicId),
             apiClient
               .from('providers')
-              .select('id', { count: 'exact', head: true })
+              .select('id, email')
               .eq('active', true)
               .contains('clinic_ids', [clinicId]),
             apiClient
@@ -254,10 +266,15 @@ export default function Dashboard() {
             currentMonthTotal = sum
           }
 
+          const { displayedProviders } = dedupeProvidersByUser(
+            (providersResult.data || []) as Provider[],
+            userEmails
+          )
+
           statsMap[clinicId] = {
             clinicId,
             patientCount: patientsResult.count || 0,
-            providerCount: providersResult.count || 0,
+            providerCount: displayedProviders.length,
             todoCount: todosResult.count || 0,
             currentMonthTotal,
           }

@@ -18,6 +18,7 @@ import { Patient, ProviderSheet, SheetRow, Clinic, Provider, BillingCode, Status
 import { useAuth } from '@/contexts/AuthContext'
 import { Users, CheckSquare, FileText, Trash2, Lock, Unlock, Download, Columns, DollarSign } from 'lucide-react'
 import { useDebouncedSave } from '@/lib/useDebouncedSave'
+import { dedupeProvidersByUser, fetchActiveProviderUserEmails } from '@/lib/providerUserFilter'
 import PatientsTab from '@/components/tabs/PatientsTab'
 import BillingTodoTab from '@/components/tabs/BillingTodoTab'
 import ProvidersTab from '@/components/tabs/ProvidersTab'
@@ -235,9 +236,32 @@ export default function ClinicDetail() {
   const blockUrlTabSyncDuringFlushRef = useRef(false)
   const [urlSyncRetryNonce, setUrlSyncRetryNonce] = useState(0)
 
-  // Month filter for provider tab (and pay-period half when clinic has payroll=2)
-  const [selectedMonth, setSelectedMonth] = useState<Date>(new Date())
-  const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(1)
+  // Month filter for provider tab (and pay-period half when clinic has payroll=2).
+  // Read initial state from sessionStorage so navigating away to Patient Info (or other
+  // routes that remount ClinicDetail) and back restores the previously selected sheet.
+  const monthStateStorageKey = clinicId ? `clinic-detail-month-state-${clinicId}` : null
+  const initialMonthState = useMemo(() => {
+    if (!monthStateStorageKey) return null
+    try {
+      const raw = sessionStorage.getItem(monthStateStorageKey)
+      if (!raw) return null
+      return JSON.parse(raw) as {
+        selectedMonth?: string
+        selectedPayroll?: 1 | 2
+        selectedMonthProviderPay?: string
+        selectedPayrollProviderPay?: 1 | 2
+      }
+    } catch {
+      return null
+    }
+    // Run once per clinicId; we don't want this to re-fire on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monthStateStorageKey])
+
+  const [selectedMonth, setSelectedMonth] = useState<Date>(() =>
+    initialMonthState?.selectedMonth ? new Date(initialMonthState.selectedMonth) : new Date()
+  )
+  const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(initialMonthState?.selectedPayroll ?? 1)
   const selectedMonthKey =
     clinic?.payroll === 2
       ? `${selectedMonth.getFullYear()}-${selectedMonth.getMonth() + 1}-${selectedPayroll}`
@@ -251,8 +275,32 @@ export default function ClinicDetail() {
   const providerSheetRows = providerSheetRowsByMonth[selectedMonthKey] ?? {}
 
   // Provider Pay tab has its own month (payout month often lags: January work pays in February)
-  const [selectedMonthProviderPay, setSelectedMonthProviderPay] = useState<Date>(new Date())
-  const [selectedPayrollProviderPay, setSelectedPayrollProviderPay] = useState<1 | 2>(1)
+  const [selectedMonthProviderPay, setSelectedMonthProviderPay] = useState<Date>(() =>
+    initialMonthState?.selectedMonthProviderPay
+      ? new Date(initialMonthState.selectedMonthProviderPay)
+      : new Date()
+  )
+  const [selectedPayrollProviderPay, setSelectedPayrollProviderPay] = useState<1 | 2>(
+    initialMonthState?.selectedPayrollProviderPay ?? 1
+  )
+
+  // Persist month/payroll selections per clinic so returning to this clinic restores the same sheet.
+  useEffect(() => {
+    if (!monthStateStorageKey) return
+    try {
+      sessionStorage.setItem(
+        monthStateStorageKey,
+        JSON.stringify({
+          selectedMonth: selectedMonth.toISOString(),
+          selectedPayroll,
+          selectedMonthProviderPay: selectedMonthProviderPay.toISOString(),
+          selectedPayrollProviderPay,
+        })
+      )
+    } catch {
+      // sessionStorage may be unavailable (e.g. private mode quota); ignore — picker still works in-memory.
+    }
+  }, [monthStateStorageKey, selectedMonth, selectedPayroll, selectedMonthProviderPay, selectedPayrollProviderPay])
   const providersRef = useRef<Provider[]>([])
   // Provider sheet rows for editable view (when viewing a specific provider's sheet via providerId param)
   type ProviderCptRowSnapshot = {
@@ -1552,101 +1600,6 @@ export default function ClinicDetail() {
     }
   }
 
-  // Month navigation functions
-  const handlePreviousMonth = () => {
-    if (clinic?.payroll === 2) {
-      if (selectedPayroll === 2) {
-        setSelectedPayroll(1)
-      } else {
-        setSelectedPayroll(2)
-        setSelectedMonth((prev) => {
-          const d = new Date(prev)
-          d.setMonth(d.getMonth() - 1)
-          return d
-        })
-      }
-    } else {
-      setSelectedMonth((prev) => {
-        const d = new Date(prev)
-        d.setMonth(d.getMonth() - 1)
-        return d
-      })
-    }
-  }
-
-  const handleNextMonth = () => {
-    if (clinic?.payroll === 2) {
-      if (selectedPayroll === 1) {
-        setSelectedPayroll(2)
-      } else {
-        setSelectedPayroll(1)
-        setSelectedMonth((prev) => {
-          const d = new Date(prev)
-          d.setMonth(d.getMonth() + 1)
-          return d
-        })
-      }
-    } else {
-      setSelectedMonth((prev) => {
-        const d = new Date(prev)
-        d.setMonth(d.getMonth() + 1)
-        return d
-      })
-    }
-  }
-
-  /** Format month/year for display; when payroll=2 and payroll half is passed, show "January 1st Half 2025". */
-  const formatMonthYear = (date: Date, payroll?: 1 | 2) => {
-    if (clinic?.payroll === 2 && payroll != null) {
-      const monthName = date.toLocaleDateString('en-US', { month: 'long' })
-      const half = payroll === 1 ? '1st' : '2nd'
-      return `${monthName} ${half} Half ${date.getFullYear()}`
-    }
-    return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
-  }
-
-  const handlePreviousMonthProviderPay = () => {
-    if (clinic?.payroll === 2) {
-      if (selectedPayrollProviderPay === 2) {
-        setSelectedPayrollProviderPay(1)
-      } else {
-        setSelectedPayrollProviderPay(2)
-        setSelectedMonthProviderPay((prev) => {
-          const d = new Date(prev)
-          d.setMonth(d.getMonth() - 1)
-          return d
-        })
-      }
-    } else {
-      setSelectedMonthProviderPay((prev) => {
-        const d = new Date(prev)
-        d.setMonth(d.getMonth() - 1)
-        return d
-      })
-    }
-  }
-
-  const handleNextMonthProviderPay = () => {
-    if (clinic?.payroll === 2) {
-      if (selectedPayrollProviderPay === 1) {
-        setSelectedPayrollProviderPay(2)
-      } else {
-        setSelectedPayrollProviderPay(1)
-        setSelectedMonthProviderPay((prev) => {
-          const d = new Date(prev)
-          d.setMonth(d.getMonth() + 1)
-          return d
-        })
-      }
-    } else {
-      setSelectedMonthProviderPay((prev) => {
-        const d = new Date(prev)
-        d.setMonth(d.getMonth() + 1)
-        return d
-      })
-    }
-  }
-
   const filterRowsByMonth = (rows: SheetRow[]) => {
     // Since we're now fetching provider sheets by month/year from the database,
     // all rows already belong to the selected month. No filtering needed.
@@ -2115,20 +2068,26 @@ export default function ClinicDetail() {
     const run = (async () => {
       try {
         providersDebugClinic('fetchProviders → providers select *', { clinicId })
-        const { data, error } = await apiClient
-          .from('providers')
-          .select('*')
-          .eq('active', true)
-          .contains('clinic_ids', [clinicId])
-          .order('last_name')
-          .order('first_name')
+        const [providersRes, userEmails] = await Promise.all([
+          apiClient
+            .from('providers')
+            .select('*')
+            .eq('active', true)
+            .contains('clinic_ids', [clinicId])
+            .order('last_name')
+            .order('first_name'),
+          fetchActiveProviderUserEmails(),
+        ])
 
-        if (error) throw error
-        const fetchedProviders = data || []
+        if (providersRes.error) throw providersRes.error
+        const { displayedProviders } = dedupeProvidersByUser(
+          (providersRes.data || []) as Provider[],
+          userEmails
+        )
         // Preserve any unsaved providers (with 'new-' prefix)
         setProviders((currentProviders) => {
           const unsavedProviders = currentProviders.filter((p) => p.id.startsWith('new-'))
-          const next = [...unsavedProviders, ...fetchedProviders]
+          const next = [...unsavedProviders, ...displayedProviders]
           providersRef.current = next
           return next
         })
@@ -3392,9 +3351,11 @@ export default function ClinicDetail() {
               canTogglePastMonthWholeSheetLock={canLockColumns}
               isInSplitScreen={!!splitScreen}
               selectedMonth={selectedMonthProviderPay}
-              onPreviousMonth={handlePreviousMonthProviderPay}
-              onNextMonth={handleNextMonthProviderPay}
-              formatMonthYear={formatMonthYear}
+              onSelectMonth={(date) => {
+                setSelectedMonthProviderPay(new Date(date.getFullYear(), date.getMonth(), 1))
+              }}
+              selectedPayroll={clinic?.payroll === 2 ? selectedPayrollProviderPay : undefined}
+              onPayrollChange={(p) => setSelectedPayrollProviderPay(p)}
               statusColors={statusColors}
               isLockProviderPay={isLockProviderPay}
               onLockColumn={canLockColumns ? (columnName: string) => {
@@ -3496,9 +3457,10 @@ export default function ClinicDetail() {
               onDeleteRow={handleDeleteProviderSheetRow}
               onAddRowBelow={handleAddProviderRowBelow}
               onAddRowAbove={handleAddProviderRowAbove}
-              onPreviousMonth={handlePreviousMonth}
-              onNextMonth={handleNextMonth}
-              formatMonthYear={formatMonthYear}
+              onSelectMonth={(date, payroll) => {
+                setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))
+                if (clinic?.payroll === 2) setSelectedPayroll(payroll)
+              }}
               filterRowsByMonth={filterRowsByMonth}
               isLockProviders={isLockProviders}
               onLockProviderColumn={canLockColumns ? (columnName: string) => {

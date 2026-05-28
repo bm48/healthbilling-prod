@@ -1,6 +1,7 @@
 import { Provider, SheetRow, BillingCode, StatusColor, Patient, IsLockProviders, AccountsReceivable } from '@/types'
-import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
+import MonthYearTabs from '@/components/MonthYearTabs'
 import Handsontable from 'handsontable'
 import { createBubbleDropdownRenderer, createMultiBubbleDropdownRenderer, MultiSelectCptEditor, DateOfServiceEditor, currencyCellRenderer, copayTextCellRenderer, coinsuranceTextCellRenderer } from '@/lib/handsontableCustomRenderers'
 import { useCallback, useMemo, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -244,10 +245,12 @@ interface ProvidersTabProps {
   onDeleteRow?: (providerId: string, rowId: string) => void
   onAddRowBelow?: (providerId: string, afterRowId: string) => void
   onAddRowAbove?: (providerId: string, beforeRowId: string) => void
-  onPreviousMonth: () => void
-  onNextMonth: () => void
+  onPreviousMonth?: () => void
+  onNextMonth?: () => void
   /** When clinicPayroll=2, second arg shows "January 1st Half" / "January 2nd Half". */
-  formatMonthYear: (date: Date, payroll?: 1 | 2) => string
+  formatMonthYear?: (date: Date, payroll?: 1 | 2) => string
+  /** Preferred month picker callback used by MonthYearTabs (year dropdown + month buttons). */
+  onSelectMonth?: (date: Date, payroll: 1 | 2) => void
   filterRowsByMonth: (rows: SheetRow[]) => SheetRow[]
   isLockProviders?: IsLockProviders | null
   onLockProviderColumn?: (columnName: string) => void
@@ -301,9 +304,7 @@ export default function ProvidersTab({
   onDeleteRow,
   onAddRowBelow,
   onAddRowAbove,
-  onPreviousMonth,
-  onNextMonth,
-  formatMonthYear,
+  onSelectMonth,
   selectedPayroll,
   filterRowsByMonth,
   isLockProviders,
@@ -2619,39 +2620,19 @@ export default function ProvidersTab({
   return (
     <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
       {/* <h1 className="text-3xl font-bold text-white">{activeProvider?.first_name} {activeProvider?.last_name}</h1> */}
-      {/* month selector - background color from status_colors (month type), like Ins Pay Date column */}
-      {(() => {
-        const monthName = selectedMonth.toLocaleString('en-US', { month: 'long' })
-        const monthColor = getMonthColor(monthName)
-        const bgColor = monthColor?.color ?? 'rgba(30, 41, 59, 0.5)'
-        const textColor = monthColor?.textColor ?? '#fff'
-        return (
-          <div
-            className="relative flex items-center justify-center gap-4 rounded-lg border border-slate-700"
-            style={{ backgroundColor: bgColor, color: textColor, maxWidth: '40%', margin: 'auto', marginBottom: '10px' }}
-          >
-            <button
-              onClick={onPreviousMonth}
-              className="absolute left-0 p-2 hover:opacity-80 rounded-lg transition-opacity"
-              style={{ color: textColor }}
-              title="Previous month"
-            >
-              <ChevronLeft size={20} />
-            </button>
-            <div className="text-lg font-semibold min-w-[200px] text-center px-2">
-              Billing sheet for {formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}
-            </div>
-            <button
-              onClick={onNextMonth}
-              className="absolute right-0 p-2 hover:opacity-80 rounded-lg transition-opacity"
-              style={{ color: textColor }}
-              title="Next month"
-            >
-              <ChevronRight size={20} />
-            </button>
-          </div>
-        )
-      })()}
+      <MonthYearTabs
+        selectedMonth={selectedMonth}
+        selectedPayroll={selectedPayroll ?? 1}
+        clinicPayroll={clinicPayroll}
+        statusColors={statusColors}
+        label="Billing sheet for"
+        isInSplitScreen={isInSplitScreen}
+        onChange={(date, payroll) => {
+          if (onSelectMonth) {
+            onSelectMonth(date, payroll)
+          }
+        }}
+      />
 
       {showCondenseButton && (
         <div className="flex justify-end -mt-6">

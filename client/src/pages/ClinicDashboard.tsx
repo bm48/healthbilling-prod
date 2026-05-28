@@ -6,6 +6,7 @@ import { Clinic, Provider, type SheetRow } from '@/types'
 import { fetchSheetRowsForSheetIds } from '@/lib/providerSheetRows'
 import { fetchClinicAddressesByClinicIds } from '@/lib/clinicAddresses'
 import { computeBillingMetrics, type BillingMetrics } from '@/lib/billingMetrics'
+import { dedupeProvidersByUser, fetchActiveProviderUserEmails } from '@/lib/providerUserFilter'
 import { Users, FileText, CheckSquare, DollarSign } from 'lucide-react'
 
 interface ClinicStats {
@@ -84,7 +85,7 @@ export default function ClinicDashboard() {
       // payroll=1 (first half) so "Visits" matches what the user sees in the Providers tab (default is first half).
       const payroll = 1
 
-      const [providersRes, patientsRes, todosRes, sheetsRes] = await Promise.all([
+      const [providersRes, userEmails, patientsRes, todosRes, sheetsRes] = await Promise.all([
         apiClient
           .from('providers')
           .select('*')
@@ -92,6 +93,7 @@ export default function ClinicDashboard() {
           .contains('clinic_ids', [clinicId])
           .order('last_name')
           .order('first_name'),
+        fetchActiveProviderUserEmails(),
         apiClient.from('patients').select('id', { count: 'exact', head: true }).eq('clinic_id', clinicId),
         apiClient.from('todo_lists').select('id', { count: 'exact', head: true }).eq('clinic_id', clinicId),
         apiClient
@@ -103,7 +105,10 @@ export default function ClinicDashboard() {
           .eq('payroll', payroll),
       ])
 
-      const providersList = (providersRes.data || []) as Provider[]
+      const { displayedProviders: providersList, providerIdToCanonical } = dedupeProvidersByUser(
+        (providersRes.data || []) as Provider[],
+        userEmails
+      )
       setProviders(providersList)
 
       setStats({
@@ -162,7 +167,8 @@ export default function ClinicDashboard() {
 
         sheets.forEach((sheet) => {
           const rows = rowsBySheet[sheet.id] || []
-          const providerId = sheet.provider_id
+          // Remap any duplicate provider's sheets onto the canonical (displayed) provider
+          const providerId = providerIdToCanonical[sheet.provider_id] ?? sheet.provider_id
           if (!byProvider[providerId])
             byProvider[providerId] = {
               claims: 0,
@@ -179,14 +185,14 @@ export default function ClinicDashboard() {
             byProvider[providerId].total += ins + pat + ar
           })
           const metrics = computeBillingMetrics(rows)
-          // Visits = row count for this sheet (same period as Providers tab default view)
+          // Accumulate (not assign) so duplicate-provider sheets fold into the canonical row
           byProvider[providerId].metrics = {
-            visits: rows.length,
-            noShows: metrics.noShows,
-            paidClaims: metrics.paidClaims,
-            privatePay: metrics.privatePay,
-            secondary: metrics.secondary,
-            ccDeclines: metrics.ccDeclines,
+            visits: byProvider[providerId].metrics.visits + rows.length,
+            noShows: byProvider[providerId].metrics.noShows + metrics.noShows,
+            paidClaims: byProvider[providerId].metrics.paidClaims + metrics.paidClaims,
+            privatePay: byProvider[providerId].metrics.privatePay + metrics.privatePay,
+            secondary: byProvider[providerId].metrics.secondary + metrics.secondary,
+            ccDeclines: byProvider[providerId].metrics.ccDeclines + metrics.ccDeclines,
           }
         })
 

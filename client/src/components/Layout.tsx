@@ -26,6 +26,7 @@ import {
 import { useState, useEffect, useRef } from 'react'
 import { apiClient } from '@/lib/apiClient'
 import { Clinic, Provider } from '@/types'
+import { dedupeProvidersByUser, fetchActiveProviderUserEmails } from '@/lib/providerUserFilter'
 
 interface LayoutProps {
   children: React.ReactNode
@@ -223,7 +224,7 @@ export default function Layout({ children }: LayoutProps) {
 
   const fetchAllProviders = async (clinicIds: string[]) => {
     try {
-      const [providersRes, usersRes] = await Promise.all([
+      const [providersRes, userEmails] = await Promise.all([
         apiClient
           .from('providers')
           .select('*')
@@ -232,11 +233,7 @@ export default function Layout({ children }: LayoutProps) {
           .order('first_name')
           .order('last_name')
           .order('first_name'),
-        apiClient
-          .from('users')
-          .select('email')
-          .eq('active', true)
-          .eq('role', 'provider'),
+        fetchActiveProviderUserEmails(),
       ])
 
       if (providersRes.error) {
@@ -244,23 +241,14 @@ export default function Layout({ children }: LayoutProps) {
         throw providersRes.error
       }
 
-      // Only show providers whose email matches an active provider user; dedupe by email
-      const userEmails = new Set(
-        (usersRes.data || [])
-          .map(u => (u.email ?? '').trim().toLowerCase())
-          .filter(Boolean)
+      const { displayedProviders } = dedupeProvidersByUser(
+        (providersRes.data || []) as Provider[],
+        userEmails
       )
-      const seenEmails = new Set<string>()
-      const providersList = (providersRes.data || []).filter(p => {
-        const email = (p.email ?? '').trim().toLowerCase()
-        if (!email || !userEmails.has(email) || seenEmails.has(email)) return false
-        seenEmails.add(email)
-        return true
-      })
 
       // Group providers by clinic (a provider can appear in multiple clinics)
       const grouped: Record<string, Provider[]> = {}
-      providersList.forEach(provider => {
+      displayedProviders.forEach(provider => {
         (provider.clinic_ids || []).forEach((cid: string) => {
           if (!grouped[cid]) grouped[cid] = []
           grouped[cid].push(provider)
@@ -280,7 +268,7 @@ export default function Layout({ children }: LayoutProps) {
     }
 
     try {
-      const [providersRes, usersRes] = await Promise.all([
+      const [providersRes, userEmails] = await Promise.all([
         apiClient
           .from('providers')
           .select('*')
@@ -288,11 +276,7 @@ export default function Layout({ children }: LayoutProps) {
           .contains('clinic_ids', [clinicId])
           .order('last_name')
           .order('first_name'),
-        apiClient
-          .from('users')
-          .select('email')
-          .eq('active', true)
-          .eq('role', 'provider'),
+        fetchActiveProviderUserEmails(),
       ])
 
       if (providersRes.error) {
@@ -300,21 +284,12 @@ export default function Layout({ children }: LayoutProps) {
         throw providersRes.error
       }
 
-      // Only show providers whose email matches an active provider user; dedupe by email
-      const userEmails = new Set(
-        (usersRes.data || [])
-          .map(u => (u.email ?? '').trim().toLowerCase())
-          .filter(Boolean)
+      const { displayedProviders } = dedupeProvidersByUser(
+        (providersRes.data || []) as Provider[],
+        userEmails
       )
-      const seenEmails = new Set<string>()
-      const filtered = (providersRes.data || []).filter(p => {
-        const email = (p.email ?? '').trim().toLowerCase()
-        if (!email || !userEmails.has(email) || seenEmails.has(email)) return false
-        seenEmails.add(email)
-        return true
-      })
 
-      setClinicProviders(prev => ({ ...prev, [clinicId]: filtered }))
+      setClinicProviders(prev => ({ ...prev, [clinicId]: displayedProviders }))
     } catch (error) {
       console.error('Error fetching providers:', error)
       setClinicProviders(prev => ({ ...prev, [clinicId]: [] }))

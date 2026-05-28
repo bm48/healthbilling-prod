@@ -13,6 +13,7 @@ import {
   getDateRange,
 } from '@/lib/reports'
 import { ProviderSheet, Timecard, User, Clinic, Provider, type SheetRow } from '@/types'
+import { dedupeProvidersByUser, fetchActiveProviderUserEmails } from '@/lib/providerUserFilter'
 
 export default function Reports() {
   const { userProfile } = useAuth()
@@ -73,8 +74,16 @@ export default function Reports() {
       users = usersData || []
 
       // Fetch providers for provider/clinic report labels (provider_sheets.provider_id references providers.id).
-      const { data: providersData } = await apiClient.from('providers').select('*').eq('active', true)
-      providers = providersData || []
+      // Dedupe by matching user so duplicate provider rows do not produce duplicate report entries.
+      const [providersRes, userEmails] = await Promise.all([
+        apiClient.from('providers').select('*').eq('active', true),
+        fetchActiveProviderUserEmails(),
+      ])
+      const { displayedProviders, providerIdToCanonical } = dedupeProvidersByUser(
+        (providersRes.data || []) as Provider[],
+        userEmails
+      )
+      providers = displayedProviders
 
       // Fetch clinics
       const { data: clinicsDataResult } = await apiClient.from('clinics').select('*')
@@ -94,10 +103,18 @@ export default function Reports() {
       }
 
       const { data: sheetsData } = await sheetsQuery
-      sheets = (sheetsData || []).filter(sheet => {
-        const sheetDate = new Date(sheet.year, sheet.month - 1, 1)
-        return sheetDate >= startDate && sheetDate <= endDate
-      })
+      sheets = (sheetsData || [])
+        .filter(sheet => {
+          const sheetDate = new Date(sheet.year, sheet.month - 1, 1)
+          return sheetDate >= startDate && sheetDate <= endDate
+        })
+        .map(sheet => {
+          // Re-attribute sheets attached to a suppressed duplicate provider row onto the canonical provider
+          const canonical = providerIdToCanonical[sheet.provider_id]
+          return canonical && canonical !== sheet.provider_id
+            ? { ...sheet, provider_id: canonical }
+            : sheet
+        })
 
       const sheetIds = sheets.map((s: ProviderSheet) => s.id)
       const rowsBySheetIdMap = await fetchSheetRowsForSheetIds(apiClient, sheetIds)

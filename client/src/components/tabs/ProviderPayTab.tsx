@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type CSSProperties } from 'react'
-import { ChevronLeft, ChevronRight, Lock, Unlock } from 'lucide-react'
+import { Lock, Unlock } from 'lucide-react'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
+import MonthYearTabs from '@/components/MonthYearTabs'
 import Handsontable from 'handsontable'
 import type { Provider, StatusColor } from '@/types'
 import { fetchProviderPay, saveProviderPay, updateProviderPayWholeSheetLocked } from '@/lib/providerPay'
@@ -129,10 +130,12 @@ export interface ProviderPayTabProps {
   canTogglePastMonthWholeSheetLock?: boolean
   isInSplitScreen?: boolean
   selectedMonth: Date
-  onPreviousMonth: () => void
-  onNextMonth: () => void
-  /** When payroll=2, second arg is used to show "January 1st Half" / "January 2nd Half". */
-  formatMonthYear: (date: Date, payroll?: 1 | 2) => string
+  /** Preferred picker callback used by MonthYearTabs. */
+  onSelectMonth?: (date: Date) => void
+  /** Controlled payroll half (1 or 2) when clinicPayroll=2. Falls back to internal state when omitted. */
+  selectedPayroll?: 1 | 2
+  /** Notify parent when the user picks a payroll half so it can persist / use it for downstream lookups. */
+  onPayrollChange?: (payroll: 1 | 2) => void
   statusColors: StatusColor[]
   isLockProviderPay?: IsLockProviderPay | null
   onLockColumn?: (columnName: string) => void
@@ -155,9 +158,9 @@ export default function ProviderPayTab({
   canTogglePastMonthWholeSheetLock = false,
   isInSplitScreen,
   selectedMonth,
-  onPreviousMonth,
-  onNextMonth,
-  formatMonthYear,
+  onSelectMonth,
+  selectedPayroll: selectedPayrollProp,
+  onPayrollChange,
   statusColors,
   isLockProviderPay,
   onLockColumn: _onLockColumn,
@@ -180,7 +183,15 @@ export default function ProviderPayTab({
   const [providerPayDataVersion, setProviderPayDataVersion] = useState(0)
   const [sideNotes, setSideNotes] = useState('')
   const [wholeSheetLocked, setWholeSheetLocked] = useState(false)
-  const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(1)
+  const [internalSelectedPayroll, setInternalSelectedPayroll] = useState<1 | 2>(selectedPayrollProp ?? 1)
+  const selectedPayroll: 1 | 2 = selectedPayrollProp ?? internalSelectedPayroll
+  const setSelectedPayroll = useCallback(
+    (next: 1 | 2) => {
+      setInternalSelectedPayroll(next)
+      onPayrollChange?.(next)
+    },
+    [onPayrollChange]
+  )
   // Tracks which month/provider/payroll the in-memory form data belongs to.
   // Prevents autosave from writing stale data into a newly selected scope.
   const [hydratedScopeKey, setHydratedScopeKey] = useState('')
@@ -909,23 +920,33 @@ export default function ProviderPayTab({
       className={`min-w-0 ${isInSplitScreen ? 'p-3 split-pane-tab' : 'p-6'}`}
       style={isInSplitScreen ? undefined : { maxWidth: '45vw', width: '100%' }}
     >
-      {clinicPayroll === 2 && (
-        <div
-          className={`flex items-center gap-3 shrink-0 ${
-            isInSplitScreen ? 'mb-2 flex-wrap' : 'mb-3'
-          }`}
-        >
-          <label className="text-white font-medium">Payroll:</label>
-          <select
-            value={selectedPayroll}
-            onChange={(e) => setSelectedPayroll(Number(e.target.value) as 1 | 2)}
-            className="px-3 py-2 rounded-lg border border-slate-600 bg-slate-800 text-white"
+      <MonthYearTabs
+        selectedMonth={selectedMonth}
+        selectedPayroll={selectedPayroll}
+        clinicPayroll={clinicPayroll}
+        statusColors={statusColors}
+        label="Provider Pay for"
+        isInSplitScreen={isInSplitScreen}
+        onChange={(date, payroll) => {
+          if (onSelectMonth) onSelectMonth(date)
+          if (clinicPayroll === 2) setSelectedPayroll(payroll)
+        }}
+        rightSlot={canTogglePastMonthWholeSheetLock && isViewingPastPeriod ? (
+          <button
+            type="button"
+            onClick={handleToggleWholeSheetLock}
+            className="p-1.5 rounded-lg hover:bg-white/10 transition-colors text-white"
+            title={
+              wholeSheetLocked
+                ? 'Unlock sheet — allow editing this period'
+                : 'Lock sheet — make this period read-only for staff'
+            }
+            aria-label={wholeSheetLocked ? 'Unlock provider pay sheet' : 'Lock provider pay sheet'}
           >
-            <option value={1}>Payroll 1</option>
-            <option value={2}>Payroll 2</option>
-          </select>
-        </div>
-      )}
+            {wholeSheetLocked ? <Lock size={18} strokeWidth={2.25} /> : <Unlock size={18} strokeWidth={2.25} />}
+          </button>
+        ) : undefined}
+      />
       <div
         className={
           isInSplitScreen
@@ -933,72 +954,6 @@ export default function ProviderPayTab({
             : 'flex items-center gap-2 justify-between'
         }
       >
-        {/* Month selector - same style as other tabs */}
-        {(() => {
-          const monthName = selectedMonth.toLocaleString('en-US', { month: 'long' })
-          const monthColor = getMonthColor(monthName)
-          const bgColor = monthColor?.color ?? 'rgba(30, 41, 59, 0.5)'
-          const textColor = monthColor?.textColor ?? '#fff'
-          const payrollHalf = clinicPayroll === 2 ? selectedPayroll : undefined
-          const monthPeriodLabel = formatMonthYear(selectedMonth, payrollHalf)
-          const fullMonthTitle = `Provider Pay for ${monthPeriodLabel}`
-          return (
-            <div
-              className={`relative flex h-9 items-center justify-center rounded-lg border border-slate-700 shrink-0 ${
-                isInSplitScreen ? 'w-full min-w-0' : 'mb-3'
-              }`}
-              style={{
-                backgroundColor: bgColor,
-                color: textColor,
-                width: isInSplitScreen ? '100%' : 'min(100%, 32rem)',
-              }}
-            >
-              <button
-                onClick={onPreviousMonth}
-                className="absolute left-0 p-2 hover:opacity-80 rounded-lg transition-opacity shrink-0 z-10"
-                style={{ color: textColor }}
-                title="Previous month"
-              >
-                <ChevronLeft size={20} />
-              </button>
-              <div
-                className={`font-semibold text-center min-w-0 ${
-                  isInSplitScreen
-                    ? 'text-sm flex-1 truncate px-9'
-                    : 'text-lg min-w-[200px] px-2'
-                }`}
-                title={fullMonthTitle}
-              >
-                {isInSplitScreen ? monthPeriodLabel : fullMonthTitle}
-              </div>
-              {canTogglePastMonthWholeSheetLock && isViewingPastPeriod && (
-                <button
-                  type="button"
-                  onClick={handleToggleWholeSheetLock}
-                  className="absolute right-9 p-1.5 rounded-lg hover:opacity-80 transition-opacity shrink-0 z-10"
-                  style={{ color: textColor }}
-                  title={
-                    wholeSheetLocked
-                      ? 'Unlock sheet — allow editing this period'
-                      : 'Lock sheet — make this period read-only for staff'
-                  }
-                  aria-label={wholeSheetLocked ? 'Unlock provider pay sheet' : 'Lock provider pay sheet'}
-                >
-                  {wholeSheetLocked ? <Lock size={18} strokeWidth={2.25} /> : <Unlock size={18} strokeWidth={2.25} />}
-                </button>
-              )}
-              <button
-                onClick={onNextMonth}
-                className="absolute right-0 p-2 hover:opacity-80 rounded-lg transition-opacity shrink-0 z-10"
-                style={{ color: textColor }}
-                title="Next month"
-              >
-                <ChevronRight size={20} />
-              </button>
-            </div>
-          )
-        })()}
-
         {/* Provider select - when providers list is provided */}
         {providers.length > 0 && (
           <div

@@ -5,7 +5,8 @@ import { useAuth } from '@/contexts/AuthContext'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
 import { createBubbleDropdownRenderer, DateOfServiceEditor } from '@/lib/handsontableCustomRenderers'
-import { ChevronLeft, ChevronRight, Lock, Unlock } from 'lucide-react'
+import { Lock, Unlock } from 'lucide-react'
+import MonthYearTabs from '@/components/MonthYearTabs'
 import { isPastPeriodFromMonthKey } from '@/lib/monthPeriodLock'
 import {
   toDisplayValue,
@@ -249,7 +250,21 @@ export default function AccountsReceivableTab({
   const { userProfile } = useAuth()
   const [statusColors, setStatusColors] = useState<StatusColor[]>([])
   const [loading, setLoading] = useState(true)
-  const [selectedMonth, setSelectedMonth] = useState<Date>(() => new Date())
+  // Persist AR selector per clinic so navigating away (e.g. to Patient Info or Providers) and back
+  // returns to the same A-R sheet instead of snapping to the current month.
+  const arMonthStorageKey = `ar-tab-month-state-${clinicId}`
+  const [selectedMonth, setSelectedMonth] = useState<Date>(() => {
+    try {
+      const raw = sessionStorage.getItem(arMonthStorageKey)
+      if (raw) {
+        const parsed = JSON.parse(raw) as { selectedMonth?: string }
+        if (parsed.selectedMonth) return new Date(parsed.selectedMonth)
+      }
+    } catch {
+      // ignore
+    }
+    return new Date()
+  })
   const selectedMonthRef = useRef(selectedMonth)
   useEffect(() => {
     selectedMonthRef.current = selectedMonth
@@ -259,7 +274,28 @@ export default function AccountsReceivableTab({
     const d = selectedMonthRef.current
     return { ...row, ar_year: d.getFullYear(), ar_month: d.getMonth() + 1 }
   }, [])
-  const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(1)
+  const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(() => {
+    try {
+      const raw = sessionStorage.getItem(arMonthStorageKey)
+      if (raw) {
+        const parsed = JSON.parse(raw) as { selectedPayroll?: 1 | 2 }
+        if (parsed.selectedPayroll === 1 || parsed.selectedPayroll === 2) return parsed.selectedPayroll
+      }
+    } catch {
+      // ignore
+    }
+    return 1
+  })
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        arMonthStorageKey,
+        JSON.stringify({ selectedMonth: selectedMonth.toISOString(), selectedPayroll })
+      )
+    } catch {
+      // sessionStorage may be unavailable; picker still works in-memory.
+    }
+  }, [arMonthStorageKey, selectedMonth, selectedPayroll])
   const fetchIdRef = useRef(0)
   /** Full list (all months) for save and month switching - like Patients has one list, we keep "all" in ref */
   const fullListRef = useRef<AccountsReceivable[]>([])
@@ -302,16 +338,6 @@ export default function AccountsReceivableTab({
   const pendingRowLeaveSaveRef = useRef(false)
   const pendingRowLeaveSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [highlightedCells, setHighlightedCells] = useState<Set<string>>(new Set())
-
-  /** When clinicPayroll=2 and payroll is passed, show "March 1st Half 2025"; otherwise "March 2025". */
-  const formatMonthYear = useCallback((date: Date, payroll?: 1 | 2) => {
-    if (clinicPayroll === 2 && payroll != null) {
-      const monthName = date.toLocaleDateString('en-US', { month: 'long' })
-      const half = payroll === 1 ? '1st' : '2nd'
-      return `${monthName} ${half} Half ${date.getFullYear()}`
-    }
-    return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
-  }, [clinicPayroll])
 
   // Use isLockAccountsReceivable from props directly - it will update when parent refreshes
   const lockData = isLockAccountsReceivable || null
@@ -945,16 +971,6 @@ export default function AccountsReceivableTab({
     return null
   }, [statusColors])
 
-  // Month color for month selector (from status_colors type 'month')
-  const getMonthColor = useCallback((month: string): { color: string; textColor: string } | null => {
-    if (!month) return null
-    const monthColor = statusColors.find(s => s.status === month && s.type === 'month')
-    if (monthColor) {
-      return { color: monthColor.color, textColor: monthColor.text_color || '#000000' }
-    }
-    return null
-  }, [statusColors])
-
   /** When viewing backup, use override so the grid shows the correct version on first render (same fix as Patients tab). */
   const displayAR = useMemo(
     () => (isViewingBackup && overrideFullAR && overrideFullAR.length > 0 ? buildDisplayedFromList(overrideFullAR) : displayedAR),
@@ -1571,85 +1587,34 @@ export default function AccountsReceivableTab({
           <h2 className="text-2xl font-bold text-white">ACCOUNTS RECEIVABLE</h2>
         </div>
       )}
-      {/* Month selector - like Providers tab; when clinicPayroll=2 shows "March 1st Half" / "March 2nd Half" */}
-      {(() => {
-        const monthName = selectedMonth.toLocaleString('en-US', { month: 'long' })
-        const monthColor = getMonthColor(monthName)
-        const bgColor = monthColor?.color ?? 'rgba(30, 41, 59, 0.5)'
-        const textColor = monthColor?.textColor ?? '#fff'
-        return (
-          <div
-            className={`relative flex items-center justify-center gap-4 rounded-lg border border-slate-700 shrink-0 ${
-              isInSplitScreen ? 'w-full' : ''
-            }`}
-            style={{
-              backgroundColor: bgColor,
-              color: textColor,
-              maxWidth: isInSplitScreen ? '100%' : '40%',
-              margin: 'auto',
-              marginBottom: '10px',
-            }}
+      {/* Month selector - shared MonthYearTabs (year dropdown + color-coded month buttons) */}
+      <MonthYearTabs
+        selectedMonth={selectedMonth}
+        selectedPayroll={selectedPayroll}
+        clinicPayroll={clinicPayroll}
+        statusColors={statusColors}
+        label="A-R for"
+        isInSplitScreen={isInSplitScreen}
+        onChange={(date, payroll) => {
+          setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))
+          if (clinicPayroll === 2) setSelectedPayroll(payroll)
+        }}
+        rightSlot={canTogglePastMonthWholeSheetLock && isViewingPastPeriod && onTogglePastMonthWholeSheetLock ? (
+          <button
+            type="button"
+            onClick={confirmAndTogglePastMonthWholeSheetLock}
+            className="p-1.5 rounded-lg hover:bg-white/10 transition-colors text-white"
+            title={
+              wholeSheetLocked
+                ? 'Unlock sheet — allow editing this period'
+                : 'Lock sheet — make this period read-only for staff'
+            }
+            aria-label={wholeSheetLocked ? 'Unlock accounts receivable sheet' : 'Lock accounts receivable sheet'}
           >
-            <button
-              onClick={() => {
-                if (clinicPayroll === 2) {
-                  if (selectedPayroll === 2) {
-                    setSelectedPayroll(1)
-                  } else {
-                    setSelectedPayroll(2)
-                    setSelectedMonth(d => new Date(d.getFullYear(), d.getMonth() - 1, 1))
-                  }
-                } else {
-                  setSelectedMonth(d => new Date(d.getFullYear(), d.getMonth() - 1, 1))
-                }
-              }}
-              className="absolute left-0 p-2 hover:opacity-80 rounded-lg transition-opacity"
-              style={{ color: textColor }}
-              title={clinicPayroll === 2 ? 'Previous period' : 'Previous month'}
-            >
-              <ChevronLeft size={20} />
-            </button>
-            <div className="text-lg font-semibold min-w-[200px] text-center px-2">
-              A-R for {formatMonthYear(selectedMonth, clinicPayroll === 2 ? selectedPayroll : undefined)}
-            </div>
-            {canTogglePastMonthWholeSheetLock && isViewingPastPeriod && onTogglePastMonthWholeSheetLock && (
-              <button
-                type="button"
-                onClick={confirmAndTogglePastMonthWholeSheetLock}
-                className="absolute right-9 p-1.5 rounded-lg hover:opacity-80 transition-opacity"
-                style={{ color: textColor }}
-                title={
-                  wholeSheetLocked
-                    ? 'Unlock sheet — allow editing this period'
-                    : 'Lock sheet — make this period read-only for staff'
-                }
-                aria-label={wholeSheetLocked ? 'Unlock accounts receivable sheet' : 'Lock accounts receivable sheet'}
-              >
-                {wholeSheetLocked ? <Lock size={18} strokeWidth={2.25} /> : <Unlock size={18} strokeWidth={2.25} />}
-              </button>
-            )}
-            <button
-              onClick={() => {
-                if (clinicPayroll === 2) {
-                  if (selectedPayroll === 1) {
-                    setSelectedPayroll(2)
-                  } else {
-                    setSelectedPayroll(1)
-                    setSelectedMonth(d => new Date(d.getFullYear(), d.getMonth() + 1, 1))
-                  }
-                } else {
-                  setSelectedMonth(d => new Date(d.getFullYear(), d.getMonth() + 1, 1))
-                }
-              }}
-              className="absolute right-0 p-2 hover:opacity-80 rounded-lg transition-opacity"
-              style={{ color: textColor }}
-              title={clinicPayroll === 2 ? 'Next period' : 'Next month'}
-            >
-              <ChevronRight size={20} />
-            </button>
-          </div>
-        )
-      })()}
+            {wholeSheetLocked ? <Lock size={18} strokeWidth={2.25} /> : <Unlock size={18} strokeWidth={2.25} />}
+          </button>
+        ) : undefined}
+      />
       <div 
         ref={tableContainerRef}
         className={`table-container dark-theme ${isInSplitScreen ? 'min-w-0 flex-1' : ''}`}
