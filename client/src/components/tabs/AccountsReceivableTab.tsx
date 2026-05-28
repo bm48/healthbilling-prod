@@ -1582,18 +1582,13 @@ export default function AccountsReceivableTab({
   
   return (
     <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
-      {!isInSplitScreen && (
-        <div className="mb-4 flex justify-between items-center">
-          <h2 className="text-2xl font-bold text-white">ACCOUNTS RECEIVABLE</h2>
-        </div>
-      )}
       {/* Month selector - shared MonthYearTabs (year dropdown + color-coded month buttons) */}
       <MonthYearTabs
         selectedMonth={selectedMonth}
         selectedPayroll={selectedPayroll}
         clinicPayroll={clinicPayroll}
         statusColors={statusColors}
-        label="A-R for"
+        label="Accounts Receivable for"
         isInSplitScreen={isInSplitScreen}
         onChange={(date, payroll) => {
           setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))

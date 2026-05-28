@@ -93,11 +93,13 @@ export default function MonthYearTabs({
       style={{ width: '100%' }}
     >
       {label && (
-        <div
-          className="mb-2 text-center text-sm font-semibold rounded px-2 py-1"
-          style={{ backgroundColor: activeBg, color: activeText }}
-        >
-          {label} {labelSuffix}
+        <div className="mb-2 flex justify-center">
+          <div
+            className="text-center text-sm font-semibold rounded px-3 py-1 inline-block"
+            style={{ backgroundColor: activeBg, color: activeText }}
+          >
+            {label} {labelSuffix}
+          </div>
         </div>
       )}
       <div className={`flex items-center gap-2 ${isInSplitScreen ? 'flex-wrap' : 'flex-wrap md:flex-nowrap'}`}>
