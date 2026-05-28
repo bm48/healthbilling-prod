@@ -91,14 +91,18 @@ export default function MonthYearTabs({
   return (
     <div className={`${isInSplitScreen ? 'mb-2' : 'mb-3'}`} style={{ width: '100%' }}>
       {label && (
-        <div className="mb-2 flex justify-center items-center gap-3 flex-wrap">
+        <div className="mb-2 relative flex justify-center items-center">
           <div
             className="text-center text-base font-semibold rounded px-3 py-1.5 inline-block"
             style={{ backgroundColor: activeBg, color: activeText }}
           >
             {label} {labelSuffix}
           </div>
-          {labelRightSlot && <div className="shrink-0">{labelRightSlot}</div>}
+          {labelRightSlot && (
+            <div className="absolute right-0 top-1/2 -translate-y-1/2 shrink-0">
+              {labelRightSlot}
+            </div>
+          )}
         </div>
       )}
       <div className={`flex items-center gap-2 ${isInSplitScreen ? 'flex-wrap' : 'flex-wrap md:flex-nowrap'}`}>
