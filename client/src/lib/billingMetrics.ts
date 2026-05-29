@@ -1,14 +1,18 @@
 import type { SheetRow } from '@/types'
 
-/** NS/LC (No Show / Late Cancel) appointment statuses – 3 categories under Appt status */
+/**
+ * "No Show" appointment statuses that contribute to the No Shows tally.
+ * - 'No Show' is the current label (post-rename).
+ * - 'Charge NS/LC' / 'NS/LC - Charge' are pre-rename legacy values left in here so existing rows
+ *   keep counting until the rename migration is run. After the SQL migration runs they will all be
+ *   normalized to 'No Show'.
+ * - 'Rescheduled' and 'Cancellation' (and their pre-rename equivalents) intentionally do NOT count
+ *   — per the product spec they are separate categories from no-shows.
+ */
 const NS_LC_STATUSES = [
+  'No Show',
   'Charge NS/LC',
-  'RS No Charge',
-  'NS No Charge',
-  // UI dropdown display variants (in case stored differently)
   'NS/LC - Charge',
-  'NS/LC/RS - No Charge',
-  'NS/LC - No Charge',
 ]
 
 function isNoShowLc(status: string | null): boolean {
@@ -48,7 +52,9 @@ export function computeBillingMetrics(rows: SheetRow[]): BillingMetrics {
     }
     if (isNoShowLc(row.appointment_status)) noShows += 1
     if (row.claim_status === 'Paid') paidClaims += 1
-    if (row.claim_status === 'PP') privatePay += 1
+    // 'PP' was the legacy "Private Pay" label; it's been removed from the ClaimStatus union but
+    // historic rows in the DB may still hold the value, so cast to string and keep counting them.
+    if ((row.claim_status as string | null) === 'PP') privatePay += 1
     if (row.patient_pay_status === 'Secondary') secondary += 1
     if (row.patient_pay_status === 'CC declined') ccDeclines += 1
   }

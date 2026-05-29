@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import MonthYearTabs from '@/components/MonthYearTabs'
 import Handsontable from 'handsontable'
-import { createBubbleDropdownRenderer, createMultiBubbleDropdownRenderer, MultiSelectCptEditor, DateOfServiceEditor, currencyCellRenderer, copayTextCellRenderer, coinsuranceTextCellRenderer } from '@/lib/handsontableCustomRenderers'
+import { createBubbleDropdownRenderer, createMultiBubbleDropdownRenderer, MultiSelectCptEditor, DateOfServiceEditor, currencyCellRenderer, copayTextCellRenderer, coinsuranceTextCellRenderer, createColoredAutocompleteDropdown } from '@/lib/handsontableCustomRenderers'
 import { useCallback, useMemo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { apiClient } from '@/lib/apiClient'
@@ -281,6 +281,8 @@ interface ProvidersTabProps {
   onExportLayoutChange?: (layout: ProviderSheetUiExportLayout) => void
   /** Rendered inline with the colored "Billing sheet for ..." title pill (e.g. Select Version button). */
   labelRightSlot?: React.ReactNode
+  /** Rendered as its own row below the colored title pill (above the months row). */
+  belowTitleSlot?: React.ReactNode
 }
 
 export default function ProvidersTab({
@@ -325,6 +327,7 @@ export default function ProvidersTab({
   onRegisterFlushBeforeTabLeave,
   onExportLayoutChange,
   labelRightSlot,
+  belowTitleSlot,
 }: ProvidersTabProps) {
   
   const { userProfile } = useAuth()
@@ -1373,10 +1376,10 @@ export default function ProvidersTab({
         { data: 6, title: 'Date of Service', type: 'text' as const, width: 90, editor: DateOfServiceEditor, readOnly: getReadOnlyForColumn(6, !canEdit || getReadOnly('date_of_service')) },
         { data: 7, title: 'CPT Code', type: 'dropdown' as const, width: 160, editor: MultiSelectCptEditor, selectOptions: billingCodes.map(c => c.code), renderer: createMultiBubbleDropdownRenderer((val) => getCPTColor(val)) as any, readOnly: getReadOnlyForColumn(7, !canEdit || getReadOnly('cpt_code')) },
         ...(visitTypeCol ? [visitTypeCol(getReadOnlyForColumn(9, !canEdit))] : []),
-        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyForColumn(8, !canEdit || getReadOnly('appointment_note_status')) },
+        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'No Show', 'Rescheduled', 'Cancellation', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'appointment')), readOnly: getReadOnlyForColumn(8, !canEdit || getReadOnly('appointment_note_status')) },
         { data: 9 + officeStaffColOffset, title: 'Collected from PT', type: 'text' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyForColumn(9 + officeStaffColOffset, !canEdit || getReadOnly('collected_from_pt')) },
-        { data: 10 + officeStaffColOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, readOnly: getReadOnlyForColumn(10 + officeStaffColOffset, !canEdit || getReadOnly('pt_pay_status')) },
-        { data: 11 + officeStaffColOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyForColumn(11 + officeStaffColOffset, !canEdit || getReadOnly('pt_payment_ar_ref_date')) },
+        { data: 10 + officeStaffColOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'patient_pay')), readOnly: getReadOnlyForColumn(10 + officeStaffColOffset, !canEdit || getReadOnly('pt_pay_status')) },
+        { data: 11 + officeStaffColOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, editor: createColoredAutocompleteDropdown((val) => getMonthColor(val)), readOnly: getReadOnlyForColumn(11 + officeStaffColOffset, !canEdit || getReadOnly('pt_payment_ar_ref_date')) },
       ]
       return filterHiddenCopayCoins(base)
     }
@@ -1392,7 +1395,7 @@ export default function ProvidersTab({
         { data: 6, title: 'Date of Service', type: 'text' as const, width: 90, editor: DateOfServiceEditor, readOnly: getReadOnlyProviderView(6) || getReadOnly('date_of_service') },
         { data: 7, title: 'CPT Code', type: 'dropdown' as const, width: 160, editor: MultiSelectCptEditor, selectOptions: billingCodes.map(c => c.code), renderer: createMultiBubbleDropdownRenderer((val) => getCPTColor(val)) as any, readOnly: getReadOnlyProviderView(7) || getReadOnly('cpt_code') },
         ...(visitTypeCol ? [visitTypeCol(getReadOnlyProviderView(9))] : []),
-        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyProviderView(8) || getReadOnly('appointment_note_status') },
+        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'No Show', 'Rescheduled', 'Cancellation', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'appointment')), readOnly: getReadOnlyProviderView(8) || getReadOnly('appointment_note_status') },
       ]
       // Partial provider view already excludes data:3/4/5; filter is a no-op but consistent.
       return filterHiddenCopayCoins(base)
@@ -1408,15 +1411,15 @@ export default function ProvidersTab({
         { data: 6, title: 'Date of Service', type: 'text' as const, width: 90, editor: DateOfServiceEditor, readOnly: getReadOnlyProviderView(6) || getReadOnly('date_of_service') },
         { data: 7, title: 'CPT Code', type: 'dropdown' as const, width: 160, editor: MultiSelectCptEditor, selectOptions: billingCodes.map(c => c.code), renderer: createMultiBubbleDropdownRenderer((val) => getCPTColor(val)) as any, readOnly: getReadOnlyProviderView(7) || getReadOnly('cpt_code') },
         ...(visitTypeCol ? [visitTypeCol(getReadOnlyProviderView(9))] : []),
-        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, readOnly: getReadOnlyProviderView(8) || getReadOnly('appointment_note_status') },
-        { data: 9 + pvOffset, title: 'Claim Status', type: 'dropdown' as const, width: 90, selectOptions: ['Claim Sent', 'RS', 'IP', 'Pending Pay', 'Paid', 'Deductible', 'N/A', 'PP', 'Denial', 'Rejected', 'No Coverage'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'claim')) as any, readOnly: getReadOnlyProviderView(9 + pvOffset) || getReadOnly('claim_status') },
+        { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'No Show', 'Rescheduled', 'Cancellation', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'appointment')), readOnly: getReadOnlyProviderView(8) || getReadOnly('appointment_note_status') },
+        { data: 9 + pvOffset, title: 'Claim Status', type: 'dropdown' as const, width: 90, selectOptions: ['Claim Sent', 'N/A', 'Paid', 'Deductible', 'RS', 'IP', 'Pending Pay', 'Denial', 'Rejected', 'No Coverage'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'claim')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'claim')), readOnly: getReadOnlyProviderView(9 + pvOffset) || getReadOnly('claim_status') },
         { data: 10 + pvOffset, title: 'Most Recent Submit Date', type: 'text' as const, width: 120, editor: 'text', readOnly: getReadOnlyProviderView(10 + pvOffset) || getReadOnly('most_recent_submit_date') },
         { data: 11 + pvOffset, title: 'Ins Pay', type: 'text' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(11 + pvOffset) || getReadOnly('ins_pay') },
-        { data: 12 + pvOffset, title: 'Ins Pay Date', type: 'dropdown' as const, width: 100, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyProviderView(12 + pvOffset) || getReadOnly('ins_pay_date') },
+        { data: 12 + pvOffset, title: 'Ins Pay Date', type: 'dropdown' as const, width: 100, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, editor: createColoredAutocompleteDropdown((val) => getMonthColor(val)), readOnly: getReadOnlyProviderView(12 + pvOffset) || getReadOnly('ins_pay_date') },
         { data: 13 + pvOffset, title: 'PT RES', type: 'text' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(13 + pvOffset) || getReadOnly('pt_res') },
         { data: 14 + pvOffset, title: 'Collected from PT', type: 'text' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(14 + pvOffset) || getReadOnly('collected_from_pt') },
-        { data: 15 + pvOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, readOnly: getReadOnlyProviderView(15 + pvOffset) || getReadOnly('pt_pay_status') },
-        { data: 16 + pvOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, readOnly: getReadOnlyProviderView(16 + pvOffset) || getReadOnly('pt_payment_ar_ref_date') },
+        { data: 15 + pvOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'patient_pay')), readOnly: getReadOnlyProviderView(15 + pvOffset) || getReadOnly('pt_pay_status') },
+        { data: 16 + pvOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, editor: createColoredAutocompleteDropdown((val) => getMonthColor(val)), readOnly: getReadOnlyProviderView(16 + pvOffset) || getReadOnly('pt_payment_ar_ref_date') },
         { data: 17 + pvOffset, title: 'Total', type: 'text' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(17 + pvOffset) || getReadOnly('total') },
         { data: 18 + pvOffset, title: 'Notes', type: 'text' as const, width: 150, readOnly: getReadOnlyProviderView(18 + pvOffset) || getReadOnly('notes') },
       ])
@@ -1491,8 +1494,8 @@ export default function ProvidersTab({
         title: 'Appt/Note Status', 
         type: 'dropdown' as const, 
         width: 90,
-        selectOptions: ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete'],
-        renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any,
+        selectOptions: ['Complete', 'PP Complete', 'No Show', 'Rescheduled', 'Cancellation', 'Note Not Complete'],
+        renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'appointment')),
         readOnly: getReadOnlyForColumn(8, !canEdit || getReadOnly('appointment_note_status'))
       },
       { 
@@ -1500,8 +1503,8 @@ export default function ProvidersTab({
         title: 'Claim Status', 
         type: 'dropdown' as const, 
         width: 90,
-        selectOptions: ['Claim Sent', 'RS', 'IP', 'Pending Pay', 'Paid', 'Deductible', 'N/A', 'PP', 'Denial', 'Rejected', 'No Coverage'],
-        renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'claim')) as any,
+        selectOptions: ['Claim Sent', 'N/A', 'Paid', 'Deductible', 'RS', 'IP', 'Pending Pay', 'Denial', 'Rejected', 'No Coverage'],
+        renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'claim')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'claim')),
         readOnly: getReadOnlyForColumn(9 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('claim_status'))
       },
       { 
@@ -1526,7 +1529,7 @@ export default function ProvidersTab({
         type: 'dropdown' as const, 
         width: 100,
         selectOptions: months,
-        renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any,
+        renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, editor: createColoredAutocompleteDropdown((val) => getMonthColor(val)),
         readOnly: getReadOnlyForColumn(12 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('ins_pay_date'))
       },
       {
@@ -1551,7 +1554,7 @@ export default function ProvidersTab({
         type: 'dropdown' as const, 
         width: 120,
         selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'],
-        renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any,
+        renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'patient_pay')),
         readOnly: getReadOnlyForColumn(15 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('pt_pay_status'))
       },
       { 
@@ -1560,7 +1563,7 @@ export default function ProvidersTab({
         type: 'dropdown' as const, 
         width: 120,
         selectOptions: months,
-        renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any,
+        renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, editor: createColoredAutocompleteDropdown((val) => getMonthColor(val)),
         readOnly: getReadOnlyForColumn(16 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('pt_payment_ar_ref_date'))
       },
       {
@@ -2054,7 +2057,7 @@ export default function ProvidersTab({
           // Unknown strings are kept as-typed (color will be null) rather than silently dropped, which
           // previously caused "the value shows up then disappears" when pasted/duplicated values had a
           // trailing space or capitalization difference.
-          const validStatuses = ['Complete', 'PP Complete', 'NS/LC - Charge', 'NS/LC/RS - No Charge', 'NS/LC - No Charge', 'Note Not Complete']
+          const validStatuses = ['Complete', 'PP Complete', 'No Show', 'Rescheduled', 'Cancellation', 'Note Not Complete']
           if (newValue === true || newValue === false || newValue === 'true' || newValue === 'false') return
           let strVal: string | null
           if (newValue === '' || newValue === null || newValue === undefined || newValue === 'null') {
@@ -2679,6 +2682,7 @@ export default function ProvidersTab({
         label="Billing sheet for"
         isInSplitScreen={isInSplitScreen}
         labelRightSlot={labelRightSlot}
+        belowTitleSlot={belowTitleSlot}
         onChange={(date, payroll) => {
           if (onSelectMonth) {
             onSelectMonth(date, payroll)

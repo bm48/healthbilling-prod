@@ -361,6 +361,70 @@ export const DropdownEditorOpenList: typeof _BaseDropdown | null = _BaseDropdown
   : null
 
 /**
+ * Returns a dropdown editor subclass that paints each option row in the popup with the colors from
+ * `colorMap` (same map the cell's bubble renderer uses). The popup is itself a Handsontable instance
+ * — we attach an afterRender hook to it so the colors are reapplied after every internal redraw
+ * (typing, scroll, hover) and survive the htDimmed class the editor adds to read-only cells.
+ *
+ * Returns `null` when the runtime Handsontable build does not expose DropdownEditor (older versions),
+ * so callers can fall back to the default editor.
+ */
+export function createColoredAutocompleteDropdown(
+  colorMap: (value: string) => { color: string; textColor: string } | null
+): any {
+  if (!_BaseDropdown) return null
+  return class ColoredAutocompleteDropdown extends _BaseDropdown {
+    private __coloredHookAttached = false
+
+    open(event?: Event) {
+      super.open(event)
+      // Mirror DropdownEditorOpenList: force the option list to render right away so the colors
+      // appear on the first paint even when the editor was opened via a single click.
+      if (typeof (this as any).queryChoices === 'function') {
+        const val = (this as any).TEXTAREA?.value ?? ''
+        setTimeout(() => {
+          try {
+            if (typeof (this as any).queryChoices === 'function') {
+              ;(this as any).queryChoices(val)
+            }
+            this.__installColorPainter()
+          } catch {
+            // ignore — editor may have closed before the timer fired
+          }
+        }, 0)
+      } else {
+        this.__installColorPainter()
+      }
+    }
+
+    private __installColorPainter() {
+      const htEditor = (this as any).htEditor
+      if (!htEditor || this.__coloredHookAttached) return
+      this.__coloredHookAttached = true
+      const paint = () => {
+        const root = htEditor.rootElement as HTMLElement | null
+        if (!root) return
+        const cells = root.querySelectorAll('tbody tr td')
+        cells.forEach((node) => {
+          const td = node as HTMLTableCellElement
+          const text = (td.textContent ?? '').trim()
+          if (!text) return
+          const cfg = colorMap(text)
+          if (cfg) {
+            td.style.setProperty('background-color', cfg.color, 'important')
+            td.style.setProperty('color', cfg.textColor, 'important')
+            td.style.setProperty('font-weight', '500', 'important')
+          }
+        })
+      }
+      // Run once now (queryChoices may have already rendered) and on every subsequent inner render.
+      paint()
+      htEditor.addHook('afterRender', paint)
+    }
+  }
+}
+
+/**
  * Custom date editor using HTML5 date input
  */
 export class DateEditor extends Handsontable.editors.TextEditor {

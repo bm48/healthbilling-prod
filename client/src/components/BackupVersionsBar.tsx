@@ -28,6 +28,12 @@ interface BackupVersionsBarProps {
   getDownloadFilename?: (version: BackupVersionMeta, displayVersionNumber: number) => string
   /** If provided, download uses this blob instead of fetching the URL (e.g. to build custom CSV format). Requires getDownloadFilename. */
   getDownloadBlob?: (version: BackupVersionMeta) => Promise<Blob>
+  /**
+   * `'all'` (default): renders Select Version button + "viewing backup from X" indicator + "no versions yet" message.
+   * `'button-only'`: renders just the Select Version button + modal — used when the parent renders the viewing
+   * indicator separately (e.g. the providers tab puts the button inline with the colored title pill).
+   */
+  display?: 'all' | 'button-only'
 }
 
 /** Legacy props: sheetId only (providers backup) */
@@ -55,6 +61,7 @@ export default function BackupVersionsBar(
   const backupType: BackupBarType = isLegacy ? 'providers' : (props as BackupVersionsBarProps).backupType
   const entityId = isLegacy ? (props as LegacyBackupVersionsBarProps).sheetId : (props as BackupVersionsBarProps).entityId
   const { onSelectVersion, onBackToCurrent, viewingVersion, formatDate = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }), getDownloadFilename, getDownloadBlob } = props as BackupVersionsBarProps
+  const display = (props as BackupVersionsBarProps).display ?? 'all'
 
   const [versions, setVersions] = useState<BackupVersionMeta[]>([])
   const [loading, setLoading] = useState(true)
@@ -183,11 +190,11 @@ export default function BackupVersionsBar(
 
   return (
     <>
-      <div className="flex items-center justify-end gap-2 flex-wrap mt-2 pr-4 -mb-6">
-        {versions.length === 0 && !viewingVersion && (
+      <div className={`flex items-center justify-end gap-2 flex-wrap ${display === 'button-only' ? '' : 'mt-2 pr-4 -mb-6'}`}>
+        {display === 'all' && versions.length === 0 && !viewingVersion && (
           <span className="text-white/50 text-sm">No backup versions yet. Backups run every 12 hours.</span>
         )}
-        {viewingVersion && (
+        {display === 'all' && viewingVersion && (
           <div>
             <span className="text-white/60 text-sm">Viewing backup from {formatDate(viewingVersion.created_at)}</span>
             <button
@@ -200,7 +207,7 @@ export default function BackupVersionsBar(
             </button>
           </div>
         )}
-        
+
         <button
           type="button"
           onClick={() => setModalOpen(true)}

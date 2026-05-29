@@ -8,24 +8,24 @@ export type UserRole =
   | 'office_staff'
   | 'official_staff'
 
-export type AppointmentStatus = 
+export type AppointmentStatus =
   | 'Complete'
   | 'PP Complete'
-  | 'Charge NS/LC'
-  | 'RS No Charge'
-  | 'NS No Charge'
+  | 'No Show'
+  | 'Rescheduled'
+  | 'Cancellation'
   | 'Note not complete'
 
-export type ClaimStatus = 
+export type ClaimStatus =
   | 'Claim Sent'
-  | 'RS'
-  | 'IP'
+  | 'N/A'
   | 'Paid'
   | 'Deductible'
-  | 'N/A'
-  | 'PP'
+  | 'RS'
+  | 'IP'
+  | 'Pending Pay'
   | 'Denial'
-  | 'Rejection'
+  | 'Rejected'
   | 'No Coverage'
 
 export type PatientPayStatus = 

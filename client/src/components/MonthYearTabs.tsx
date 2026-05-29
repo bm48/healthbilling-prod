@@ -12,6 +12,8 @@ interface MonthYearTabsProps {
   rightSlot?: ReactNode
   /** Rendered to the right of the colored title pill — e.g. the Select Version button. */
   labelRightSlot?: ReactNode
+  /** Rendered as its own row immediately below the colored title pill (above the months row). */
+  belowTitleSlot?: ReactNode
   /** Year dropdown starts at this year (default 2024). */
   minYear?: number
 }
@@ -43,6 +45,7 @@ export default function MonthYearTabs({
   isInSplitScreen = false,
   rightSlot,
   labelRightSlot,
+  belowTitleSlot,
   minYear = 2024,
 }: MonthYearTabsProps) {
   const monthColorByName = useMemo(() => {
@@ -107,6 +110,9 @@ export default function MonthYearTabs({
             </div>
           )}
         </div>
+      )}
+      {belowTitleSlot && (
+        <div className="mb-2 flex justify-center">{belowTitleSlot}</div>
       )}
       {isInSplitScreen ? (
         // Split-screen: compact stacked layout — Year + 1st/2nd Half on one row, then a 4×3 grid of months.

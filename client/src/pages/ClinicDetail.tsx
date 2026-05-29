@@ -1651,9 +1651,9 @@ export default function ClinicDetail() {
       // Appointment Status Colors
       { id: '1', status: 'Complete', color: '#22c55e', text_color: '#ffffff', type: 'appointment', created_at: '', updated_at: '' },
       { id: '2', status: 'PP Complete', color: '#3b82f6', text_color: '#ffffff', type: 'appointment', created_at: '', updated_at: '' },
-      { id: '3', status: 'Charge NS/LC', color: '#f59e0b', text_color: '#000000', type: 'appointment', created_at: '', updated_at: '' },
-      { id: '4', status: 'RS No Charge', color: '#ef4444', text_color: '#ffffff', type: 'appointment', created_at: '', updated_at: '' },
-      { id: '5', status: 'NS No Charge', color: '#6b7280', text_color: '#ffffff', type: 'appointment', created_at: '', updated_at: '' },
+      { id: '3', status: 'No Show', color: '#f59e0b', text_color: '#000000', type: 'appointment', created_at: '', updated_at: '' },
+      { id: '4', status: 'Rescheduled', color: '#ef4444', text_color: '#ffffff', type: 'appointment', created_at: '', updated_at: '' },
+      { id: '5', status: 'Cancellation', color: '#6b7280', text_color: '#ffffff', type: 'appointment', created_at: '', updated_at: '' },
       { id: '6', status: 'Note not complete', color: '#dc2626', text_color: '#ffffff', type: 'appointment', created_at: '', updated_at: '' },
       
       // Claim Status Colors
@@ -1663,9 +1663,9 @@ export default function ClinicDetail() {
       { id: '10', status: 'Paid', color: '#22c55e', text_color: '#ffffff', type: 'claim', created_at: '', updated_at: '' },
       { id: '11', status: 'Deductible', color: '#a855f7', text_color: '#ffffff', type: 'claim', created_at: '', updated_at: '' },
       { id: '12', status: 'N/A', color: '#6b7280', text_color: '#ffffff', type: 'claim', created_at: '', updated_at: '' },
-      { id: '13', status: 'PP', color: '#06b6d4', text_color: '#ffffff', type: 'claim', created_at: '', updated_at: '' },
+      { id: '13', status: 'Pending Pay', color: '#06b6d4', text_color: '#ffffff', type: 'claim', created_at: '', updated_at: '' },
       { id: '14', status: 'Denial', color: '#ef4444', text_color: '#ffffff', type: 'claim', created_at: '', updated_at: '' },
-      { id: '15', status: 'Rejection', color: '#dc2626', text_color: '#ffffff', type: 'claim', created_at: '', updated_at: '' },
+      { id: '15', status: 'Rejected', color: '#dc2626', text_color: '#ffffff', type: 'claim', created_at: '', updated_at: '' },
       { id: '16', status: 'No Coverage', color: '#991b1b', text_color: '#ffffff', type: 'claim', created_at: '', updated_at: '' },
       
       // Patient Pay Status Colors
@@ -3419,61 +3419,82 @@ export default function ClinicDetail() {
         const canEditProviders = canEdit && !backupOverrideRows
         const currentSheetForBackup = providerId ? providerSheets[providerId] : null
         const providersBackupBar = userProfile?.role === 'super_admin' && currentSheetForBackup?.id ? (
-          // Wrap with `mb-6` to cancel BackupVersionsBar's `-mb-6` so the inline placement
-          // next to the colored title doesn't pull the months row up over it.
-          <div className="mb-6 [&>div]:m-0 [&>div]:p-0">
-            <BackupVersionsBar
-              backupType="providers"
-              entityId={currentSheetForBackup.id}
-              viewingVersion={selectedBackupVersion}
-              getDownloadFilename={(v) => {
-                const providerName = currentProvider
-                  ? `${(currentProvider.first_name ?? '').trim()} ${(currentProvider.last_name ?? '').trim()}`.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Provider'
-                  : 'Provider'
-                const d = new Date(v.created_at)
-                const Y = d.getFullYear()
-                const M = String(d.getMonth() + 1).padStart(2, '0')
-                const D = String(d.getDate()).padStart(2, '0')
-                const h = String(d.getHours()).padStart(2, '0')
-                const m = String(d.getMinutes()).padStart(2, '0')
-                const dateTime = `${Y}-${M}-${D} ${h}.${m}`
-                return `${providerName}_Billing_${dateTime}.csv`
-              }}
-              getDownloadBlob={async (version) => {
-                const raw = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
-                const padded = padSheetRowsTo200(raw)
-                const layout =
-                  providerSheetExportLayoutRef.current ?? {
-                    showVisitTypeColumn: providersTabShowVisitTypeColumn,
-                    showCopayCoinsuranceColumns: clinic?.show_copay_coinsurance_columns ?? true,
-                    officeStaffView: isOfficeStaff,
-                    isProviderView: false,
-                    providerLevel: 1,
-                    isCondensed: false,
-                  }
-                const csv = sheetRowsToUiCsv(padded, patients, layout)
-                return new Blob([csv], { type: 'text/csv;charset=utf-8' })
-              }}
-              onSelectVersion={async (version) => {
-                const requestedId = version.id
-                lastRequestedBackupIdRef.current = requestedId
-                const rows = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
-                if (lastRequestedBackupIdRef.current !== requestedId) return
-                setBackupOverrideRows(padSheetRowsTo200(rows))
-                setSelectedBackupVersion(version)
-                setBackupViewKey((k) => k + 1)
-              }}
-              onBackToCurrent={() => {
+          <BackupVersionsBar
+            backupType="providers"
+            display="button-only"
+            entityId={currentSheetForBackup.id}
+            viewingVersion={selectedBackupVersion}
+            getDownloadFilename={(v) => {
+              const providerName = currentProvider
+                ? `${(currentProvider.first_name ?? '').trim()} ${(currentProvider.last_name ?? '').trim()}`.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Provider'
+                : 'Provider'
+              const d = new Date(v.created_at)
+              const Y = d.getFullYear()
+              const M = String(d.getMonth() + 1).padStart(2, '0')
+              const D = String(d.getDate()).padStart(2, '0')
+              const h = String(d.getHours()).padStart(2, '0')
+              const m = String(d.getMinutes()).padStart(2, '0')
+              const dateTime = `${Y}-${M}-${D} ${h}.${m}`
+              return `${providerName}_Billing_${dateTime}.csv`
+            }}
+            getDownloadBlob={async (version) => {
+              const raw = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
+              const padded = padSheetRowsTo200(raw)
+              const layout =
+                providerSheetExportLayoutRef.current ?? {
+                  showVisitTypeColumn: providersTabShowVisitTypeColumn,
+                  showCopayCoinsuranceColumns: clinic?.show_copay_coinsurance_columns ?? true,
+                  officeStaffView: isOfficeStaff,
+                  isProviderView: false,
+                  providerLevel: 1,
+                  isCondensed: false,
+                }
+              const csv = sheetRowsToUiCsv(padded, patients, layout)
+              return new Blob([csv], { type: 'text/csv;charset=utf-8' })
+            }}
+            onSelectVersion={async (version) => {
+              const requestedId = version.id
+              lastRequestedBackupIdRef.current = requestedId
+              const rows = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
+              if (lastRequestedBackupIdRef.current !== requestedId) return
+              setBackupOverrideRows(padSheetRowsTo200(rows))
+              setSelectedBackupVersion(version)
+              setBackupViewKey((k) => k + 1)
+            }}
+            onBackToCurrent={() => {
+              setBackupOverrideRows(null)
+              setSelectedBackupVersion(null)
+            }}
+          />
+        ) : null
+        // Render "Viewing backup from X" + "Back to current data" on its own row directly under
+        // the colored title pill so it doesn't visually blend into the heading.
+        const providersBackupViewingIndicator = selectedBackupVersion ? (
+          <div className="inline-flex items-center gap-3 px-3 py-1 rounded bg-amber-500/15 border border-amber-400/30 text-amber-200 text-sm">
+            <span>
+              Viewing backup from{' '}
+              {new Date(selectedBackupVersion.created_at).toLocaleString(undefined, {
+                dateStyle: 'short',
+                timeStyle: 'short',
+              })}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
                 setBackupOverrideRows(null)
                 setSelectedBackupVersion(null)
               }}
-            />
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-primary-500/30 hover:bg-primary-500/50 text-white text-xs font-medium"
+            >
+              Back to current data
+            </button>
           </div>
         ) : null
         return (
           <>
             <ProvidersTab
               labelRightSlot={providersBackupBar}
+              belowTitleSlot={providersBackupViewingIndicator}
               key={selectedMonthKey}
               clinicId={clinicId}
               clinicPayroll={clinic?.payroll ?? 1}

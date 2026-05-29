@@ -54,22 +54,22 @@ const COLUMN_DEFINITIONS = {
 const APPOINTMENT_STATUSES: AppointmentStatus[] = [
   'Complete',
   'PP Complete',
-  'Charge NS/LC',
-  'RS No Charge',
-  'NS No Charge',
+  'No Show',
+  'Rescheduled',
+  'Cancellation',
   'Note not complete',
 ]
 
 const CLAIM_STATUSES: ClaimStatus[] = [
   'Claim Sent',
-  'RS',
-  'IP',
+  'N/A',
   'Paid',
   'Deductible',
-  'N/A',
-  'PP',
+  'RS',
+  'IP',
+  'Pending Pay',
   'Denial',
-  'Rejection',
+  'Rejected',
   'No Coverage',
 ]
 
