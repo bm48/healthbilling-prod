@@ -4,7 +4,7 @@ import { TodoItem, IsLockBillingTodo } from '@/types'
 import { useAuth } from '@/contexts/AuthContext'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
-import { createBubbleDropdownRenderer } from '@/lib/handsontableCustomRenderers'
+import { createBubbleDropdownRenderer, createColoredAutocompleteDropdown } from '@/lib/handsontableCustomRenderers'
 
 function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
   let max = -1
@@ -775,6 +775,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       selectOptions: ['New', 'Waiting', 'In Progress', 'Complete', 'Updated'],
       allowEmpty: false,
       renderer: createBubbleDropdownRenderer(getStatusColor) as any,
+      editor: createColoredAutocompleteDropdown(getStatusColor),
       readOnly: !canEdit || getReadOnly('status'),
       columnSorting: { headerAction: false },
     },

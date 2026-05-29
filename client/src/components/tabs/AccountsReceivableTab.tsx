@@ -4,7 +4,7 @@ import { AccountsReceivable, ARType, StatusColor, IsLockAccountsReceivable, Pati
 import { useAuth } from '@/contexts/AuthContext'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
-import { createBubbleDropdownRenderer, DateOfServiceEditor } from '@/lib/handsontableCustomRenderers'
+import { createBubbleDropdownRenderer, createColoredAutocompleteDropdown, DateOfServiceEditor } from '@/lib/handsontableCustomRenderers'
 import { Lock, Unlock } from 'lucide-react'
 import MonthYearTabs from '@/components/MonthYearTabs'
 import { isPastPeriodFromMonthKey } from '@/lib/monthPeriodLock'
@@ -1207,6 +1207,7 @@ export default function AccountsReceivableTab({
       width: 120,
       selectOptions: ['Patient', 'Insurance', 'Admin'],
       renderer: createBubbleDropdownRenderer(getTypeColor) as any,
+      editor: createColoredAutocompleteDropdown(getTypeColor),
       readOnly: !effectiveCanEdit || getReadOnly('type')
     },
     { 

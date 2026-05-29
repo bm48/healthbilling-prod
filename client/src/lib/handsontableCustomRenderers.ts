@@ -374,7 +374,12 @@ export function createColoredAutocompleteDropdown(
 ): any {
   if (!_BaseDropdown) return null
   return class ColoredAutocompleteDropdown extends _BaseDropdown {
-    private __coloredHookAttached = false
+    /**
+     * Tracks which htEditor instance we hooked into. Handsontable can destroy and recreate the popup's
+     * inner table between opens, so we re-attach the afterRender hook when the htEditor reference
+     * changes (previous bug: colors appeared on first open then vanished on every subsequent open).
+     */
+    private __hookedHtEditor: any = null
 
     open(event?: Event) {
       super.open(event)
@@ -397,29 +402,35 @@ export function createColoredAutocompleteDropdown(
       }
     }
 
+    private __paint = () => {
+      const htEditor = (this as any).htEditor
+      const root = htEditor?.rootElement as HTMLElement | null
+      if (!root) return
+      const cells = root.querySelectorAll('tbody tr td')
+      cells.forEach((node) => {
+        const td = node as HTMLTableCellElement
+        const text = (td.textContent ?? '').trim()
+        if (!text) return
+        const cfg = colorMap(text)
+        if (cfg) {
+          td.style.setProperty('background-color', cfg.color, 'important')
+          td.style.setProperty('color', cfg.textColor, 'important')
+          td.style.setProperty('font-weight', '500', 'important')
+        }
+      })
+    }
+
     private __installColorPainter() {
       const htEditor = (this as any).htEditor
-      if (!htEditor || this.__coloredHookAttached) return
-      this.__coloredHookAttached = true
-      const paint = () => {
-        const root = htEditor.rootElement as HTMLElement | null
-        if (!root) return
-        const cells = root.querySelectorAll('tbody tr td')
-        cells.forEach((node) => {
-          const td = node as HTMLTableCellElement
-          const text = (td.textContent ?? '').trim()
-          if (!text) return
-          const cfg = colorMap(text)
-          if (cfg) {
-            td.style.setProperty('background-color', cfg.color, 'important')
-            td.style.setProperty('color', cfg.textColor, 'important')
-            td.style.setProperty('font-weight', '500', 'important')
-          }
-        })
+      if (!htEditor) return
+      // Always paint on this open so the colors appear immediately, regardless of hook state.
+      this.__paint()
+      // Re-attach the afterRender hook whenever the inner table instance changes (handles
+      // Handsontable's teardown/recreate cycle between opens).
+      if (this.__hookedHtEditor !== htEditor) {
+        this.__hookedHtEditor = htEditor
+        htEditor.addHook('afterRender', this.__paint)
       }
-      // Run once now (queryChoices may have already rendered) and on every subsequent inner render.
-      paint()
-      htEditor.addHook('afterRender', paint)
     }
   }
 }
@@ -769,6 +780,10 @@ export class MultiSelectCptEditor extends Handsontable.editors.BaseEditor {
     this.options = Array.isArray(resolved)
       ? resolved.map((o: any) => String(o == null ? '' : o))
       : []
+    // Pick up the per-column color map (passed via cellMeta `cptColorMap`) so options render as
+    // colored bubbles matching the cell renderer. Falls back to plain text when no map is set.
+    const cellMapFn = (meta as any).cptColorMap ?? (colSettings as any)?.cptColorMap
+    this.colorMap = typeof cellMapFn === 'function' ? cellMapFn : null
     const raw = this.originalValue ?? ''
     this.selected = new Set(raw ? String(raw).split(',').map((s: string) => s.trim()).filter(Boolean) : [])
     this.filteredOptions = [...this.options]
@@ -834,6 +849,13 @@ export class MultiSelectCptEditor extends Handsontable.editors.BaseEditor {
     }
   }
 
+  /**
+   * Optional color map for the CPT options — set via the column's `cptColorMap` cellMeta prop in
+   * ProvidersTab. When present, each option label is rendered as a colored bubble that matches the
+   * cell's `createMultiBubbleDropdownRenderer` so the picker and the cell stay visually consistent.
+   */
+  private colorMap: ((value: string) => { color: string; textColor: string } | null) | null = null
+
   private renderList() {
     if (!this.listEl) return
     this.listEl.innerHTML = ''
@@ -867,6 +889,22 @@ export class MultiSelectCptEditor extends Handsontable.editors.BaseEditor {
       `
       const label = document.createElement('span')
       label.textContent = opt
+      const cfg = this.colorMap ? this.colorMap(opt) : null
+      if (cfg) {
+        label.style.cssText = `
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 3px 10px;
+          border-radius: 16px;
+          font-weight: 500;
+          line-height: 1.4;
+          min-width: 52px;
+          text-align: center;
+          background-color: ${cfg.color};
+          color: ${cfg.textColor};
+        `
+      }
       row.appendChild(check)
       row.appendChild(label)
       row.addEventListener('mousedown', (e) => {
