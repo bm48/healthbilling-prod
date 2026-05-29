@@ -99,7 +99,10 @@ export default function MonthYearTabs({
             {label} {labelSuffix}
           </div>
           {labelRightSlot && (
-            <div className="absolute right-0 top-1/2 -translate-y-1/2 shrink-0">
+            // top-0 bottom-0 + flex items-center vertically centers without applying a CSS transform —
+            // a transform here makes this wrapper the containing block for `position: fixed`, which
+            // traps BackupVersionsBar's modal inside the slot instead of overlaying the page.
+            <div className="absolute right-0 top-0 bottom-0 flex items-center shrink-0">
               {labelRightSlot}
             </div>
           )}

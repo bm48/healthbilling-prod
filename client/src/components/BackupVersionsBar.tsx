@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { apiClient } from '@/lib/apiClient'
 import { listBackupVersionsDeduped, getBackupDownloadUrl } from '@/lib/providerSheetBackups'
 import { listTabBackupVersionsDeduped, getTabBackupDownloadUrl, type TabBackupType } from '@/lib/tabBackups'
@@ -211,7 +212,7 @@ export default function BackupVersionsBar(
       </div>
       {error && <div className="mt-2 text-amber-400 text-sm">{error}</div>}
 
-      {modalOpen && (
+      {modalOpen && createPortal(
         <div className="fixed inset-0 z-50 flex justify-center bg-black/60 pt-20 pb-4 px-4" onClick={() => setModalOpen(false)}>
           <div
             className="bg-gray-900 border border-white/20 rounded-xl shadow-xl max-w-lg w-full p-5 self-start"
@@ -297,7 +298,8 @@ export default function BackupVersionsBar(
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   )
