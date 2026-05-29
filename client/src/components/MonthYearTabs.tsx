@@ -108,80 +108,157 @@ export default function MonthYearTabs({
           )}
         </div>
       )}
-      <div className={`flex items-center gap-2 ${isInSplitScreen ? 'flex-wrap' : 'flex-wrap md:flex-nowrap'}`}>
-        <select
-          value={currentYear}
-          onChange={(e) => handleYearChange(Number(e.target.value))}
-          className="px-2 py-1 rounded-md border border-slate-600 bg-slate-800 text-white text-sm font-medium shrink-0 cursor-pointer hover:border-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
-          title="Select year"
-        >
-          {yearOptions.map((y) => (
-            <option key={y} value={y}>
-              {y}
-            </option>
-          ))}
-        </select>
-
-        <div className="flex gap-1 flex-wrap flex-1 min-w-0 justify-center">
-          {MONTHS_SHORT.map((short, idx) => {
-            const monthName = MONTHS_FULL[idx]
-            const mc = monthColorByName.get(monthName)
-            const baseColor = mc?.color ?? '#475569'
-            const baseText = mc?.textColor ?? '#fff'
-            const isActive = idx === currentMonthIdx
-            return (
-              <button
-                key={monthName}
-                type="button"
-                onClick={() => handleMonthClick(idx)}
-                title={monthName}
-                aria-pressed={isActive}
-                className={`px-2 py-1 rounded-md text-sm font-semibold transition-all border ${
-                  isActive
-                    ? 'shadow-md ring-2 ring-white/70 scale-105'
-                    : 'opacity-70 hover:opacity-100 border-transparent'
-                }`}
-                style={{
-                  backgroundColor: isActive ? baseColor : hexToRgba(baseColor, 0.55),
-                  color: baseText,
-                  minWidth: 44,
-                }}
-              >
-                {short}
-              </button>
-            )
-          })}
-        </div>
-
-        {clinicPayroll === 2 && (
-          <div className="flex items-center gap-1 shrink-0 ml-auto rounded-md border border-slate-600 bg-slate-800 p-0.5">
-            <button
-              type="button"
-              onClick={() => handlePayrollChange(1)}
-              className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
-                selectedPayroll === 1
-                  ? 'bg-primary-600 text-white'
-                  : 'text-white/70 hover:text-white hover:bg-white/10'
-              }`}
+      {isInSplitScreen ? (
+        // Split-screen: compact stacked layout — Year + 1st/2nd Half on one row, then a 4×3 grid of months.
+        // Avoids the previous wrap behavior where each month landed on its own line in narrow columns.
+        <>
+          <div className="flex items-center gap-2 mb-2">
+            <select
+              value={currentYear}
+              onChange={(e) => handleYearChange(Number(e.target.value))}
+              className="px-2 py-1 rounded-md border border-slate-600 bg-slate-800 text-white text-sm font-medium shrink-0 cursor-pointer hover:border-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
+              title="Select year"
             >
-              1st Half
-            </button>
-            <button
-              type="button"
-              onClick={() => handlePayrollChange(2)}
-              className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
-                selectedPayroll === 2
-                  ? 'bg-primary-600 text-white'
-                  : 'text-white/70 hover:text-white hover:bg-white/10'
-              }`}
-            >
-              2nd Half
-            </button>
+              {yearOptions.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+            {clinicPayroll === 2 && (
+              <div className="flex items-center gap-1 shrink-0 ml-auto rounded-md border border-slate-600 bg-slate-800 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => handlePayrollChange(1)}
+                  className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
+                    selectedPayroll === 1
+                      ? 'bg-primary-600 text-white'
+                      : 'text-white/70 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  1st Half
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePayrollChange(2)}
+                  className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
+                    selectedPayroll === 2
+                      ? 'bg-primary-600 text-white'
+                      : 'text-white/70 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  2nd Half
+                </button>
+              </div>
+            )}
+            {rightSlot && <div className="shrink-0 ml-auto">{rightSlot}</div>}
           </div>
-        )}
+          <div className="grid grid-cols-4 gap-1">
+            {MONTHS_SHORT.map((short, idx) => {
+              const monthName = MONTHS_FULL[idx]
+              const mc = monthColorByName.get(monthName)
+              const baseColor = mc?.color ?? '#475569'
+              const baseText = mc?.textColor ?? '#fff'
+              const isActive = idx === currentMonthIdx
+              return (
+                <button
+                  key={monthName}
+                  type="button"
+                  onClick={() => handleMonthClick(idx)}
+                  title={monthName}
+                  aria-pressed={isActive}
+                  className={`px-1 py-1 rounded-md text-xs font-semibold transition-all border ${
+                    isActive
+                      ? 'shadow-md ring-2 ring-white/70'
+                      : 'opacity-70 hover:opacity-100 border-transparent'
+                  }`}
+                  style={{
+                    backgroundColor: isActive ? baseColor : hexToRgba(baseColor, 0.55),
+                    color: baseText,
+                  }}
+                >
+                  {short}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap md:flex-nowrap">
+          <select
+            value={currentYear}
+            onChange={(e) => handleYearChange(Number(e.target.value))}
+            className="px-2 py-1 rounded-md border border-slate-600 bg-slate-800 text-white text-sm font-medium shrink-0 cursor-pointer hover:border-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
+            title="Select year"
+          >
+            {yearOptions.map((y) => (
+              <option key={y} value={y}>
+                {y}
+              </option>
+            ))}
+          </select>
 
-        {rightSlot && <div className="shrink-0">{rightSlot}</div>}
-      </div>
+          <div className="flex gap-1 flex-wrap flex-1 min-w-0 justify-center">
+            {MONTHS_SHORT.map((short, idx) => {
+              const monthName = MONTHS_FULL[idx]
+              const mc = monthColorByName.get(monthName)
+              const baseColor = mc?.color ?? '#475569'
+              const baseText = mc?.textColor ?? '#fff'
+              const isActive = idx === currentMonthIdx
+              return (
+                <button
+                  key={monthName}
+                  type="button"
+                  onClick={() => handleMonthClick(idx)}
+                  title={monthName}
+                  aria-pressed={isActive}
+                  className={`px-2 py-1 rounded-md text-sm font-semibold transition-all border ${
+                    isActive
+                      ? 'shadow-md ring-2 ring-white/70 scale-105'
+                      : 'opacity-70 hover:opacity-100 border-transparent'
+                  }`}
+                  style={{
+                    backgroundColor: isActive ? baseColor : hexToRgba(baseColor, 0.55),
+                    color: baseText,
+                    minWidth: 44,
+                  }}
+                >
+                  {short}
+                </button>
+              )
+            })}
+          </div>
+
+          {clinicPayroll === 2 && (
+            <div className="flex items-center gap-1 shrink-0 ml-auto rounded-md border border-slate-600 bg-slate-800 p-0.5">
+              <button
+                type="button"
+                onClick={() => handlePayrollChange(1)}
+                className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
+                  selectedPayroll === 1
+                    ? 'bg-primary-600 text-white'
+                    : 'text-white/70 hover:text-white hover:bg-white/10'
+                }`}
+              >
+                1st Half
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePayrollChange(2)}
+                className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
+                  selectedPayroll === 2
+                    ? 'bg-primary-600 text-white'
+                    : 'text-white/70 hover:text-white hover:bg-white/10'
+                }`}
+              >
+                2nd Half
+              </button>
+            </div>
+          )}
+
+          {rightSlot && <div className="shrink-0">{rightSlot}</div>}
+        </div>
+      )}
     </div>
   )
 }

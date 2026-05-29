@@ -818,10 +818,22 @@ export default function ClinicDetail() {
           })
           .select()
           .single()
-        
+
         if (insertError) {
-          console.error('Error creating is_lock_patients record:', insertError)
-          setIsLockPatients(null)
+          // Race: a concurrent caller (split-screen pane mount, rapid tab switch, dev StrictMode
+          // double-effect) already inserted the row between our SELECT and INSERT, hitting the
+          // clinic_id unique constraint. Re-fetch and use the existing row instead of failing.
+          if (insertError.code === '23505') {
+            const { data: refetched } = await apiClient
+              .from('is_lock_patients')
+              .select('*')
+              .eq('clinic_id', clinicId)
+              .maybeSingle()
+            setIsLockPatients(refetched ?? null)
+          } else {
+            console.error('Error creating is_lock_patients record:', insertError)
+            setIsLockPatients(null)
+          }
         } else {
           setIsLockPatients(newData)
         }
@@ -901,10 +913,36 @@ export default function ClinicDetail() {
           const { error: retryError } = await apiClient
             .from('is_lock_patients')
             .insert(insertData)
-          
-          if (retryError) throw retryError
+
+          if (retryError) {
+            if (retryError.code === '23505') {
+              // Row already exists (created between our null check and this INSERT). Update it instead.
+              await apiClient
+                .from('is_lock_patients')
+                .update({ [columnName]: isLocked, updated_at: new Date().toISOString() })
+                .eq('clinic_id', clinicId)
+            } else {
+              throw retryError
+            }
+          }
         } else if (error) {
-          throw error
+          if (error.code === '23505') {
+            // Row already exists (created between our null check and this INSERT) — update it instead.
+            const updateData: any = {
+              [columnName]: isLocked,
+              updated_at: new Date().toISOString(),
+            }
+            if (comment !== undefined && comment !== null && comment !== '') {
+              updateData[commentField] = comment
+            }
+            const { error: updateError } = await apiClient
+              .from('is_lock_patients')
+              .update(updateData)
+              .eq('clinic_id', clinicId)
+            if (updateError) throw updateError
+          } else {
+            throw error
+          }
         }
       }
 
