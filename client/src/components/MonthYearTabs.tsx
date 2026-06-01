@@ -16,6 +16,13 @@ interface MonthYearTabsProps {
   belowTitleSlot?: ReactNode
   /** Year dropdown starts at this year (default 2024). */
   minYear?: number
+  /**
+   * When true, render the 12 month buttons in a 6-col grid (so they wrap evenly 6+6 in narrow
+   * containers). Defaults to false — the standard layout flows the months on a single line via
+   * flex-wrap. The Provider Pay tab sets this because its container is narrow enough that the
+   * default flex-wrap landed an awkward 8+4 split.
+   */
+  compactMonthsLayout?: boolean
 }
 
 const MONTHS_FULL = [
@@ -47,6 +54,7 @@ export default function MonthYearTabs({
   labelRightSlot,
   belowTitleSlot,
   minYear = 2024,
+  compactMonthsLayout = false,
 }: MonthYearTabsProps) {
   const monthColorByName = useMemo(() => {
     const map = new Map<string, { color: string; textColor: string }>()
@@ -204,9 +212,16 @@ export default function MonthYearTabs({
             ))}
           </select>
 
-          {/* 6-col grid by default (-> 6+6 rows of months) and 12-col on xl screens so the months
-              line up evenly instead of the prior 8+4 flex-wrap behavior. */}
-          <div className="grid grid-cols-6 xl:grid-cols-12 gap-1 flex-1 min-w-0">
+          {/* Default: original flex-wrap layout — months flow on a single line on wide containers,
+              wrap naturally on narrow ones. compactMonthsLayout=true switches to a 6-col grid so
+              narrow containers (e.g. the Provider Pay tab) get a tidy 6+6 split instead of 8+4. */}
+          <div
+            className={
+              compactMonthsLayout
+                ? 'grid grid-cols-6 xl:grid-cols-12 gap-1 flex-1 min-w-0'
+                : 'flex gap-1 flex-wrap flex-1 min-w-0 justify-center'
+            }
+          >
             {MONTHS_SHORT.map((short, idx) => {
               const monthName = MONTHS_FULL[idx]
               const mc = monthColorByName.get(monthName)
@@ -228,6 +243,7 @@ export default function MonthYearTabs({
                   style={{
                     backgroundColor: isActive ? baseColor : hexToRgba(baseColor, 0.55),
                     color: baseText,
+                    ...(compactMonthsLayout ? {} : { minWidth: 44 }),
                   }}
                 >
                   {short}

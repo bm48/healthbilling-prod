@@ -935,6 +935,7 @@ export default function ProviderPayTab({
         isInSplitScreen={isInSplitScreen}
         labelRightSlot={labelRightSlot}
         belowTitleSlot={belowTitleSlot}
+        compactMonthsLayout
         onChange={(date, payroll) => {
           if (onSelectMonth) onSelectMonth(date)
           if (clinicPayroll === 2) setSelectedPayroll(payroll)
