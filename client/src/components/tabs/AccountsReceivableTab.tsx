@@ -134,6 +134,9 @@ function mergeARRowAfterSave(row: AccountsReceivable, saved: AccountsReceivable)
     created_at: normalized.created_at,
     updated_at: normalized.updated_at,
     clinic_id: normalized.clinic_id,
+    // After INSERT the DB row has the provider_id we stamped on it (or NULL for clinic-level
+    // entries / legacy rows). Pull it from the saved record so the in-memory copy stays in sync.
+    provider_id: normalized.provider_id ?? null,
     payroll: normalized.payroll,
     ar_id: normalized.ar_id,
     name: row.name !== undefined ? row.name : normalized.name,
@@ -230,6 +233,14 @@ interface AccountsReceivableTabProps {
   labelRightSlot?: React.ReactNode
   /** Rendered as its own row immediately below the colored title pill (above the months row). */
   belowTitleSlot?: React.ReactNode
+  /**
+   * When set, the A-R sheet is scoped to this provider: only rows with `provider_id = providerId`
+   * (plus legacy rows with `provider_id = NULL`) are shown, and any new rows the user creates are
+   * stamped with this provider_id. When omitted, the tab behaves as a clinic-wide ledger (all
+   * rows visible, new rows have NULL provider_id). Pass through from the URL on
+   * `/clinic/:id/providers/:providerId/accounts_receivable` and the provider's own AR view.
+   */
+  providerId?: string | null
 }
 
 export default function AccountsReceivableTab({
@@ -252,6 +263,7 @@ export default function AccountsReceivableTab({
   patients = [],
   labelRightSlot,
   belowTitleSlot,
+  providerId = null,
 }: AccountsReceivableTabProps) {
   const { userProfile } = useAuth()
   const [statusColors, setStatusColors] = useState<StatusColor[]>([])
@@ -380,6 +392,16 @@ export default function AccountsReceivableTab({
     if (clinicPayroll === 2) {
       filtered = filtered.filter((ar) => (ar.payroll ?? 1) === selectedPayroll)
     }
+    // Per-provider scoping. When providerId is set we only show rows that either belong to that
+    // provider OR are legacy NULL-provider rows (pre-scoping data the user has chosen not to
+    // reassign). When providerId is null/omitted the sheet behaves as the clinic-wide ledger and
+    // every row is shown — matches the pre-scoping behavior for routes without a provider.
+    if (providerId) {
+      filtered = filtered.filter((ar) => {
+        const owner = (ar as { provider_id?: string | null }).provider_id ?? null
+        return owner == null || owner === providerId
+      })
+    }
     if (filtered.length >= 200) return filtered
     const need = 200 - filtered.length
     const monthKey = selectedMonth.getTime()
@@ -400,7 +422,7 @@ export default function AccountsReceivableTab({
       updated_at: new Date().toISOString(),
     }))
     return [...filtered, ...placeholders]
-  }, [selectedMonth, clinicPayroll, selectedPayroll, clinicId])
+  }, [selectedMonth, clinicPayroll, selectedPayroll, clinicId, providerId])
 
   const buildDisplayedFromFull = useCallback((): AccountsReceivable[] => {
     return buildDisplayedFromList(fullListRef.current)
@@ -442,6 +464,9 @@ export default function AccountsReceivableTab({
     const payrollFilter = clinicPayroll === 2 ? selectedPayroll : 1
     const thisFetchId = ++fetchIdRef.current
     try {
+      // Fetch by clinic + payroll only; the per-provider scoping is enforced client-side in
+      // buildDisplayedFromList. We keep the fetch broad (no provider_id predicate) because the
+      // custom apiClient doesn't expose `.or()` for the "X or NULL" backward-compat filter.
       const { data, error } = await apiClient
         .from('accounts_receivables')
         .select('*')
@@ -513,7 +538,7 @@ export default function AccountsReceivableTab({
         setLoading(false)
       }
     }
-  }, [clinicId, clinicPayroll, selectedPayroll, createEmptyAR, buildDisplayedFromFull])
+  }, [clinicId, clinicPayroll, selectedPayroll, createEmptyAR, buildDisplayedFromFull, providerId])
 
   // Like Providers tab: when viewing backup only switch what we display (via displayAR useMemo); do NOT overwrite fullListRef or displayedAR so "Back to current" shows current data immediately.
   useEffect(() => {
@@ -615,7 +640,7 @@ export default function AccountsReceivableTab({
           ar.ar_month != null && Number.isFinite(Number(ar.ar_month))
             ? Math.trunc(Number(ar.ar_month))
             : inferredPeriod?.month ?? new Date().getMonth() + 1
-        const arData: any = {
+        const arData: Record<string, unknown> = {
           clinic_id: clinicId,
           ar_id: finalArId.trim(),
           name: (ar.name != null && ar.name !== 'null') ? ar.name : null,
@@ -633,6 +658,9 @@ export default function AccountsReceivableTab({
         let savedAR: AccountsReceivable | null = null
 
         if (!ar.id.startsWith('new-') && !ar.id.startsWith('empty-')) {
+          // UPDATE path: leave the row's provider_id alone — editing an existing legacy (NULL) row
+          // should NOT silently assign it to whichever provider's URL the user is on. To migrate
+          // legacy rows the user will need an explicit assignment step (or we do a backfill later).
           const { error: updateError, data: updateData } = await apiClient
             .from('accounts_receivables')
             .update(arData)
@@ -650,14 +678,19 @@ export default function AccountsReceivableTab({
           }
         }
 
+        // INSERT path: stamp this row with the current provider context so it stays scoped to the
+        // provider whose URL it was created on. providerId is null on the clinic-level AR view,
+        // in which case the row is "unscoped" and visible everywhere (matches the existing legacy
+        // behavior for old rows).
+        const insertPayload = { ...arData, provider_id: providerId ?? null }
         const { error: insertError, data: insertedAR } = await apiClient
           .from('accounts_receivables')
-          .insert(arData)
+          .insert(insertPayload)
           .select()
           .maybeSingle()
 
         if (insertError) {
-          console.error('[saveAR] INSERT failed row', i, 'id=', oldId, 'error=', insertError, 'code=', insertError.code, 'message=', insertError.message, 'arData=', arData)
+          console.error('[saveAR] INSERT failed row', i, 'id=', oldId, 'error=', insertError, 'code=', insertError.code, 'message=', insertError.message, 'arData=', insertPayload)
           throw insertError
         }
 
@@ -705,7 +738,7 @@ export default function AccountsReceivableTab({
         setRunPendingSaveTrigger((t) => t + 1)
       }
     }
-  }, [clinicId, userProfile, clinicPayroll, selectedPayroll, effectiveCanEdit])
+  }, [clinicId, userProfile, clinicPayroll, selectedPayroll, effectiveCanEdit, providerId])
 
   saveAccountsReceivableRef.current = saveAccountsReceivable
 

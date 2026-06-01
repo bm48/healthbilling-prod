@@ -913,6 +913,9 @@ export default function ProviderSheetPage() {
         <AccountsReceivableTab
           clinicId={clinicId}
           clinicPayroll={clinic?.payroll ?? 1}
+          // Scope the provider's own A-R view to their own provider record so they only see their
+          // rows (plus legacy NULL-provider rows for backward compatibility).
+          providerId={provider?.id ?? null}
           patients={patients}
           canEdit={false}
           isInSplitScreen={false}

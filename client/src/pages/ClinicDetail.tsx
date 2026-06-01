@@ -3315,6 +3315,10 @@ export default function ClinicDetail() {
           <AccountsReceivableTab
             clinicId={clinicId!}
             clinicPayroll={clinic?.payroll ?? 1}
+            // Scope the A-R sheet to the URL's provider (`/clinic/X/providers/Y/accounts_receivable`).
+            // When the tab is rendered from the clinic-level route there's no providerId and the
+            // sheet falls back to its clinic-wide ledger behavior, matching the pre-scoping flow.
+            providerId={providerId ?? null}
             patients={patients}
             canEdit={canEdit && !backupOverrideAR}
             canTogglePastMonthWholeSheetLock={canLockColumns}

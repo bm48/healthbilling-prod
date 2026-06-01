@@ -230,6 +230,12 @@ export interface StatusColor {
 export interface AccountsReceivable {
   id: string
   clinic_id: string
+  /**
+   * Provider that owns this A-R row. NULL on legacy rows that pre-date per-provider scoping —
+   * those continue to display in every provider's A-R view of the clinic for backward compat.
+   * New rows inserted from a provider-scoped URL get this set to that provider's id.
+   */
+  provider_id?: string | null
   ar_id: string
   name: string | null
   date_of_service: string | null
