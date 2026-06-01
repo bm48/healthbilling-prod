@@ -2068,7 +2068,14 @@ export default function ProvidersTab({
           }
           updatedRows[row] = { ...sheetRow, id: newId, [field]: strVal, updated_at: new Date().toISOString() } as SheetRow
         } else if (field === 'visit_type') {
-          const value = newValue === true ? 'Telehealth' : 'In-person'
+          // Accept the value from any path: checkbox toggles deliver a boolean, fill-down / paste
+          // may deliver the underlying string ('Telehealth' / 'In-person'), and clears come through
+          // as null/''. Keep them all routed to the canonical stored value.
+          let value: 'Telehealth' | 'In-person' | null
+          if (newValue === true) value = 'Telehealth'
+          else if (newValue === false) value = 'In-person'
+          else if (newValue == null || newValue === '' || newValue === 'null') value = null
+          else value = String(newValue).trim().toLowerCase() === 'telehealth' ? 'Telehealth' : 'In-person'
           updatedRows[row] = { ...sheetRow, id: newId, [field]: value, updated_at: new Date().toISOString() } as SheetRow
         } else if (field) {
           if (dateFields.includes(field)) hadDateColumnEdit = true

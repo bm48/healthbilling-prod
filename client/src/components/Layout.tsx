@@ -43,7 +43,27 @@ export default function Layout({ children }: LayoutProps) {
   const [expandedSettings, setExpandedSettings] = useState(false)
   const [expandedClinicsSection, setExpandedClinicsSection] = useState(false)
   const [expandedProviderSheetSection, setExpandedProviderSheetSection] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  // Sidebar is now hover-to-expand by default. `isPinned` (persisted to localStorage) keeps it
+  // permanently open; `isHovered` expands it transiently while the mouse is over it without
+  // shifting the main content. `sidebarCollapsed` is derived so the 30+ downstream references
+  // (icon centering, label show/hide) keep working unchanged.
+  const [isPinned, setIsPinned] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('sidebar-pinned') === '1'
+    } catch {
+      return false
+    }
+  })
+  const [isHovered, setIsHovered] = useState(false)
+  const sidebarExpanded = isPinned || isHovered
+  const sidebarCollapsed = !sidebarExpanded
+  useEffect(() => {
+    try {
+      localStorage.setItem('sidebar-pinned', isPinned ? '1' : '0')
+    } catch {
+      // ignore — sidebar still works in-memory if storage is unavailable
+    }
+  }, [isPinned])
   // Provider sidebar: clinics the logged-in provider belongs to
   const [providerClinics, setProviderClinics] = useState<Clinic[]>([])
   const [loadingProviderClinics, setLoadingProviderClinics] = useState(false)
@@ -377,10 +397,14 @@ export default function Layout({ children }: LayoutProps) {
 
   return (
     <div className="min-h-screen">
-      {/* Sidebar */}
-      <div className={`fixed inset-y-0 left-0 z-30 bg-slate-900/90 backdrop-blur-md shadow-2xl border-r border-white/10 transition-all duration-300 ${
-        sidebarCollapsed ? 'w-20' : 'w-96'
-      }`}>
+      {/* Sidebar — auto-collapses when the mouse isn't over it (unless the user has pinned it open). */}
+      <div
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        className={`fixed inset-y-0 left-0 z-30 bg-slate-900/90 backdrop-blur-md shadow-2xl border-r border-white/10 transition-all duration-300 ${
+          sidebarCollapsed ? 'w-16' : 'w-72'
+        }`}
+      >
         <div className="flex flex-col h-full">
           {/* Logo/Header */}
           <div className={`flex items-center mb-4 pt-10 gap-2 h-[110px] ${sidebarCollapsed ? 'justify-center px-0' : 'justify-between'}`}>
@@ -392,13 +416,13 @@ export default function Layout({ children }: LayoutProps) {
               />
             )}
             <button
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              onClick={() => setIsPinned((prev) => !prev)}
               className={`text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0 flex items-center justify-center ${
                 sidebarCollapsed ? 'py-3 px-2' : 'p-2 -ml-12 mt-14'
               }`}
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              title={isPinned ? 'Unpin sidebar (auto-collapse when not hovered)' : 'Pin sidebar open'}
             >
-              {sidebarCollapsed ? <Menu size={20} /> : <ArrowLeft size={20} />}
+              {isPinned ? <ArrowLeft size={20} /> : <Menu size={20} />}
             </button>
           </div>
 
@@ -1320,7 +1344,9 @@ export default function Layout({ children }: LayoutProps) {
       </div>
 
       {/* Main Content */}
-      <div className={`min-h-screen transition-all duration-300 ${sidebarCollapsed ? 'ml-20' : 'ml-96'}`}>
+      {/* Main content margin tracks `isPinned`, not hover — when the user mouses over the sidebar
+          to expand it, the content stays put and the sidebar floats over it instead of shifting. */}
+      <div className={`min-h-screen transition-all duration-300 ${isPinned ? 'ml-72' : 'ml-16'}`}>
         <main className="p-8 text-white min-h-full">
           {children}
         </main>

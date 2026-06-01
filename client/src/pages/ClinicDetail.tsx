@@ -3253,71 +3253,94 @@ export default function ClinicDetail() {
             isColumnLocked={isBillingTodoColumnLocked}
           />
         )
-      case 'accounts_receivable':
+      case 'accounts_receivable': {
+        const arBackupBar = userProfile?.role === 'super_admin' && clinicId ? (
+          <BackupVersionsBar
+            backupType="ar"
+            display="button-only"
+            entityId={clinicId}
+            viewingVersion={selectedBackupVersionAR}
+            getDownloadFilename={(v) => {
+              const clinicName = clinic
+                ? `${(clinic.name ?? 'Clinic').trim()}`.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Clinic'
+                : 'Clinic'
+              const d = new Date(v.created_at)
+              const Y = d.getFullYear()
+              const M = String(d.getMonth() + 1).padStart(2, '0')
+              const D = String(d.getDate()).padStart(2, '0')
+              const h = String(d.getHours()).padStart(2, '0')
+              const m = String(d.getMinutes()).padStart(2, '0')
+              const dateTime = `${Y}-${M}-${D} ${h}.${m}`
+              return `${clinicName}_AR_${dateTime}.csv`
+            }}
+            onSelectVersion={async (version) => {
+              const requestedId = version.id
+              lastRequestedBackupIdARRef.current = requestedId
+              const list = await fetchBackupCsvAsAR(apiClient, version.file_path, clinicId!)
+              if (lastRequestedBackupIdARRef.current !== requestedId) return
+              setBackupOverrideAR(padARTo200(list, clinicId!))
+              setSelectedBackupVersionAR(version)
+              setBackupViewKeyAR((k) => k + 1)
+            }}
+            onBackToCurrent={() => {
+              setBackupOverrideAR(null)
+              setSelectedBackupVersionAR(null)
+            }}
+          />
+        ) : null
+        // Same visual treatment as the providers tab: the "Viewing backup from X" badge sits on its
+        // own centered row directly under the colored title pill so it doesn't blend into the title.
+        const arBackupViewingIndicator = selectedBackupVersionAR ? (
+          <div className="inline-flex items-center gap-3 px-3 py-1 rounded bg-white/10 border border-white/30 text-white text-sm">
+            <span>
+              Viewing backup from{' '}
+              {new Date(selectedBackupVersionAR.created_at).toLocaleString(undefined, {
+                dateStyle: 'short',
+                timeStyle: 'short',
+              })}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setBackupOverrideAR(null)
+                setSelectedBackupVersionAR(null)
+              }}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-primary-500/30 hover:bg-primary-500/50 text-white text-xs font-medium"
+            >
+              Back to current data
+            </button>
+          </div>
+        ) : null
         return (
-          <>
-            {userProfile?.role === 'super_admin' && clinicId && (
-              <div className="mb-4">
-                <BackupVersionsBar
-                  backupType="ar"
-                  entityId={clinicId}
-                  viewingVersion={selectedBackupVersionAR}
-                  getDownloadFilename={(v) => {
-                    const clinicName = clinic
-                      ? `${(clinic.name ?? 'Clinic').trim()}`.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Clinic'
-                      : 'Clinic'
-                    const d = new Date(v.created_at)
-                    const Y = d.getFullYear()
-                    const M = String(d.getMonth() + 1).padStart(2, '0')
-                    const D = String(d.getDate()).padStart(2, '0')
-                    const h = String(d.getHours()).padStart(2, '0')
-                    const m = String(d.getMinutes()).padStart(2, '0')
-                    const dateTime = `${Y}-${M}-${D} ${h}.${m}`
-                    return `${clinicName}_AR_${dateTime}.csv`
-                  }}
-                  onSelectVersion={async (version) => {
-                    const requestedId = version.id
-                    lastRequestedBackupIdARRef.current = requestedId
-                    const list = await fetchBackupCsvAsAR(apiClient, version.file_path, clinicId!)
-                    if (lastRequestedBackupIdARRef.current !== requestedId) return
-                    setBackupOverrideAR(padARTo200(list, clinicId!))
-                    setSelectedBackupVersionAR(version)
-                    setBackupViewKeyAR((k) => k + 1)
-                  }}
-                  onBackToCurrent={() => {
-                    setBackupOverrideAR(null)
-                    setSelectedBackupVersionAR(null)
-                  }}
-                />
-              </div>
-            )}
-            <AccountsReceivableTab
-              clinicId={clinicId!}
-              clinicPayroll={clinic?.payroll ?? 1}
-              patients={patients}
-              canEdit={canEdit && !backupOverrideAR}
-              canTogglePastMonthWholeSheetLock={canLockColumns}
-              wholeSheetLocked={Boolean(isLockAccountsReceivable?.whole_sheet_locked)}
-              onTogglePastMonthWholeSheetLock={handleToggleARWholeSheetLock}
-              isInSplitScreen={!!splitScreen}
-              onLocksMonthKeyChange={setArLocksMonthKey}
-              isLockAccountsReceivable={isLockAccountsReceivable}
-              onLockColumn={canLockColumns ? (columnName: string) => {
-                const existingComment = isLockAccountsReceivable && isARColumnLocked(columnName as keyof IsLockAccountsReceivable)
-                  ? (isLockAccountsReceivable[`${columnName}_comment` as keyof IsLockAccountsReceivable] as string | null) || ''
-                  : ''
-                setSelectedLockColumn({ columnName, providerId: null, isARColumn: true })
-                setLockComment(existingComment)
-                setShowLockDialog(true)
-              } : undefined}
-              isColumnLocked={isARColumnLocked}
-              overrideFullAR={backupOverrideAR}
-              isViewingBackup={!!selectedBackupVersionAR}
-              backupVersionKey={backupViewKeyAR}
-              onRegisterFlushBeforeTabLeave={(flush) => { accountsReceivableTabFlushRef.current = flush }}
-            />
-          </>
+          <AccountsReceivableTab
+            clinicId={clinicId!}
+            clinicPayroll={clinic?.payroll ?? 1}
+            patients={patients}
+            canEdit={canEdit && !backupOverrideAR}
+            canTogglePastMonthWholeSheetLock={canLockColumns}
+            wholeSheetLocked={Boolean(isLockAccountsReceivable?.whole_sheet_locked)}
+            onTogglePastMonthWholeSheetLock={handleToggleARWholeSheetLock}
+            isInSplitScreen={!!splitScreen}
+            onLocksMonthKeyChange={setArLocksMonthKey}
+            isLockAccountsReceivable={isLockAccountsReceivable}
+            labelRightSlot={arBackupBar}
+            belowTitleSlot={arBackupViewingIndicator}
+            onLockColumn={canLockColumns ? (columnName: string) => {
+              const existingComment = isLockAccountsReceivable && isARColumnLocked(columnName as keyof IsLockAccountsReceivable)
+                ? (isLockAccountsReceivable[`${columnName}_comment` as keyof IsLockAccountsReceivable] as string | null) || ''
+                : ''
+              setSelectedLockColumn({ columnName, providerId: null, isARColumn: true })
+              setLockComment(existingComment)
+              setShowLockDialog(true)
+            } : undefined}
+            isColumnLocked={isARColumnLocked}
+            overrideFullAR={backupOverrideAR}
+            isViewingBackup={!!selectedBackupVersionAR}
+            backupVersionKey={backupViewKeyAR}
+            onRegisterFlushBeforeTabLeave={(flush) => { accountsReceivableTabFlushRef.current = flush }}
+          />
         )
+      }
       case 'provider_pay': {
         const effectiveProviderPay =
           providerId ?? getLastSelectedProviderId() ?? providers.filter((p): p is Provider => p.level === 2)[0]?.id
@@ -3328,59 +3351,80 @@ export default function ClinicDetail() {
         const overrideTableData = backupOverrideProviderPayByKey && providerPayBackupKey
           ? backupOverrideProviderPayByKey[providerPayBackupKey] ?? null
           : null
+        const providerPayBackupBar = userProfile?.role === 'super_admin' && clinicId ? (
+          <BackupVersionsBar
+            backupType="provider_pay"
+            display="button-only"
+            entityId={clinicId}
+            viewingVersion={selectedBackupVersionProviderPay}
+            getDownloadFilename={(v) => {
+              const providerIdForName = providerPaySelectedIdRef.current ?? effectiveProviderPay
+              const payProvider = providerIdForName ? providers.find((p) => p.id === providerIdForName) : null
+              const providerName = payProvider
+                ? `${(payProvider.first_name ?? '').trim()} ${(payProvider.last_name ?? '').trim()}`.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Provider'
+                : 'Provider'
+              const d = new Date(v.created_at)
+              const Y = d.getFullYear()
+              const M = String(d.getMonth() + 1).padStart(2, '0')
+              const D = String(d.getDate()).padStart(2, '0')
+              const h = String(d.getHours()).padStart(2, '0')
+              const m = String(d.getMinutes()).padStart(2, '0')
+              const dateTime = `${Y}-${M}-${D} ${h}.${m}`
+              return `${providerName}_Pay_${dateTime}.csv`
+            }}
+            getDownloadBlob={async (version) => {
+              const { byKey } = await fetchBackupCsvAsProviderPay(apiClient, version.file_path)
+              const table = providerPayBackupKey ? (byKey[providerPayBackupKey] ?? []) : []
+              const escapeCsv = (val: string) => {
+                const s = String(val ?? '')
+                if (s.includes('"') || s.includes(',') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"'
+                return s
+              }
+              const header = 'Description,Amount,Notes'
+              const dataRows = table.slice(1).map((r) => [escapeCsv(r[0]), escapeCsv(r[1]), escapeCsv(r[2])].join(','))
+              const csv = header + '\n' + dataRows.join('\n')
+              return new Blob([csv], { type: 'text/csv' })
+            }}
+            onSelectVersion={async (version) => {
+              const requestedId = version.id
+              lastRequestedBackupIdProviderPayRef.current = requestedId
+              const { byKey } = await fetchBackupCsvAsProviderPay(apiClient, version.file_path)
+              if (lastRequestedBackupIdProviderPayRef.current !== requestedId) return
+              setBackupOverrideProviderPayByKey(byKey)
+              setSelectedBackupVersionProviderPay(version)
+              setBackupViewKeyProviderPay((k) => k + 1)
+            }}
+            onBackToCurrent={() => {
+              setBackupOverrideProviderPayByKey(null)
+              setSelectedBackupVersionProviderPay(null)
+            }}
+          />
+        ) : null
+        const providerPayBackupViewingIndicator = selectedBackupVersionProviderPay ? (
+          <div className="inline-flex items-center gap-3 px-3 py-1 rounded bg-white/10 border border-white/30 text-white text-sm">
+            <span>
+              Viewing backup from{' '}
+              {new Date(selectedBackupVersionProviderPay.created_at).toLocaleString(undefined, {
+                dateStyle: 'short',
+                timeStyle: 'short',
+              })}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setBackupOverrideProviderPayByKey(null)
+                setSelectedBackupVersionProviderPay(null)
+              }}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-primary-500/30 hover:bg-primary-500/50 text-white text-xs font-medium"
+            >
+              Back to current data
+            </button>
+          </div>
+        ) : null
         return (
-          <>
-            {userProfile?.role === 'super_admin' && clinicId && (
-              <div className="mb-4">
-                <BackupVersionsBar
-                  backupType="provider_pay"
-                  entityId={clinicId}
-                  viewingVersion={selectedBackupVersionProviderPay}
-                  getDownloadFilename={(v) => {
-                    const providerIdForName = providerPaySelectedIdRef.current ?? effectiveProviderPay
-                    const payProvider = providerIdForName ? providers.find((p) => p.id === providerIdForName) : null
-                    const providerName = payProvider
-                      ? `${(payProvider.first_name ?? '').trim()} ${(payProvider.last_name ?? '').trim()}`.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Provider'
-                      : 'Provider'
-                    const d = new Date(v.created_at)
-                    const Y = d.getFullYear()
-                    const M = String(d.getMonth() + 1).padStart(2, '0')
-                    const D = String(d.getDate()).padStart(2, '0')
-                    const h = String(d.getHours()).padStart(2, '0')
-                    const m = String(d.getMinutes()).padStart(2, '0')
-                    const dateTime = `${Y}-${M}-${D} ${h}.${m}`
-                    return `${providerName}_Pay_${dateTime}.csv`
-                  }}
-                  getDownloadBlob={async (version) => {
-                    const { byKey } = await fetchBackupCsvAsProviderPay(apiClient, version.file_path)
-                    const table = providerPayBackupKey ? (byKey[providerPayBackupKey] ?? []) : []
-                    const escapeCsv = (val: string) => {
-                      const s = String(val ?? '')
-                      if (s.includes('"') || s.includes(',') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"'
-                      return s
-                    }
-                    const header = 'Description,Amount,Notes'
-                    const dataRows = table.slice(1).map((r) => [escapeCsv(r[0]), escapeCsv(r[1]), escapeCsv(r[2])].join(','))
-                    const csv = header + '\n' + dataRows.join('\n')
-                    return new Blob([csv], { type: 'text/csv' })
-                  }}
-                  onSelectVersion={async (version) => {
-                    const requestedId = version.id
-                    lastRequestedBackupIdProviderPayRef.current = requestedId
-                    const { byKey } = await fetchBackupCsvAsProviderPay(apiClient, version.file_path)
-                    if (lastRequestedBackupIdProviderPayRef.current !== requestedId) return
-                    setBackupOverrideProviderPayByKey(byKey)
-                    setSelectedBackupVersionProviderPay(version)
-                    setBackupViewKeyProviderPay((k) => k + 1)
-                  }}
-                  onBackToCurrent={() => {
-                    setBackupOverrideProviderPayByKey(null)
-                    setSelectedBackupVersionProviderPay(null)
-                  }}
-                />
-              </div>
-            )}
-            <ProviderPayTab
+          <ProviderPayTab
+            labelRightSlot={providerPayBackupBar}
+            belowTitleSlot={providerPayBackupViewingIndicator}
               clinicId={clinicId!}
               clinicPayroll={clinic?.payroll ?? 1}
               providerId={providerId ?? undefined}
@@ -3408,7 +3452,6 @@ export default function ClinicDetail() {
               backupVersionKey={backupViewKeyProviderPay}
               onSelectedProviderIdChange={(id) => { providerPaySelectedIdRef.current = id }}
             />
-          </>
         )
       }
       case 'providers': {
@@ -3470,7 +3513,7 @@ export default function ClinicDetail() {
         // Render "Viewing backup from X" + "Back to current data" on its own row directly under
         // the colored title pill so it doesn't visually blend into the heading.
         const providersBackupViewingIndicator = selectedBackupVersion ? (
-          <div className="inline-flex items-center gap-3 px-3 py-1 rounded bg-amber-500/15 border border-amber-400/30 text-amber-200 text-sm">
+          <div className="inline-flex items-center gap-3 px-3 py-1 rounded bg-white/10 border border-white/30 text-white text-sm">
             <span>
               Viewing backup from{' '}
               {new Date(selectedBackupVersion.created_at).toLocaleString(undefined, {

@@ -147,6 +147,10 @@ export interface ProviderPayTabProps {
   backupVersionKey?: number
   /** Called when the user selects a provider (e.g. for backup download filename). */
   onSelectedProviderIdChange?: (providerId: string) => void
+  /** Rendered to the right of the colored title pill (used for the Select Version button). */
+  labelRightSlot?: React.ReactNode
+  /** Rendered as its own row immediately below the colored title pill (above the months row). */
+  belowTitleSlot?: React.ReactNode
 }
 
 export default function ProviderPayTab({
@@ -169,6 +173,8 @@ export default function ProviderPayTab({
   isViewingBackup = false,
   backupVersionKey = 0,
   onSelectedProviderIdChange,
+  labelRightSlot,
+  belowTitleSlot,
 }: ProviderPayTabProps) {
   const logProviderPay = useCallback((event: string, payload?: Record<string, unknown>) => {
     void event
@@ -927,6 +933,8 @@ export default function ProviderPayTab({
         statusColors={statusColors}
         label="Provider Pay for"
         isInSplitScreen={isInSplitScreen}
+        labelRightSlot={labelRightSlot}
+        belowTitleSlot={belowTitleSlot}
         onChange={(date, payroll) => {
           if (onSelectMonth) onSelectMonth(date)
           if (clinicPayroll === 2) setSelectedPayroll(payroll)
@@ -1003,12 +1011,12 @@ export default function ProviderPayTab({
           className={
             isInSplitScreen
               ? 'flex flex-col gap-1 px-2 py-2 border-b border-slate-600/50 min-w-0'
-              : 'flex items-center px-4 py-2 border-b border-slate-600/50'
+              : 'flex items-center justify-center gap-3 px-4 py-2 border-b border-slate-600/50'
           }
         >
           <span
             className={
-              isInSplitScreen ? 'font-bold text-sm shrink-0' : 'font-bold w-28 shrink-0'
+              isInSplitScreen ? 'font-bold text-sm shrink-0' : 'font-bold shrink-0'
             }
           >
             Pay Date:
@@ -1019,7 +1027,7 @@ export default function ProviderPayTab({
             onChange={(e) => setPayDate(e.target.value)}
             disabled={!effectiveCanEdit}
             className={`${dateInputClass(!payDate)} ${
-              isInSplitScreen ? '' : 'flex-1 max-w-[12rem] px-2 py-1'
+              isInSplitScreen ? '' : 'w-[12rem] px-2 py-1'
             }`}
             style={{ color: headerStyle.textColor }}
           />
@@ -1053,8 +1061,8 @@ export default function ProviderPayTab({
             </div>
           </div>
         ) : (
-          <div className="flex items-center gap-3 px-4 py-2">
-            <span className="font-bold w-28 shrink-0">Pay Period:</span>
+          <div className="flex items-center justify-center gap-3 px-4 py-2">
+            <span className="font-bold shrink-0">Pay Period:</span>
             <div className="flex items-center gap-1.5 shrink-0">
               <label className="text-sm font-medium opacity-90 whitespace-nowrap">From</label>
               <input

@@ -204,7 +204,9 @@ export default function MonthYearTabs({
             ))}
           </select>
 
-          <div className="flex gap-1 flex-wrap flex-1 min-w-0 justify-center">
+          {/* 6-col grid by default (-> 6+6 rows of months) and 12-col on xl screens so the months
+              line up evenly instead of the prior 8+4 flex-wrap behavior. */}
+          <div className="grid grid-cols-6 xl:grid-cols-12 gap-1 flex-1 min-w-0">
             {MONTHS_SHORT.map((short, idx) => {
               const monthName = MONTHS_FULL[idx]
               const mc = monthColorByName.get(monthName)
@@ -226,7 +228,6 @@ export default function MonthYearTabs({
                   style={{
                     backgroundColor: isActive ? baseColor : hexToRgba(baseColor, 0.55),
                     color: baseText,
-                    minWidth: 44,
                   }}
                 >
                   {short}

@@ -1,8 +1,9 @@
-import { useRef, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback } from 'react'
 import { HotTable } from '@handsontable/react'
 import Handsontable from 'handsontable'
 import { HyperFormula, NoOperationToRedoError, NoOperationToUndoError } from 'hyperformula'
 import { DateEditor, DropdownEditorOpenList } from '@/lib/handsontableCustomRenderers'
+import { Loader2 } from 'lucide-react'
 import 'handsontable/dist/handsontable.full.css'
 
 /** 0-based row/col range for formula reference highlighting */
@@ -308,6 +309,26 @@ export default function HandsontableWrapper({
   const selectionFromMouseRef = useRef<boolean>(false)
   /** When enableFormula: ranges to highlight with dotted border while editing a formula cell */
   const [formulaRefRanges, setFormulaRefRanges] = useState<FormulaRefRange[]>([])
+  /**
+   * Brief, label-only loading indicator that flashes whenever the user triggers a multi-cell
+   * operation (paste, drag-fill, Ctrl+D fill, row remove). The actual DB save is debounced by the
+   * parent, so the overlay isn't tied 1:1 to network completion — it exists purely to give
+   * immediate visual feedback that "the app is working on it" for ops that might otherwise feel
+   * unresponsive while React reconciles + the debounced save fires.
+   */
+  const [pendingOpLabel, setPendingOpLabel] = useState<string | null>(null)
+  const pendingOpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashPendingOp = useCallback((label: string, durationMs: number = 700) => {
+    setPendingOpLabel(label)
+    if (pendingOpTimerRef.current) clearTimeout(pendingOpTimerRef.current)
+    pendingOpTimerRef.current = setTimeout(() => {
+      setPendingOpLabel(null)
+      pendingOpTimerRef.current = null
+    }, durationMs)
+  }, [])
+  useEffect(() => () => {
+    if (pendingOpTimerRef.current) clearTimeout(pendingOpTimerRef.current)
+  }, [])
   /** Ref to editor input and listener so we can remove on afterFinishEditing and update highlight while typing */
   const formulaEditorInputRef = useRef<{ el: HTMLInputElement | HTMLTextAreaElement; listener: () => void } | null>(null)
   const dataRef = useRef(data)
@@ -801,6 +822,12 @@ export default function HandsontableWrapper({
           })
         }
       }
+      // Flash a loading indicator for multi-cell operations so the user sees something happen
+      // while React reconciles and the debounced save fires.
+      const s = String(source ?? '')
+      if (s === 'CopyPaste.paste' || s === 'CopyPaste' || s === 'CopyDown' || s === 'Autofill.fill' || s.startsWith('Autofill')) {
+        flashPendingOp(s === 'CopyDown' ? 'Filling…' : s.startsWith('Autofill') ? 'Filling…' : 'Pasting…')
+      }
       if (afterChange && changes) {
         afterChange(changes, source)
       }
@@ -952,7 +979,15 @@ export default function HandsontableWrapper({
       if (onAfterRowMove) onAfterRowMove(movedRows, finalIndex)
     },
     ...(afterCreateRow ? { afterCreateRow } : {}),
-    ...(afterRemoveRow ? { afterRemoveRow } : {}),
+    afterRemoveRow: (
+      index: number,
+      amount: number,
+      physicalRows: number[],
+      source?: string,
+    ) => {
+      flashPendingOp(amount > 1 ? `Removing ${amount} rows…` : 'Removing row…')
+      if (afterRemoveRow) afterRemoveRow(index, amount, physicalRows, source)
+    },
     ...(onAfterUndoRedoSync
       ? {
           afterUndo: () => runUndoRedoSyncFromParent('undo'),
@@ -1000,93 +1035,86 @@ export default function HandsontableWrapper({
       : {}),
   }
   
-  // Add Ctrl+D (or Cmd+D on Mac) keyboard shortcut for fill down
+  // Ctrl+D (Windows/Linux) or Cmd+D (Mac) — Excel-style fill down.
+  //
+  // Every cell in the selected range is filled with the value of the cell directly ABOVE the top
+  // row of the selection (per column). Single-cell selections copy from the row above; multi-row
+  // selections fill the whole range with that one source value.
+  //
+  // Implementation note: uses Handsontable's bulk `setDataAtCell([[row, col, value], ...])` form
+  // so all the writes land as ONE atomic operation and `afterChange` fires exactly once. An earlier
+  // version used `suspendRender` + a manual double-RAF call to the parent's `afterChange`, which
+  // raced with the parent's state updates and produced "first it works, then values change to
+  // something else a moment later" — particularly on Claim Status and Most Recent cells.
+  //
+  // Listener uses capture-phase so it runs ahead of any open editor's internal keydown handlers,
+  // and we explicitly close any open editor first (otherwise pressing Cmd+D while a dropdown
+  // editor is focused never reached this handler at all).
   useEffect(() => {
     if (!hotTableRef.current?.hotInstance) return
-    
+
     const hotInstance = hotTableRef.current.hotInstance
     const rootElement = hotInstance.rootElement
-    
-    const handleKeyDown = (event: KeyboardEvent) => {
-      // Check for Ctrl+D (Windows/Linux) or Cmd+D (Mac)
-      if ((event.ctrlKey || event.metaKey) && event.key === 'd') {
-        event.preventDefault()
-        event.stopPropagation()
-        
-        const selected = hotInstance.getSelected()
-        if (!selected || selected.length === 0) return
-        // Get the first selection range
-        let [startRow, startCol, endRow, endCol] = selected[0]
-        
-        // Normalize selection: ensure startRow <= endRow and startCol <= endCol
-        // (selection can be in reverse order when dragging left or up)
-        if (startRow > endRow) {
-          [startRow, endRow] = [endRow, startRow]
-        }
-        if (startCol > endCol) {
-          [startCol, endCol] = [endCol, startCol]
-        }
-        
-        // Fill down: each cell gets the value from the cell directly above it
-        // Process each column independently
-        const changes: Handsontable.CellChange[] = []
-        // Collect all changes first, then apply them in a batch
-        for (let col = startCol; col <= endCol; col++) {
-          // For each column, fill down from top to bottom
 
-          for (let row = startRow; row <= endRow; row++) {
-            // Get the value from the cell directly above (row - 1)
-            const sourceRow = row - 1
-            if (sourceRow < 0) continue // Skip if we're at the top row
-            
-            const sourceValue = hotInstance.getDataAtCell(sourceRow, col)
-            const oldValue = hotInstance.getDataAtCell(row, col)
-            
-            // Only set if there's a value to copy
-            if (sourceValue !== null && sourceValue !== undefined && sourceValue !== '') {
-              changes.push([row, col, oldValue, sourceValue])
-            }
-          }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!((event.ctrlKey || event.metaKey) && event.key === 'd')) return
+      event.preventDefault()
+      event.stopPropagation()
+
+      // Close any open editor (e.g. the colored autocomplete dropdown auto-opens on single click,
+      // and pressing Cmd+D while it's focused would otherwise let the editor's textarea swallow
+      // the keystroke).
+      try {
+        const hotAny = hotInstance as unknown as {
+          getActiveEditor?: () => { finishEditing?: (restoreOriginal: boolean) => void; _opened?: boolean; isOpened?: () => boolean } | null
         }
-        // Apply all changes in a single batch to prevent flickering
-        if (changes.length > 0) {
-          // Set flag to prevent individual afterChange callbacks during batch
-          isBatchOperationRef.current = true
-          
-          // Suspend rendering to batch all updates
-          hotInstance.suspendRender()
-          try {
-            // Apply all changes
-            for (const [row, col, _oldValue, newValue] of changes) {
-              // Use 'CopyDown' as source to identify this operation
-              hotInstance.setDataAtCell(row, col, newValue, 'CopyDown' as Handsontable.ChangeSource)
-            }
-          } finally {
-            hotInstance.resumeRender()
-            // Reset flag after render completes
-            isBatchOperationRef.current = false
-          }
-          
-          // Use requestAnimationFrame to ensure DOM is fully updated before triggering callback
-          // This prevents the flickering where values appear, disappear, then reappear
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              // Double RAF ensures the render is complete and parent state updates won't cause flicker
-              if (afterChange) {
-                afterChange(changes, 'CopyDown' as Handsontable.ChangeSource)
-              }
-            })
-          })
+        const activeEditor = hotAny.getActiveEditor?.()
+        const isOpen = activeEditor?.isOpened ? activeEditor.isOpened() : Boolean(activeEditor?._opened)
+        if (activeEditor && isOpen) {
+          activeEditor.finishEditing?.(true)
+        }
+      } catch {
+        // editor API differs across Handsontable versions — best-effort close
+      }
+
+      const selected = hotInstance.getSelected()
+      if (!selected || selected.length === 0) return
+      let [startRow, startCol, endRow, endCol] = selected[0]
+      if (startRow > endRow) [startRow, endRow] = [endRow, startRow]
+      if (startCol > endCol) [startCol, endCol] = [endCol, startCol]
+
+      const bulkChanges: [number, number, unknown][] = []
+      for (let col = startCol; col <= endCol; col++) {
+        const sourceRow = startRow - 1
+        if (sourceRow < 0) continue
+        const sourceValue = hotInstance.getDataAtCell(sourceRow, col)
+        // Empty source cells don't fill — Cmd+D shouldn't clobber existing values with blanks.
+        // `false` is allowed through (the Tele checkbox column treats unchecked as a meaningful
+        // value to propagate downward).
+        if (sourceValue === null || sourceValue === undefined || sourceValue === '') continue
+        for (let row = startRow; row <= endRow; row++) {
+          const oldValue = hotInstance.getDataAtCell(row, col)
+          if (oldValue === sourceValue) continue
+          bulkChanges.push([row, col, sourceValue])
         }
       }
+
+      if (bulkChanges.length === 0) return
+
+      // Bulk array form — Handsontable applies all writes, fires render + afterChange ONCE with
+      // the consolidated changes. The wrapper's existing afterChange forwarder picks it up and
+      // dispatches to the parent normally — no manual call needed.
+      ;(hotInstance.setDataAtCell as unknown as (
+        changes: [number, number, unknown][],
+        source?: string,
+      ) => void)(bulkChanges, 'CopyDown')
     }
-    
-    rootElement.addEventListener('keydown', handleKeyDown)
-    
+
+    rootElement.addEventListener('keydown', handleKeyDown, true)
     return () => {
-      rootElement.removeEventListener('keydown', handleKeyDown)
+      rootElement.removeEventListener('keydown', handleKeyDown, true)
     }
-  }, [afterChange])
+  }, [])
 
   // Single-click on bubble: select cell, open editor, and open native <select> dropdown immediately
   useEffect(() => {
@@ -1103,15 +1131,20 @@ export default function HandsontableWrapper({
       if (!cell) return
       if (cell.closest('thead') || cell.closest('.ht_clone_top') || cell.closest('.ht_clone_left')) return
       if (!cell.closest('.ht_master')) return
+      // Bail out when the click is INSIDE an opened editor's inner Handsontable (e.g. the option
+      // list of a dropdown / autocomplete editor). That inner HOT also has `.handsontable` and
+      // `.ht_master` ancestors, so without this check we'd capture the click on an option, call
+      // stopPropagation in the capture phase, and the editor would never see the click that
+      // commits the choice — causing the picker to stay open after selecting a value.
+      const owningHandsontable = cell.closest('.handsontable')
+      if (owningHandsontable && owningHandsontable !== hotInstance.rootElement) return
 
-      // Only open dropdown when clicking the bubble itself.
-      // Clicking elsewhere in the cell should just select the cell (no dropdown open).
+      // Don't auto-open during range-select gestures (shift-click extends selection, ctrl/cmd-click
+      // for multi-select). Right-clicks open the context menu instead.
+      if (event.shiftKey || event.ctrlKey || event.metaKey || event.button !== 0) return
+
       const cellHasBubble = Boolean(cell.querySelector('.handsontable-bubble-select'))
-      if (cellHasBubble && !bubble) {
-        selectionFromMouseRef.current = false
-        return
-      }
-      selectionFromMouseRef.current = Boolean(bubble)
+      selectionFromMouseRef.current = Boolean(bubble) || !cellHasBubble
 
       let row: number | null = null
       let col: number | null = null
@@ -1148,9 +1181,8 @@ export default function HandsontableWrapper({
           (cellProperties.type === 'dropdown' || cellProperties.editor === 'select' || (cellProperties as any).selectOptions)
         const isEditing = typeof hotInstance.isEditing === 'function' ? hotInstance.isEditing() : false
         if (!isDropdown || isEditing) return
-        // If this cell uses a bubble renderer, require bubble click (enforced above).
-        // If it doesn't have a bubble, fall back to default Handsontable behavior (don't force-open).
-        if (!bubble && !cellHasBubble) return
+        // Skip read-only / locked cells — opening the editor on those would be confusing.
+        if (cellProperties && cellProperties.readOnly) return
       } catch {
         return
       }
@@ -1292,7 +1324,7 @@ export default function HandsontableWrapper({
   }, [formulaRefRanges])
 
   return (
-    <div style={style} className={className}>
+    <div style={{ ...style, position: 'relative' }} className={className}>
       <style>{`
         .formula-ref-highlight {
           outline: 2px dotted #2563eb !important;
@@ -1304,6 +1336,15 @@ export default function HandsontableWrapper({
         ref={hotTableRef}
         settings={settings}
       />
+      {pendingOpLabel && (
+        <div
+          aria-live="polite"
+          className="pointer-events-none absolute top-2 right-2 z-[60] flex items-center gap-2 rounded-md bg-slate-900/85 border border-white/15 px-3 py-1.5 text-white text-xs font-medium shadow-lg backdrop-blur-sm"
+        >
+          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />
+          <span>{pendingOpLabel}</span>
+        </div>
+      )}
     </div>
   )
 }

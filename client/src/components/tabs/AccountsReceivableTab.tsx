@@ -226,6 +226,10 @@ interface AccountsReceivableTabProps {
   onRegisterFlushBeforeTabLeave?: (flush: () => Promise<void>) => void
   /** Clinic patients: when ID # matches `patient_id`, Name auto-fills (same clinic only). */
   patients?: Patient[]
+  /** Rendered to the right of the colored title pill (used for the Select Version button). */
+  labelRightSlot?: React.ReactNode
+  /** Rendered as its own row immediately below the colored title pill (above the months row). */
+  belowTitleSlot?: React.ReactNode
 }
 
 export default function AccountsReceivableTab({
@@ -246,6 +250,8 @@ export default function AccountsReceivableTab({
   onLocksMonthKeyChange,
   onRegisterFlushBeforeTabLeave,
   patients = [],
+  labelRightSlot,
+  belowTitleSlot,
 }: AccountsReceivableTabProps) {
   const { userProfile } = useAuth()
   const [statusColors, setStatusColors] = useState<StatusColor[]>([])
@@ -1591,6 +1597,8 @@ export default function AccountsReceivableTab({
         statusColors={statusColors}
         label="Accounts Receivable for"
         isInSplitScreen={isInSplitScreen}
+        labelRightSlot={labelRightSlot}
+        belowTitleSlot={belowTitleSlot}
         onChange={(date, payroll) => {
           setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))
           if (clinicPayroll === 2) setSelectedPayroll(payroll)
