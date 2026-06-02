@@ -3,7 +3,7 @@ import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
 import { apiClient, createApiClientWithStorageKey } from '@/lib/apiClient'
 import { useAuth } from '@/contexts/AuthContext'
 import { User, BillingCode, Clinic, ProviderSheet, AuditLog, Provider } from '@/types'
-import { Users, Palette, FileText, Plus, Edit, Trash2, X, Unlock, Building2, Download, Link2, Check, Key, MapPin, Eye, EyeOff, Archive, ArchiveRestore } from 'lucide-react'
+import { Users, Palette, FileText, Plus, Edit, Trash2, X, Unlock, Building2, Download, Link2, Check, Key, MapPin, Eye, EyeOff, Archive, ArchiveRestore, Loader2 } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 import { fetchClinicAddressesByClinicIds } from '@/lib/clinicAddresses'
 import MonthCloseTab from '@/components/MonthCloseTab'
@@ -1855,9 +1855,14 @@ function UserFormModal({
     password: '',
     npi: initialNpi,
   })
+  // Add-User save can take a few seconds — it creates the auth user, inserts the users row,
+  // optionally inserts a providers row, and POSTs to /api/send-invite-email. Track an `isSaving`
+  // flag so the Save button can show a spinner and Cancel can be disabled to prevent double-submit.
+  const [isSaving, setIsSaving] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (isSaving) return
     const { provider_level, provider_cut_percent, show_visit_type_column, hourly_pay, password, first_name, last_name, npi, ...rest } = formData
     const full_name = [first_name, last_name].map(s => (s || '').trim()).filter(Boolean).join(' ') || undefined
     const userData = {
@@ -1866,13 +1871,18 @@ function UserFormModal({
       hourly_pay: hourly_pay === '' || hourly_pay == null ? null : Number(hourly_pay),
       ...(formData.role === 'provider' && { npi: (npi || '').trim() || null }),
     }
-    await onSave(
-      userData,
-      formData.role === 'provider' ? provider_level : undefined,
-      formData.role === 'provider' ? provider_cut_percent : undefined,
-      user ? undefined : password,
-      formData.role === 'provider' ? show_visit_type_column : undefined
-    )
+    setIsSaving(true)
+    try {
+      await onSave(
+        userData,
+        formData.role === 'provider' ? provider_level : undefined,
+        formData.role === 'provider' ? provider_cut_percent : undefined,
+        user ? undefined : password,
+        formData.role === 'provider' ? show_visit_type_column : undefined
+      )
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   return (
@@ -2044,15 +2054,24 @@ function UserFormModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+              disabled={isSaving}
+              className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
+              disabled={isSaving}
+              className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2 min-w-[88px] justify-center"
             >
-              Save
+              {isSaving ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden />
+                  <span>Saving…</span>
+                </>
+              ) : (
+                'Save'
+              )}
             </button>
           </div>
         </form>
