@@ -5,7 +5,15 @@ import { Pool } from 'pg'
 import { env } from './config.js'
 
 export const pool = new Pool({ connectionString: env.DATABASE_URL })
-console.log('DATABASE_URL', env.DATABASE_URL)
+
+// Idle pooled connections can be terminated by Postgres (server restart,
+// pg_terminate_backend, idle_session_timeout). Without this handler the pool
+// re-emits 'error' on an EventEmitter with no listener and Node aborts the
+// process. The pool itself will discard the dead client and create a new one.
+pool.on('error', (err) => {
+  console.error('[pg pool] idle client error:', err.message)
+})
+
 let schemaReady = false
 
 export async function ensureServerSchema(): Promise<void> {
