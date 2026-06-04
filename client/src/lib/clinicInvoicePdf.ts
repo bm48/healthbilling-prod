@@ -472,7 +472,7 @@ export async function generateClinicInvoicePdf(
     for (const line of row.provider_lines!) {
       const ratePct = (line.invoice_rate * 100).toFixed(2)
       tableBody.push([
-        `Total (Insurance + Patient Pay + AR) — ${line.provider_name}`,
+        `${line.provider_name} Total (Insurance/Patient Pay/AR)`,
         {
           content: formatCurrency(line.subtotal),
           styles: { fontStyle: 'bold', halign: 'right' },
@@ -482,7 +482,8 @@ export async function generateClinicInvoicePdf(
       ])
       tableBody.push([
         `Billing Fee for ${line.provider_name}: ${ratePct}% of Total`,
-        { content: '1', styles: { halign: 'right' } },
+        // Collected column intentionally blank on billing-fee rows — no quantity to show.
+        { content: '—', styles: { halign: 'right' } },
         { content: formatCurrency(line.invoice_total), styles: { halign: 'right' } },
         { content: formatCurrency(line.invoice_total), styles: { halign: 'right' } },
       ])
@@ -491,7 +492,7 @@ export async function generateClinicInvoicePdf(
     const clinicRatePct = (clinicRate * 100).toFixed(2)
     const clinicBillingFee = collectedTotal * clinicRate
     tableBody.push([
-      'Total (Insurance + Patient Pay + AR)',
+      'Total (Insurance/Patient Pay/AR)',
       {
         content: formatCurrency(collectedTotal),
         styles: { fontStyle: 'bold', halign: 'right' },
@@ -501,7 +502,8 @@ export async function generateClinicInvoicePdf(
     ])
     tableBody.push([
       `Billing Fee: ${clinicRatePct}% of Total`,
-      { content: '1', styles: { halign: 'right' } },
+      // Collected column intentionally blank on billing-fee rows — no quantity to show.
+      { content: '—', styles: { halign: 'right' } },
       { content: formatCurrency(clinicBillingFee), styles: { halign: 'right' } },
       { content: formatCurrency(clinicBillingFee), styles: { halign: 'right' } },
     ])
