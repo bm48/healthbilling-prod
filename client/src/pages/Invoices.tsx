@@ -44,6 +44,20 @@ interface InvoiceRecord {
   computed_at: string | null
 }
 
+/** One row of `invoice_provider_lines`, the per-provider breakdown of a monthly clinic invoice. */
+interface InvoiceProviderLineRow {
+  invoice_id: string
+  provider_id: string
+  provider_name: string
+  insurance_payment_total: number
+  patient_payment_total: number
+  accounts_receivable_total: number
+  subtotal: number
+  /** Effective rate used (provider's override or clinic's default at recompute time). */
+  invoice_rate: number
+  invoice_total: number
+}
+
 /** Merged display row: invoice record + clinic display fields. */
 interface ClinicInvoiceSummaryRow {
   invoice_id: string | null
@@ -61,6 +75,10 @@ interface ClinicInvoiceSummaryRow {
   payment_date: string | null
   due_date: string | null
   note: string
+  /** True when the clinic has `invoice_per_provider = true`. Drives the breakdown sub-rows below. */
+  invoice_per_provider: boolean
+  /** Per-provider breakdown of this clinic's invoice (only populated when per-provider mode is on). */
+  provider_lines: InvoiceProviderLineRow[]
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -339,11 +357,12 @@ export default function Invoices() {
         console.warn('[Invoices] recompute for month failed:', err)
       })
 
-      // Load all clinics
+      // Load all clinics (include the per-provider toggle so the table knows when to render the
+      // breakdown sub-rows under each clinic).
       const { data: allClinicsData, error: clinicsErr } = await apiClient
-        .from('clinics').select('id, name, invoice_rate').order('name')
+        .from('clinics').select('id, name, invoice_rate, invoice_per_provider').order('name')
       if (clinicsErr) throw clinicsErr
-      const allClinics: { id: string; name: string; invoice_rate: number | null }[] = allClinicsData || []
+      const allClinics: { id: string; name: string; invoice_rate: number | null; invoice_per_provider: boolean | null }[] = allClinicsData || []
       const clinicIds = allClinics.map((c) => c.id)
 
       // Load invoice records for this month
@@ -355,6 +374,64 @@ export default function Invoices() {
       const invoiceMap = new Map<string, InvoiceRecord>(
         (invoiceData || []).map((r: InvoiceRecord) => [r.clinic_id, r]),
       )
+
+      // Load per-provider invoice line breakdown for this month's invoices. We then resolve
+      // provider names via a single providers lookup so the table can label each sub-row.
+      const invoiceIds = (invoiceData || []).map((r: InvoiceRecord) => r.id)
+      const linesByClinicId = new Map<string, InvoiceProviderLineRow[]>()
+      if (invoiceIds.length > 0) {
+        const { data: linesData } = await apiClient
+          .from('invoice_provider_lines')
+          .select('*')
+          .in('invoice_id', invoiceIds)
+        const rawLines = (linesData ?? []) as Array<{
+          invoice_id: string
+          provider_id: string
+          insurance_payment_total: number | string | null
+          patient_payment_total: number | string | null
+          accounts_receivable_total: number | string | null
+          subtotal: number | string | null
+          invoice_rate: number | string | null
+          invoice_total: number | string | null
+        }>
+        const providerIds = Array.from(new Set(rawLines.map((l) => l.provider_id)))
+        const providerNameById = new Map<string, string>()
+        if (providerIds.length > 0) {
+          const { data: providerRows } = await apiClient
+            .from('providers')
+            .select('id, first_name, last_name')
+            .in('id', providerIds)
+          ;(providerRows ?? []).forEach((p: { id: string; first_name?: string | null; last_name?: string | null }) => {
+            const name = [p.first_name, p.last_name].map((s) => (s ?? '').trim()).filter(Boolean).join(' ') || 'Provider'
+            providerNameById.set(p.id, name)
+          })
+        }
+        // Map back to clinic_id via the invoice record so the renderer can attach by clinic.
+        const clinicByInvoiceId = new Map<string, string>(
+          (invoiceData || []).map((inv: InvoiceRecord) => [inv.id, inv.clinic_id] as [string, string]),
+        )
+        for (const l of rawLines) {
+          const clinicId = clinicByInvoiceId.get(l.invoice_id)
+          if (!clinicId) continue
+          const arr = linesByClinicId.get(clinicId) ?? []
+          arr.push({
+            invoice_id: l.invoice_id,
+            provider_id: l.provider_id,
+            provider_name: providerNameById.get(l.provider_id) ?? 'Provider',
+            insurance_payment_total: parseNum(l.insurance_payment_total),
+            patient_payment_total: parseNum(l.patient_payment_total),
+            accounts_receivable_total: parseNum(l.accounts_receivable_total),
+            subtotal: parseNum(l.subtotal),
+            invoice_rate: parseNum(l.invoice_rate),
+            invoice_total: parseNum(l.invoice_total),
+          })
+          linesByClinicId.set(clinicId, arr)
+        }
+        // Stable sort by provider name so the breakdown reads consistently between renders.
+        for (const arr of linesByClinicId.values()) {
+          arr.sort((a, b) => a.provider_name.localeCompare(b.provider_name))
+        }
+      }
 
       // Clinic addresses
       const clinicAddressesByClinic = clinicIds.length > 0
@@ -396,6 +473,8 @@ export default function Invoices() {
           payment_date: inv?.payment_date ?? null,
           due_date: inv?.due_date ?? null,
           note: inv?.note ?? notesMap[clinic.id] ?? '',
+          invoice_per_provider: Boolean(clinic.invoice_per_provider),
+          provider_lines: linesByClinicId.get(clinic.id) ?? [],
         }
       })
       setClinicSummaries(summaries)
@@ -869,54 +948,90 @@ export default function Invoices() {
                           </td>
                         </tr>
                       ) : (
-                        clinicSummaries.map((row) => (
-                          <tr key={row.clinic_id}>
-                            <td className="text-white/90 font-medium whitespace-nowrap">{row.clinic_name}</td>
-                            <td>{formatCurrency(row.insurance_payment_total)}</td>
-                            <td>{formatCurrency(row.patient_payment_total)}</td>
-                            <td>{formatCurrency(row.accounts_receivable_total)}</td>
-                            <td>{formatCurrency(row.additional_fee)}</td>
-                            <td>{formatCurrency(row.total)}</td>
-                            <td>{formatCurrency(row.invoice_total)}</td>
-                            <td className="w-[90px] p-0">
-                              <DateOfServiceTableCell
-                                value={row.payment_date}
-                                onCommit={(stored) => saveInvoiceDateField(row.clinic_id, 'payment_date', stored)}
-                              />
-                            </td>
-                            <td className="w-[90px] p-0">
-                              <DateOfServiceTableCell
-                                value={row.due_date}
-                                onCommit={(stored) => saveInvoiceDateField(row.clinic_id, 'due_date', stored)}
-                              />
-                            </td>
-                            <td className="max-w-[160px] truncate text-white/70" title={row.note}>
-                              {row.note || '—'}
-                            </td>
-                            <td>
-                              <button
-                                type="button"
-                                onClick={() => handleDownloadClinicInvoice(row)}
-                                disabled={downloadingClinicId !== null}
-                                className="p-1.5 text-black hover:bg-gray-200/60 rounded inline-flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
-                                title={
-                                  downloadingClinicId === row.clinic_id
-                                    ? 'Generating PDF…'
-                                    : 'Download invoice PDF (with provider paystubs)'
-                                }
-                              >
-                                {downloadingClinicId === row.clinic_id ? (
-                                  <span
-                                    className="inline-block w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"
-                                    aria-label="Generating PDF"
-                                  />
-                                ) : (
-                                  <Download className="w-4 h-4" />
+                        clinicSummaries.flatMap((row) => {
+                          // When the clinic has per-provider billing turned on AND there's at least
+                          // one provider line for the month, render an indented sub-row per
+                          // provider directly under the clinic row. The sub-rows show that
+                          // provider's totals, the effective billing %, and that provider's slice
+                          // of the invoice total — matching what `recomputeClinicInvoice` persisted.
+                          const showProviderBreakdown = row.invoice_per_provider && row.provider_lines.length > 0
+                          const mainRow = (
+                            <tr key={row.clinic_id}>
+                              <td className="text-white/90 font-medium whitespace-nowrap">
+                                {row.clinic_name}
+                                {showProviderBreakdown && (
+                                  <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-primary-500/30 text-primary-200 text-[10px] uppercase tracking-wide align-middle">
+                                    per provider
+                                  </span>
                                 )}
-                              </button>
-                            </td>
-                          </tr>
-                        ))
+                              </td>
+                              <td>{formatCurrency(row.insurance_payment_total)}</td>
+                              <td>{formatCurrency(row.patient_payment_total)}</td>
+                              <td>{formatCurrency(row.accounts_receivable_total)}</td>
+                              <td>{formatCurrency(row.additional_fee)}</td>
+                              <td>{formatCurrency(row.total)}</td>
+                              <td>{formatCurrency(row.invoice_total)}</td>
+                              <td className="w-[90px] p-0">
+                                <DateOfServiceTableCell
+                                  value={row.payment_date}
+                                  onCommit={(stored) => saveInvoiceDateField(row.clinic_id, 'payment_date', stored)}
+                                />
+                              </td>
+                              <td className="w-[90px] p-0">
+                                <DateOfServiceTableCell
+                                  value={row.due_date}
+                                  onCommit={(stored) => saveInvoiceDateField(row.clinic_id, 'due_date', stored)}
+                                />
+                              </td>
+                              <td className="max-w-[160px] truncate text-white/70" title={row.note}>
+                                {row.note || '—'}
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDownloadClinicInvoice(row)}
+                                  disabled={downloadingClinicId !== null}
+                                  className="p-1.5 text-black hover:bg-gray-200/60 rounded inline-flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+                                  title={
+                                    downloadingClinicId === row.clinic_id
+                                      ? 'Generating PDF…'
+                                      : 'Download invoice PDF (with provider paystubs)'
+                                  }
+                                >
+                                  {downloadingClinicId === row.clinic_id ? (
+                                    <span
+                                      className="inline-block w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"
+                                      aria-label="Generating PDF"
+                                    />
+                                  ) : (
+                                    <Download className="w-4 h-4" />
+                                  )}
+                                </button>
+                              </td>
+                            </tr>
+                          )
+                          if (!showProviderBreakdown) return [mainRow]
+                          const providerRows = row.provider_lines.map((line) => (
+                            <tr key={`${row.clinic_id}-${line.provider_id}`} className="bg-white/[0.03]">
+                              <td className="pl-8 text-white/80 italic whitespace-nowrap">
+                                <span className="text-white/40 mr-2">↳</span>
+                                {line.provider_name}
+                                <span className="ml-2 text-white/50 text-xs">({(line.invoice_rate * 100).toFixed(2)}%)</span>
+                              </td>
+                              <td>{formatCurrency(line.insurance_payment_total)}</td>
+                              <td>{formatCurrency(line.patient_payment_total)}</td>
+                              <td>{formatCurrency(line.accounts_receivable_total)}</td>
+                              <td className="text-white/40">—</td>
+                              <td>{formatCurrency(line.subtotal)}</td>
+                              <td>{formatCurrency(line.invoice_total)}</td>
+                              <td className="text-white/40">—</td>
+                              <td className="text-white/40">—</td>
+                              <td className="text-white/40">—</td>
+                              <td className="text-white/40">—</td>
+                            </tr>
+                          ))
+                          return [mainRow, ...providerRows]
+                        })
                       )}
                     </tbody>
                   </table>

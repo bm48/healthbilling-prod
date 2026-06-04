@@ -323,7 +323,14 @@ export default function SuperAdminSettings() {
     providerLevel?: number,
     providerCutPercent?: number,
     temporaryPassword?: string,
-    showVisitTypeColumn?: boolean
+    showVisitTypeColumn?: boolean,
+    /**
+     * Per-provider billing rate to write to `providers.invoice_rate`. `undefined` means "don't
+     * touch it" (used when the role isn't provider, or super_admin variant doesn't manage rates);
+     * `null` means "clear the override and inherit the clinic rate"; a number is the decimal rate
+     * (e.g. 0.05 = 5%). Only consulted when the clinic has `invoice_per_provider = true`.
+     */
+    providerInvoiceRate?: number | null
   ) => {
     try {
       if (editingUser) {
@@ -350,7 +357,7 @@ export default function SuperAdminSettings() {
           const providersForEmail = providers.filter(p => p.email === editingUser.email)
           const npi = (userData as { npi?: string | null }).npi ?? null
           for (const p of providersForEmail) {
-            const updatePayload: { first_name?: string; last_name?: string; npi?: string | null; clinic_ids?: string[]; level?: number; provider_cut_percent?: number; show_visit_type_column?: boolean; updated_at: string } = {
+            const updatePayload: { first_name?: string; last_name?: string; npi?: string | null; clinic_ids?: string[]; level?: number; provider_cut_percent?: number; show_visit_type_column?: boolean; invoice_rate?: number | null; updated_at: string } = {
               first_name,
               last_name,
               npi,
@@ -368,6 +375,16 @@ export default function SuperAdminSettings() {
               }
               if (showVisitTypeColumn !== undefined) {
                 updatePayload.show_visit_type_column = showVisitTypeColumn
+              }
+              if (providerInvoiceRate !== undefined) {
+                // null clears the override (provider falls back to the clinic rate); a finite
+                // number in [0, 1] persists as the per-provider rate.
+                updatePayload.invoice_rate =
+                  providerInvoiceRate === null
+                    ? null
+                    : Number.isFinite(providerInvoiceRate) && providerInvoiceRate >= 0 && providerInvoiceRate <= 1
+                      ? providerInvoiceRate
+                      : null
               }
             }
             const { error: providerError } = await apiClient
@@ -444,6 +461,14 @@ export default function SuperAdminSettings() {
           if (userData.role === 'provider' && email) {
             const level = providerLevel === 1 || providerLevel === 2 ? providerLevel : 1
             const provider_cut_percent = providerCutPercent != null && providerCutPercent >= 0 && providerCutPercent <= 1 ? providerCutPercent : 0.7
+            // null = inherit clinic rate (don't write an override). A finite number in [0,1] is the
+            // decimal rate (e.g. 0.05 = 5%). Anything outside that range is treated as null.
+            const invoice_rate =
+              providerInvoiceRate === undefined || providerInvoiceRate === null
+                ? null
+                : Number.isFinite(providerInvoiceRate) && providerInvoiceRate >= 0 && providerInvoiceRate <= 1
+                  ? providerInvoiceRate
+                  : null
             const { data: existing } = await apiClient.from('providers').select('id').eq('email', email).limit(1).maybeSingle()
             const npiNew = (userData as { npi?: string | null }).npi ?? null
             if (!existing) {
@@ -459,11 +484,12 @@ export default function SuperAdminSettings() {
                 clinic_ids: [],
                 level,
                 provider_cut_percent,
+                invoice_rate,
                 active: true,
               })
             } else {
               // Trigger already created provider with default level 1; update to chosen level/cut, npi, and active
-              await apiClient.from('providers').update({ level, provider_cut_percent, npi: npiNew, active: true }).eq('email', email)
+              await apiClient.from('providers').update({ level, provider_cut_percent, npi: npiNew, invoice_rate, active: true }).eq('email', email)
             }
           }
           if (userData.hourly_pay != null && userData.hourly_pay > 0) {
@@ -716,6 +742,10 @@ export default function SuperAdminSettings() {
             ein: clinicData.ein ?? editingClinic.ein ?? null,
             payroll: clinicData.payroll ?? editingClinic.payroll ?? 1,
             invoice_rate: clinicData.invoice_rate !== undefined ? clinicData.invoice_rate : editingClinic.invoice_rate ?? null,
+            invoice_per_provider:
+              clinicData.invoice_per_provider !== undefined
+                ? clinicData.invoice_per_provider
+                : editingClinic.invoice_per_provider ?? false,
             show_copay_coinsurance_columns:
               clinicData.show_copay_coinsurance_columns !== undefined
                 ? clinicData.show_copay_coinsurance_columns
@@ -744,6 +774,7 @@ export default function SuperAdminSettings() {
             ein: clinicData.ein ?? null,
             payroll: clinicData.payroll ?? 1,
             invoice_rate: clinicData.invoice_rate ?? null,
+            invoice_per_provider: clinicData.invoice_per_provider ?? false,
             show_copay_coinsurance_columns: clinicData.show_copay_coinsurance_columns ?? true,
             paystub_logo_url: clinicData.paystub_logo_url ?? null,
             paystub_accent_color: clinicData.paystub_accent_color ?? null,
@@ -1283,7 +1314,12 @@ export default function SuperAdminSettings() {
                                 )}
                               </td>
                               <td>{clinic.payroll === 1 ? 'Once' : 'Twice'}</td>
-                              <td>{clinic.invoice_rate != null ? `${(clinic.invoice_rate * 100).toFixed(2)}%` : '—'}</td>
+                              <td>
+                                {clinic.invoice_rate != null ? `${(clinic.invoice_rate * 100).toFixed(2)}%` : '—'}
+                                {clinic.invoice_per_provider && (
+                                  <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-primary-500/30 text-primary-200 text-[10px] uppercase tracking-wide">per provider</span>
+                                )}
+                              </td>
                               <td>{formatDateTime(clinic.created_at)}</td>
                               <td>
                                 <div className="flex items-center gap-1">
@@ -1824,13 +1860,22 @@ function UserFormModal({
   providers: Provider[]
   providerLevelsMap: Record<string, number>
   variant: Variant | null
-  onSave: (data: Partial<User>, providerLevel?: number, providerCutPercent?: number, temporaryPassword?: string, showVisitTypeColumn?: boolean) => Promise<void>
+  onSave: (data: Partial<User>, providerLevel?: number, providerCutPercent?: number, temporaryPassword?: string, showVisitTypeColumn?: boolean, providerInvoiceRate?: number | null) => Promise<void>
   onClose: () => void
 }) {
   const providersForUser = user?.role === 'provider' && user?.email ? providers.filter(p => p.email === user.email) : []
   const initialLevel = providersForUser.length > 0 ? (providerLevelsMap[providersForUser[0].id] ?? 1) : 1
   const initialCutPercent = providersForUser.length > 0 ? (providersForUser[0].provider_cut_percent ?? 0.7) : 0.7
   const initialShowVisitTypeColumn = providersForUser.length > 0 ? (providersForUser[0].show_visit_type_column ?? false) : false
+  // Initial values for the provider's per-provider billing rate. `mode` mirrors the existing
+  // "default vs custom" UX used for `provider_cut_percent` — when the provider has no override
+  // we leave the input empty and treat them as "inheriting the clinic's rate". When an admin
+  // ticks "Custom rate" the input is bound to the percentage value (5 -> 0.05 on save).
+  const initialInvoiceRate = providersForUser.length > 0 ? providersForUser[0].invoice_rate ?? null : null
+  const initialInvoiceRateMode: 'clinic' | 'custom' = initialInvoiceRate != null ? 'custom' : 'clinic'
+  const initialInvoiceRatePctStr = initialInvoiceRate != null
+    ? (Math.round(initialInvoiceRate * 10000) / 100).toFixed(2)
+    : ''
   const parseFullName = (full: string) => {
     const trimmed = (full || '').trim()
     const spaceIdx = trimmed.indexOf(' ')
@@ -1851,6 +1896,8 @@ function UserFormModal({
     provider_level: initialLevel as 1 | 2,
     provider_cut_percent: initialCutPercent,
     show_visit_type_column: initialShowVisitTypeColumn,
+    invoice_rate_mode: initialInvoiceRateMode,
+    invoice_rate_pct: initialInvoiceRatePctStr,
     hourly_pay: user?.hourly_pay ?? '',
     password: '',
     npi: initialNpi,
@@ -1863,13 +1910,25 @@ function UserFormModal({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (isSaving) return
-    const { provider_level, provider_cut_percent, show_visit_type_column, hourly_pay, password, first_name, last_name, npi, ...rest } = formData
+    const { provider_level, provider_cut_percent, show_visit_type_column, invoice_rate_mode, invoice_rate_pct, hourly_pay, password, first_name, last_name, npi, ...rest } = formData
     const full_name = [first_name, last_name].map(s => (s || '').trim()).filter(Boolean).join(' ') || undefined
     const userData = {
       ...rest,
       full_name: full_name || null,
       hourly_pay: hourly_pay === '' || hourly_pay == null ? null : Number(hourly_pay),
       ...(formData.role === 'provider' && { npi: (npi || '').trim() || null }),
+    }
+    // Resolve the per-provider billing rate. "clinic" mode -> null (clear the override).
+    // "custom" mode + a valid % -> decimal rate. Invalid input -> null (treat as inherit).
+    let providerInvoiceRate: number | null | undefined
+    if (formData.role === 'provider') {
+      if (invoice_rate_mode === 'custom') {
+        const pct = parseFloat(invoice_rate_pct)
+        providerInvoiceRate =
+          Number.isFinite(pct) && pct >= 0 && pct <= 100 ? pct / 100 : null
+      } else {
+        providerInvoiceRate = null
+      }
     }
     setIsSaving(true)
     try {
@@ -1878,7 +1937,8 @@ function UserFormModal({
         formData.role === 'provider' ? provider_level : undefined,
         formData.role === 'provider' ? provider_cut_percent : undefined,
         user ? undefined : password,
-        formData.role === 'provider' ? show_visit_type_column : undefined
+        formData.role === 'provider' ? show_visit_type_column : undefined,
+        providerInvoiceRate
       )
     } finally {
       setIsSaving(false)
@@ -2016,6 +2076,50 @@ function UserFormModal({
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-black"
                   />
                   <p className="text-xs text-gray-500 mt-1">Decimal 0–1 (e.g. 0.7 = 70%). Default 0.7. Provider Cut = Total Payments × this.</p>
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Billing percentage</label>
+                  <div className="flex flex-wrap items-center gap-4">
+                    <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                      <input
+                        type="radio"
+                        name="invoice_rate_mode"
+                        value="clinic"
+                        checked={formData.invoice_rate_mode === 'clinic'}
+                        onChange={() => setFormData({ ...formData, invoice_rate_mode: 'clinic' })}
+                        className="h-4 w-4 text-primary-600 focus:ring-primary-500"
+                      />
+                      Use clinic default
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                      <input
+                        type="radio"
+                        name="invoice_rate_mode"
+                        value="custom"
+                        checked={formData.invoice_rate_mode === 'custom'}
+                        onChange={() => setFormData({ ...formData, invoice_rate_mode: 'custom' })}
+                        className="h-4 w-4 text-primary-600 focus:ring-primary-500"
+                      />
+                      Custom rate
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={0.01}
+                        value={formData.invoice_rate_pct}
+                        onChange={(e) => setFormData({ ...formData, invoice_rate_pct: e.target.value })}
+                        disabled={formData.invoice_rate_mode !== 'custom'}
+                        placeholder="e.g. 5 for 5%"
+                        className="w-32 px-3 py-2 border border-gray-300 rounded-lg text-black disabled:bg-gray-100 disabled:text-gray-400"
+                      />
+                      <span className="text-sm text-gray-500">%</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Only takes effect when the clinic has &quot;Bill each provider at their own rate&quot; turned on. Otherwise the clinic-wide rate is used for everyone.
+                  </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <input
@@ -2197,6 +2301,7 @@ function ClinicFormModal({
     ein: clinic?.ein ?? '',
     payroll: (clinic?.payroll ?? 1) as 1 | 2,
     invoice_rate: clinic?.invoice_rate != null ? (Math.round(clinic.invoice_rate * 10000) / 100).toFixed(2) : '',
+    invoice_per_provider: Boolean(clinic?.invoice_per_provider),
     show_copay_coinsurance_columns: clinic?.show_copay_coinsurance_columns ?? true,
     paystub_logo_url: clinic?.paystub_logo_url ?? '',
     paystub_accent_color: clinic?.paystub_accent_color ?? '',
@@ -2228,6 +2333,7 @@ function ClinicFormModal({
         ein: formData.ein.trim() || null,
         payroll: formData.payroll,
         invoice_rate: rateNum != null && Number.isFinite(rateNum) ? rateNum / 100 : null,
+        invoice_per_provider: formData.invoice_per_provider,
         show_copay_coinsurance_columns: formData.show_copay_coinsurance_columns,
         paystub_logo_url: formData.paystub_logo_url.trim() || null,
         paystub_accent_color: accentToSave,
@@ -2330,6 +2436,21 @@ function ClinicFormModal({
                 placeholder="e.g. 5 for 5%"
               />
               <p className="text-xs text-gray-500 mt-1">Used on Invoices page: Invoice Total = (Insurance + Patient + AR) × this rate. Leave empty for none.</p>
+            </div>
+            <div className="md:col-span-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="invoice_per_provider"
+                  checked={formData.invoice_per_provider}
+                  onChange={(e) => setFormData({ ...formData, invoice_per_provider: e.target.checked })}
+                  className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
+                <label htmlFor="invoice_per_provider" className="text-sm font-medium text-gray-700">
+                  Bill each provider at their own rate
+                </label>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">When on, the monthly invoice breaks the subtotal out per provider and applies each provider's own billing % (set in User Management). Providers without a custom rate fall back to the clinic rate above. When off, the entire clinic subtotal uses one rate.</p>
             </div>
             <div className="md:col-span-2">
               <div className="flex items-center gap-2">

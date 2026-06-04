@@ -490,24 +490,42 @@ const PP_ROW_AR = 3
  * Primary source: sum of all `provider_pay_rows` (all providers, all payroll periods).
  * Fallback: `provider_sheet_rows` for providers with no `provider_pay` header that month.
  * Computed fields are always overwritten; payment_date and due_date are preserved on conflict.
+ *
+ * Per-provider mode: when `clinics.invoice_per_provider = true`, the same source data is
+ * aggregated PER provider, each provider's subtotal is multiplied by its own rate (provider's
+ * own `invoice_rate` override, falling back to the clinic's), and those per-provider amounts are
+ * persisted to `invoice_provider_lines`. The top-level `invoices.invoice_total` is the sum of
+ * those provider lines plus the additional_fee billed at the clinic-default rate.
  */
 async function recomputeClinicInvoice(clinicId: string, month: number, year: number): Promise<void> {
-  // 1. Clinic invoice_rate
-  const clinicQ = await pool.query<{ invoice_rate: string | null }>(
-    `SELECT invoice_rate FROM public.clinics WHERE id = $1::uuid LIMIT 1`,
+  // 1. Clinic invoice_rate + per-provider mode flag
+  const clinicQ = await pool.query<{ invoice_rate: string | null; invoice_per_provider: boolean | null }>(
+    `SELECT invoice_rate, invoice_per_provider FROM public.clinics WHERE id = $1::uuid LIMIT 1`,
     [clinicId],
   )
   const invoiceRate = clinicQ.rows[0]?.invoice_rate != null
     ? parseFloat(String(clinicQ.rows[0].invoice_rate))
     : 0
+  const perProviderMode = Boolean(clinicQ.rows[0]?.invoice_per_provider)
+
+  // Per-provider running totals: provider_id -> { patient, insurance, ar }. We always populate
+  // these (even when perProviderMode is off) so the existing clinic-wide totals are derived from
+  // the same source rows. The branch only kicks in when persisting + when applying rates.
+  const perProvider = new Map<string, { ins: number; pt: number; ar: number }>()
+  const bumpProvider = (providerId: string | null, bucket: 'ins' | 'pt' | 'ar', amt: number) => {
+    if (!providerId) return
+    const cur = perProvider.get(providerId) ?? { ins: 0, pt: 0, ar: 0 }
+    cur[bucket] += amt
+    perProvider.set(providerId, cur)
+  }
 
   let insuranceTotal = 0
   let patientTotal = 0
   let arTotal = 0
 
   // 2. Provider Pay (primary): aggregate rows 1=Patient, 2=Insurance, 3=A/R across every payroll period
-  const payRowsQ = await pool.query<{ row_index: number; amount: string | null }>(
-    `SELECT ppr.row_index, ppr.amount
+  const payRowsQ = await pool.query<{ provider_id: string; row_index: number; amount: string | null }>(
+    `SELECT pp.provider_id, ppr.row_index, ppr.amount
      FROM public.provider_pay pp
      INNER JOIN public.provider_pay_rows ppr ON ppr.provider_pay_id = pp.id
      WHERE pp.clinic_id = $1::uuid AND pp.month = $2 AND pp.year = $3
@@ -516,18 +534,19 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
   )
   for (const r of payRowsQ.rows) {
     const amt = parseNumericCell(r.amount)
-    if (r.row_index === PP_ROW_PATIENT) patientTotal += amt
-    else if (r.row_index === PP_ROW_INSURANCE) insuranceTotal += amt
-    else if (r.row_index === PP_ROW_AR) arTotal += amt
+    if (r.row_index === PP_ROW_PATIENT) { patientTotal += amt; bumpProvider(r.provider_id, 'pt', amt) }
+    else if (r.row_index === PP_ROW_INSURANCE) { insuranceTotal += amt; bumpProvider(r.provider_id, 'ins', amt) }
+    else if (r.row_index === PP_ROW_AR) { arTotal += amt; bumpProvider(r.provider_id, 'ar', amt) }
   }
 
   // 3. Provider sheets (fallback): providers with no provider_pay record for this clinic/month/year
   const sheetRowsQ = await pool.query<{
+    provider_id: string
     insurance_payment: string | null
     collected_from_patient: string | null
     ar_amount: string | null
   }>(
-    `SELECT psr.insurance_payment, psr.collected_from_patient, psr.ar_amount
+    `SELECT ps.provider_id, psr.insurance_payment, psr.collected_from_patient, psr.ar_amount
      FROM public.provider_sheet_rows psr
      INNER JOIN public.provider_sheets ps ON ps.id = psr.sheet_id
      WHERE ps.clinic_id = $1::uuid AND ps.month = $2 AND ps.year = $3
@@ -539,9 +558,15 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
     [clinicId, month, year],
   )
   for (const r of sheetRowsQ.rows) {
-    insuranceTotal += parseNumericCell(r.insurance_payment)
-    patientTotal += parseNumericCell(r.collected_from_patient)
-    arTotal += parseNumericCell(r.ar_amount)
+    const ins = parseNumericCell(r.insurance_payment)
+    const pt = parseNumericCell(r.collected_from_patient)
+    const ar = parseNumericCell(r.ar_amount)
+    insuranceTotal += ins
+    patientTotal += pt
+    arTotal += ar
+    bumpProvider(r.provider_id, 'ins', ins)
+    bumpProvider(r.provider_id, 'pt', pt)
+    bumpProvider(r.provider_id, 'ar', ar)
   }
 
   // 4. clinic_invoice_notes for additional_fee and note
@@ -555,17 +580,61 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
     : 0
   const note = notesQ.rows[0]?.note ?? null
 
-  // 5. Compute totals
+  // 5. Compute totals. Two paths:
+  //    a) Clinic-wide mode (default): the entire clinic subtotal × the clinic's invoice_rate.
+  //    b) Per-provider mode: each provider's subtotal × that provider's effective rate (override or
+  //       clinic default), summed up. additional_fee is still billed at the clinic-default rate.
   const subtotal = insuranceTotal + patientTotal + arTotal + additionalFee
-  const invoiceTotal = subtotal * (Number.isFinite(invoiceRate) ? invoiceRate : 0)
+  const clinicRateNum = Number.isFinite(invoiceRate) ? invoiceRate : 0
+  let invoiceTotal = 0
+  // Per-provider line breakdown used below when perProviderMode is true.
+  const providerLines: Array<{
+    providerId: string
+    ins: number
+    pt: number
+    ar: number
+    sub: number
+    rate: number
+    total: number
+  }> = []
+
+  if (perProviderMode) {
+    // Pull per-provider rate overrides for every provider that appeared above.
+    const providerIds = Array.from(perProvider.keys())
+    const ratesByProvider = new Map<string, number>()
+    if (providerIds.length > 0) {
+      const ratesQ = await pool.query<{ id: string; invoice_rate: string | null }>(
+        `SELECT id::text AS id, invoice_rate FROM public.providers WHERE id = ANY($1::uuid[])`,
+        [providerIds],
+      )
+      for (const r of ratesQ.rows) {
+        if (r.invoice_rate != null) {
+          const n = parseFloat(String(r.invoice_rate))
+          if (Number.isFinite(n)) ratesByProvider.set(r.id, n)
+        }
+      }
+    }
+    for (const [providerId, tot] of perProvider.entries()) {
+      const sub = tot.ins + tot.pt + tot.ar
+      const rate = ratesByProvider.get(providerId) ?? clinicRateNum
+      const total = sub * rate
+      providerLines.push({ providerId, ins: tot.ins, pt: tot.pt, ar: tot.ar, sub, rate, total })
+      invoiceTotal += total
+    }
+    // Additional fee is a clinic-level line — bill it at the clinic default rate.
+    invoiceTotal += additionalFee * clinicRateNum
+  } else {
+    invoiceTotal = subtotal * clinicRateNum
+  }
 
   // 6. Default due_date = 15th of the following month
   const dueYear = month === 12 ? year + 1 : year
   const dueMonth = month === 12 ? 1 : month + 1
   const defaultDueDate = `${dueYear}-${String(dueMonth).padStart(2, '0')}-15`
 
-  // 7. Upsert: INSERT preserves due_date default; UPDATE preserves editable fields
-  await pool.query(
+  // 7. Upsert: INSERT preserves due_date default; UPDATE preserves editable fields. Returns the
+  //    invoice id so we can sync the per-provider line table next.
+  const invoiceUpsertQ = await pool.query<{ id: string }>(
     `INSERT INTO public.invoices (
        clinic_id, month, year,
        insurance_payment_total, patient_payment_total, accounts_receivable_total,
@@ -587,7 +656,8 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
        invoice_total           = EXCLUDED.invoice_total,
        note                    = EXCLUDED.note,
        computed_at             = now(),
-       updated_at              = now()`,
+       updated_at              = now()
+     RETURNING id::text AS id`,
     [
       clinicId, month, year,
       insuranceTotal.toFixed(2),
@@ -601,6 +671,55 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
       defaultDueDate,
     ],
   )
+  const invoiceId = invoiceUpsertQ.rows[0]?.id ?? null
+
+  // 8. Sync per-provider lines. When per-provider mode is on, upsert every provider line and
+  //    delete any stale ones from a prior run. When off, blow them all away so the table stays in
+  //    sync with whatever the clinic currently wants. (We never leave a half-stale breakdown.)
+  if (invoiceId) {
+    if (perProviderMode && providerLines.length > 0) {
+      for (const line of providerLines) {
+        await pool.query(
+          `INSERT INTO public.invoice_provider_lines (
+             invoice_id, provider_id,
+             insurance_payment_total, patient_payment_total, accounts_receivable_total,
+             subtotal, invoice_rate, invoice_total, created_at, updated_at
+           ) VALUES (
+             $1::uuid, $2::uuid,
+             $3, $4, $5,
+             $6, $7, $8, now(), now()
+           )
+           ON CONFLICT (invoice_id, provider_id) DO UPDATE SET
+             insurance_payment_total   = EXCLUDED.insurance_payment_total,
+             patient_payment_total     = EXCLUDED.patient_payment_total,
+             accounts_receivable_total = EXCLUDED.accounts_receivable_total,
+             subtotal                  = EXCLUDED.subtotal,
+             invoice_rate              = EXCLUDED.invoice_rate,
+             invoice_total             = EXCLUDED.invoice_total,
+             updated_at                = now()`,
+          [
+            invoiceId, line.providerId,
+            line.ins.toFixed(2), line.pt.toFixed(2), line.ar.toFixed(2),
+            line.sub.toFixed(2), line.rate, line.total.toFixed(2),
+          ],
+        )
+      }
+      const keepIds = providerLines.map((l) => l.providerId)
+      await pool.query(
+        `DELETE FROM public.invoice_provider_lines
+         WHERE invoice_id = $1::uuid
+           AND NOT (provider_id = ANY($2::uuid[]))`,
+        [invoiceId, keepIds],
+      )
+    } else {
+      // Either per-provider mode is off or no providers had data — keep the line table empty for
+      // this invoice so the client can rely on "per-provider mode on AND at least one line exists".
+      await pool.query(
+        `DELETE FROM public.invoice_provider_lines WHERE invoice_id = $1::uuid`,
+        [invoiceId],
+      )
+    }
+  }
 }
 
 /** POST /api/upsert-clinic-invoice  { clinicId, month, year } */

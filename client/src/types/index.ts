@@ -63,6 +63,12 @@ export interface Clinic {
   payroll?: 1 | 2
   /** Decimal rate for invoice total (e.g. 0.05 = 5%). Invoice Total = (Ins + Patient + AR) * invoice_rate. Set in Clinic Management. */
   invoice_rate?: number | null
+  /**
+   * When true, the monthly invoice breaks the subtotal out per provider and applies each provider's
+   * own `invoice_rate` (falling back to `clinics.invoice_rate` when not set). When false (default)
+   * the entire clinic subtotal uses the single `invoice_rate` as before.
+   */
+  invoice_per_provider?: boolean
   /** When false, Co-pay and Co-Ins columns are hidden clinic-wide on the billing sheet (Providers tab). Default true. Toggled in Clinic Management. */
   show_copay_coinsurance_columns?: boolean
   /** Optional logo (https URL or data: URL) rendered on the paystub PDF for this clinic. NULL = no logo (the American Medical Billing logo is never used on paystubs). */
@@ -97,6 +103,12 @@ export interface Provider {
   level?: 1 | 2
   /** Provider cut percent 0–1 (default 0.7). Provider Cut = Total Payments × this. Set in Super Admin Settings. */
   provider_cut_percent?: number
+  /**
+   * Optional per-provider billing percentage (decimal, e.g. 0.0525 = 5.25%). NULL/undefined means
+   * "inherit the clinic's `invoice_rate`". Only consulted when the clinic has
+   * `invoice_per_provider = true`; otherwise the clinic-wide rate is used as before.
+   */
+  invoice_rate?: number | null
   /** When true, Providers tab shows a "Visit Type" column (In-person / Telehealth) for this provider. Toggled in User Management. */
   show_visit_type_column?: boolean
   created_at: string
