@@ -581,10 +581,15 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
   const note = notesQ.rows[0]?.note ?? null
 
   // 5. Compute totals. Two paths:
-  //    a) Clinic-wide mode (default): the entire clinic subtotal × the clinic's invoice_rate.
-  //    b) Per-provider mode: each provider's subtotal × that provider's effective rate (override or
-  //       clinic default), summed up. additional_fee is still billed at the clinic-default rate.
-  const subtotal = insuranceTotal + patientTotal + arTotal + additionalFee
+  //    a) Clinic-wide mode (default): subtotal × the clinic's invoice_rate, then the additional_fee
+  //       is added back at face value (not multiplied by the rate).
+  //    b) Per-provider mode: each provider's collected total × that provider's effective rate
+  //       (override or clinic default), summed up, then additional_fee at face value.
+  //
+  //    Subtotal here is just (insurance + patient + ar) — the *collected* amounts. additional_fee
+  //    used to be folded into subtotal then run through the rate, which double-billed the fee. It
+  //    now lives entirely on its own line on the invoice PDF / Invoices page.
+  const subtotal = insuranceTotal + patientTotal + arTotal
   const clinicRateNum = Number.isFinite(invoiceRate) ? invoiceRate : 0
   let invoiceTotal = 0
   // Per-provider line breakdown used below when perProviderMode is true.
@@ -621,10 +626,11 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
       providerLines.push({ providerId, ins: tot.ins, pt: tot.pt, ar: tot.ar, sub, rate, total })
       invoiceTotal += total
     }
-    // Additional fee is a clinic-level line — bill it at the clinic default rate.
-    invoiceTotal += additionalFee * clinicRateNum
+    // Additional fee shows as its own line on the invoice — added at face value (not multiplied
+    // by any rate, since per Jenali it's a flat charge).
+    invoiceTotal += additionalFee
   } else {
-    invoiceTotal = subtotal * clinicRateNum
+    invoiceTotal = subtotal * clinicRateNum + additionalFee
   }
 
   // 6. Default due_date = 15th of the following month

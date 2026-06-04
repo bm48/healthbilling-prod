@@ -17,6 +17,22 @@ export interface ClinicInvoiceSummaryRow {
   payment_date: string | null
   due_date?: string | null
   note?: string
+  /** When true the clinic is in per-provider billing mode; render one Total + Billing Fee pair
+   *  for each entry in `provider_lines` instead of a single clinic-wide pair. */
+  invoice_per_provider?: boolean
+  /** Per-provider breakdown emitted from the server (`invoice_provider_lines`). Only used when
+   *  `invoice_per_provider` is true. Each line carries the provider's collected total, the
+   *  effective rate, and the provider's slice of the billing fee. */
+  provider_lines?: Array<{
+    provider_id: string
+    provider_name: string
+    insurance_payment_total: number
+    patient_payment_total: number
+    accounts_receivable_total: number
+    subtotal: number
+    invoice_rate: number
+    invoice_total: number
+  }>
 }
 
 /** Per-provider data for the paystub page (page 2+). */
@@ -227,9 +243,8 @@ async function addPaystubPage(
     doc.text(entry.clinic_phone, 14, leftY)
     leftY += 5
   }
-  if (entry.clinic_ein) {
-    doc.text(`EIN: ${entry.clinic_ein}`, 14, leftY)
-  }
+  // EIN is intentionally NOT rendered on the paystub (per Jenali — not necessary on the
+  // earnings statement and added clutter that overlapped the provider name band).
 
   // Right block
   doc.setFontSize(12)
@@ -244,7 +259,10 @@ async function addPaystubPage(
   doc.text(pdLabel, pageW - 14 - doc.getTextWidth(pdLabel), 43)
 
   // ── Provider name band (clinic-configurable accent color) ─────────────────
-  const bandY = 58
+  // Dynamically anchor below whichever extends further: the clinic info block on the left or the
+  // pay-date block on the right (~Y=47 after the two lines + padding). Used to be hardcoded at
+  // Y=58, which overlapped the clinic address whenever there were 3+ lines of clinic info.
+  const bandY = Math.max(leftY + 4, 50)
   const bandH = 18
   doc.setFillColor(accentR, accentG, accentB)
   doc.rect(14, bandY, pageW - 28, bandH, 'F')
@@ -416,9 +434,14 @@ export async function generateClinicInvoicePdf(
     y += 18
   }
 
-  const total = row.total
-  const rate = row.invoice_rate != null ? row.invoice_rate : 0
-  const billingAmount = total * rate
+  // Collected total = Insurance + Patient Pay + AR. additional_fee is NOT folded in here — it
+  // gets its own line on the table below at face value. invoice_total already reflects:
+  //   per-provider mode: Σ(provider lines) + additional_fee
+  //   clinic mode:       collectedTotal × rate + additional_fee
+  const collectedTotal = row.total
+  const clinicRate = row.invoice_rate != null ? row.invoice_rate : 0
+  const additionalFee = row.additional_fee != null ? Number(row.additional_fee) : 0
+  const balanceDue = row.invoice_total
 
   doc.setDrawColor(200, 200, 200)
   doc.setFillColor(240, 240, 240)
@@ -426,47 +449,112 @@ export async function generateClinicInvoicePdf(
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(12)
   doc.text('Balance Due:', 18, y + 5)
-  doc.text(formatCurrency(billingAmount), pageW - 18 - doc.getTextWidth(formatCurrency(billingAmount)), y + 5)
+  doc.text(formatCurrency(balanceDue), pageW - 18 - doc.getTextWidth(formatCurrency(balanceDue)), y + 5)
   doc.setFont('helvetica', 'normal')
   y += 22
 
-  const ratePct = row.invoice_rate != null ? (row.invoice_rate * 100).toFixed(2) : '0'
-  const tableBody: (string | number)[][] = [
-    ['Total (Insurance + Patient Pay + AR + Additional Fee)', '$0.00', formatCurrency(total)],
-    [`Billing Fee: ${ratePct}% of Total`, formatCurrency(billingAmount), formatCurrency(billingAmount)],
-  ]
+  // Build the line-item table.
+  // - Quantity column holds the collected total in bold for "Total ..." rows; "1" for billing fee
+  //   rows; blank for the additional-fee row.
+  // - Rate / Amount columns are blank ("—") for the "Total ..." rows since no charge is being
+  //   applied at that line; for billing-fee rows they hold the computed fee.
+  // - additional_fee is rendered on its own line at face value (no rate multiplier), labeled with
+  //   the invoice note when present so the client knows what the flat charge is for.
+  const tableBody: Array<Array<string | { content: string; styles?: Record<string, unknown> }>> = []
+
+  const usePerProvider =
+    Boolean(row.invoice_per_provider) && (row.provider_lines?.length ?? 0) > 0
+
+  if (usePerProvider) {
+    for (const line of row.provider_lines!) {
+      const ratePct = (line.invoice_rate * 100).toFixed(2)
+      tableBody.push([
+        `Total (Insurance + Patient Pay + AR) — ${line.provider_name}`,
+        {
+          content: formatCurrency(line.subtotal),
+          styles: { fontStyle: 'bold', halign: 'right' },
+        },
+        { content: '—', styles: { halign: 'right' } },
+        { content: '—', styles: { halign: 'right' } },
+      ])
+      tableBody.push([
+        `Billing Fee for ${line.provider_name}: ${ratePct}% of Total`,
+        { content: '1', styles: { halign: 'right' } },
+        { content: formatCurrency(line.invoice_total), styles: { halign: 'right' } },
+        { content: formatCurrency(line.invoice_total), styles: { halign: 'right' } },
+      ])
+    }
+  } else {
+    const clinicRatePct = (clinicRate * 100).toFixed(2)
+    const clinicBillingFee = collectedTotal * clinicRate
+    tableBody.push([
+      'Total (Insurance + Patient Pay + AR)',
+      {
+        content: formatCurrency(collectedTotal),
+        styles: { fontStyle: 'bold', halign: 'right' },
+      },
+      { content: '—', styles: { halign: 'right' } },
+      { content: '—', styles: { halign: 'right' } },
+    ])
+    tableBody.push([
+      `Billing Fee: ${clinicRatePct}% of Total`,
+      { content: '1', styles: { halign: 'right' } },
+      { content: formatCurrency(clinicBillingFee), styles: { halign: 'right' } },
+      { content: formatCurrency(clinicBillingFee), styles: { halign: 'right' } },
+    ])
+  }
+
+  // Additional fee — its own line, labeled with the invoice note when one was entered, otherwise
+  // a generic "Additional Fee" label. The fee is billed at face value (no rate multiplier).
+  if (additionalFee !== 0) {
+    const noteLabel = (row.note?.trim() ?? '').length > 0 ? row.note!.trim() : 'Additional Fee'
+    tableBody.push([
+      noteLabel,
+      { content: '—', styles: { halign: 'right' } },
+      { content: '—', styles: { halign: 'right' } },
+      { content: formatCurrency(additionalFee), styles: { halign: 'right' } },
+    ])
+  }
+
   autoTable(doc, {
-    head: [['Item', 'Rate', 'Amount']],
+    head: [[
+      { content: 'Item', styles: { halign: 'left' } },
+      { content: 'Quantity', styles: { halign: 'right' } },
+      { content: 'Rate', styles: { halign: 'right' } },
+      { content: 'Amount', styles: { halign: 'right' } },
+    ]],
     body: tableBody,
     startY: y,
     headStyles: { fillColor: [80, 80, 80] },
     margin: { left: 14, right: 14 },
+    columnStyles: {
+      0: { halign: 'left' },
+      1: { halign: 'right' },
+      2: { halign: 'right' },
+      3: { halign: 'right' },
+    },
   })
   y = (doc as any).lastAutoTable.finalY + 14
 
   doc.setFont('helvetica', 'bold')
-  doc.text(`Total: ${formatCurrency(billingAmount)}`, pageW - 14 - doc.getTextWidth(`Total: ${formatCurrency(billingAmount)}`), y)
+  const totalLabel = `Total: ${formatCurrency(balanceDue)}`
+  doc.text(totalLabel, pageW - 14 - doc.getTextWidth(totalLabel), y)
   doc.setFont('helvetica', 'normal')
   y += 14
 
-  const additionalFee = row.additional_fee != null ? Number(row.additional_fee) : 0
-  const hasNote = (row.note?.trim() ?? '').length > 0
-  if (additionalFee !== 0 || hasNote) {
+  // If there's a note but no additional fee, surface the note as a small caption underneath the
+  // table. (When a fee IS present the note is already used as the line label above, so we don't
+  // repeat it here.)
+  if (additionalFee === 0 && (row.note?.trim() ?? '').length > 0) {
     doc.setFont('helvetica', 'bold')
     doc.text('Notes:', 14, y)
     doc.setFont('helvetica', 'normal')
     y += 6
-    if (additionalFee !== 0) {
-      doc.text(`Additional fee: ${formatCurrency(additionalFee)}`, 14, y)
+    const maxWidth = pageW - 28
+    const lines = doc.splitTextToSize(row.note!.trim(), maxWidth)
+    for (const line of lines) {
+      doc.text(line, 14, y)
       y += 6
-    }
-    if (hasNote) {
-      const maxWidth = pageW - 28
-      const lines = doc.splitTextToSize(row.note!.trim(), maxWidth)
-      for (const line of lines) {
-        doc.text(line, 14, y)
-        y += 6
-      }
     }
   }
 
