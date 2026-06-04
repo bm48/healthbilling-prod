@@ -569,16 +569,27 @@ async function recomputeClinicInvoice(clinicId: string, month: number, year: num
     bumpProvider(r.provider_id, 'ar', ar)
   }
 
-  // 4. clinic_invoice_notes for additional_fee and note
-  const notesQ = await pool.query<{ additional_fee: string | null; note: string | null }>(
-    `SELECT additional_fee, note FROM public.clinic_invoice_notes
+  // 4. clinic_invoice_notes for the free-form memo (the `additional_fee` column is legacy and
+  //    zeroed by the multi-line migration; we sum the new lines table below instead).
+  const notesQ = await pool.query<{ note: string | null }>(
+    `SELECT note FROM public.clinic_invoice_notes
      WHERE clinic_id = $1::uuid AND month = $2 AND year = $3 LIMIT 1`,
     [clinicId, month, year],
   )
-  const additionalFee = notesQ.rows[0]?.additional_fee != null
-    ? parseFloat(String(notesQ.rows[0].additional_fee))
-    : 0
   const note = notesQ.rows[0]?.note ?? null
+
+  // Additional-fee lines (multi-row). Sum amount across all rows for this clinic + period. Each
+  // line is billed at face value on the invoice — they're never multiplied by the billing rate.
+  const additionalLinesQ = await pool.query<{ amount: string | null }>(
+    `SELECT amount FROM public.invoice_additional_fee_lines
+     WHERE clinic_id = $1::uuid AND month = $2 AND year = $3`,
+    [clinicId, month, year],
+  )
+  let additionalFee = 0
+  for (const r of additionalLinesQ.rows) {
+    const amt = r.amount != null ? parseFloat(String(r.amount)) : 0
+    if (Number.isFinite(amt)) additionalFee += amt
+  }
 
   // 5. Compute totals. Two paths:
   //    a) Clinic-wide mode (default): subtotal × the clinic's invoice_rate, then the additional_fee

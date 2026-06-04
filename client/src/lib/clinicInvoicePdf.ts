@@ -33,6 +33,9 @@ export interface ClinicInvoiceSummaryRow {
     invoice_rate: number
     invoice_total: number
   }>
+  /** Multi-line additional fees. Each renders as its own row at the end of the invoice table,
+   *  labeled with `label` and charged at face value (never multiplied by a billing rate). */
+  additional_fee_lines?: Array<{ label: string; amount: number }>
 }
 
 /** Per-provider data for the paystub page (page 2+). */
@@ -504,23 +507,31 @@ export async function generateClinicInvoicePdf(
     ])
   }
 
-  // Additional fee — its own line, labeled with the invoice note when one was entered, otherwise
-  // a generic "Additional Fee" label. The fee is billed at face value (no rate multiplier).
-  if (additionalFee !== 0) {
-    const noteLabel = (row.note?.trim() ?? '').length > 0 ? row.note!.trim() : 'Additional Fee'
+  // Additional fee lines (multi-row). Each line renders as its own table row with its own label
+  // and amount; all fees are billed at face value (no rate multiplier). Falls back to the legacy
+  // single `additional_fee` value when the parent didn't pass any lines (e.g. pre-migration data,
+  // or until the page's data layer is updated).
+  const additionalLines: Array<{ label: string; amount: number }> = row.additional_fee_lines
+    && row.additional_fee_lines.length > 0
+    ? row.additional_fee_lines
+    : additionalFee !== 0
+      ? [{ label: (row.note?.trim() ?? '').length > 0 ? row.note!.trim() : 'Additional Fee', amount: additionalFee }]
+      : []
+  for (const line of additionalLines) {
+    if (!Number.isFinite(line.amount) || line.amount === 0) continue
     tableBody.push([
-      noteLabel,
+      (line.label ?? '').trim() || 'Additional Fee',
       { content: '—', styles: { halign: 'right' } },
       { content: '—', styles: { halign: 'right' } },
-      { content: formatCurrency(additionalFee), styles: { halign: 'right' } },
+      { content: formatCurrency(line.amount), styles: { halign: 'right' } },
     ])
   }
 
   autoTable(doc, {
     head: [[
       { content: 'Item', styles: { halign: 'left' } },
-      { content: 'Quantity', styles: { halign: 'right' } },
-      { content: 'Rate', styles: { halign: 'right' } },
+      { content: 'Collected', styles: { halign: 'right' } },
+      { content: 'Fees', styles: { halign: 'right' } },
       { content: 'Amount', styles: { halign: 'right' } },
     ]],
     body: tableBody,
@@ -542,10 +553,10 @@ export async function generateClinicInvoicePdf(
   doc.setFont('helvetica', 'normal')
   y += 14
 
-  // If there's a note but no additional fee, surface the note as a small caption underneath the
-  // table. (When a fee IS present the note is already used as the line label above, so we don't
-  // repeat it here.)
-  if (additionalFee === 0 && (row.note?.trim() ?? '').length > 0) {
+  // Surface the standalone clinic note as a memo underneath the table when present. Each
+  // additional fee already carries its own label as a table row above, so the note here is a
+  // free-form invoice memo (not tied to any specific fee).
+  if ((row.note?.trim() ?? '').length > 0) {
     doc.setFont('helvetica', 'bold')
     doc.text('Notes:', 14, y)
     doc.setFont('helvetica', 'normal')

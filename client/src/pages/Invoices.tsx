@@ -304,9 +304,16 @@ export default function Invoices() {
   // ── note / additional fee state (super admin) ────────────────────────────
   const [invoiceNotes, setInvoiceNotes] = useState<Record<string, string>>({})
   const [invoiceAdditionalFees, setInvoiceAdditionalFees] = useState<Record<string, number>>({})
+  /**
+   * Per-clinic list of additional fee lines for the currently-selected month. The id is the
+   * row's UUID when the line was loaded from the DB, or `null` for lines the user just added in
+   * the editor that haven't been saved yet. `sort_order` keeps them in display order.
+   */
+  type AdditionalFeeLine = { id: string | null; label: string; amount: string; sort_order: number }
+  const [invoiceAdditionalFeeLines, setInvoiceAdditionalFeeLines] = useState<Record<string, AdditionalFeeLine[]>>({})
   const [selectedClinicForNote, setSelectedClinicForNote] = useState<string>('')
   const [noteText, setNoteText] = useState<string>('')
-  const [additionalFeeText, setAdditionalFeeText] = useState<string>('0.00')
+  const [editorFeeLines, setEditorFeeLines] = useState<AdditionalFeeLine[]>([])
 
   // ── Effects ───────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -326,9 +333,11 @@ export default function Invoices() {
     setNoteText(selectedClinicForNote ? (invoiceNotes[selectedClinicForNote] ?? '') : '')
   }, [selectedClinicForNote, invoiceNotes])
   useEffect(() => {
-    const fee = selectedClinicForNote ? (invoiceAdditionalFees[selectedClinicForNote] ?? 0) : 0
-    setAdditionalFeeText(fee === 0 ? '0.00' : fee.toFixed(2))
-  }, [selectedClinicForNote, invoiceAdditionalFees])
+    // Snapshot the saved lines into a local editable list when the user picks a clinic. Edits
+    // happen on the local copy until they hit Save (then we diff against what's in the DB).
+    const lines = selectedClinicForNote ? invoiceAdditionalFeeLines[selectedClinicForNote] ?? [] : []
+    setEditorFeeLines(lines.map((l) => ({ ...l })))
+  }, [selectedClinicForNote, invoiceAdditionalFeeLines])
 
   // ── Fetch helpers ─────────────────────────────────────────────────────────
 
@@ -438,21 +447,44 @@ export default function Invoices() {
         ? await fetchClinicAddressesByClinicIds(clinicIds)
         : {}
 
-      // Clinic invoice notes (for note + additional_fee editable display)
+      // Clinic invoice notes (free-form memo only; additional_fee column is legacy and now
+      // zeroed by the multi-line migration).
       const { data: notesData } = await apiClient
         .from('clinic_invoice_notes')
-        .select('clinic_id, note, additional_fee')
+        .select('clinic_id, note')
         .eq('month', month)
         .eq('year', year)
       const notesMap: Record<string, string> = {}
-      const additionalFeesMap: Record<string, number> = {}
-      ;(notesData || []).forEach((r: { clinic_id: string; note: string | null; additional_fee?: number | null }) => {
+      ;(notesData || []).forEach((r: { clinic_id: string; note: string | null }) => {
         notesMap[r.clinic_id] = r.note ?? ''
-        const fee = r.additional_fee != null ? Number(r.additional_fee) : 0
-        additionalFeesMap[r.clinic_id] = Number.isFinite(fee) ? fee : 0
       })
       setInvoiceNotes(notesMap)
-      setInvoiceAdditionalFees(additionalFeesMap)
+
+      // Per-clinic additional-fee lines for this month.
+      const { data: linesData } = await apiClient
+        .from('invoice_additional_fee_lines')
+        .select('id, clinic_id, label, amount, sort_order')
+        .eq('month', month)
+        .eq('year', year)
+      const linesByClinic: Record<string, AdditionalFeeLine[]> = {}
+      const summedFeeByClinic: Record<string, number> = {}
+      ;(linesData || []).forEach((r: { id: string; clinic_id: string; label: string | null; amount: number | string | null; sort_order: number | null }) => {
+        const amt = parseNum(r.amount)
+        const arr = linesByClinic[r.clinic_id] ?? []
+        arr.push({
+          id: r.id,
+          label: r.label ?? 'Additional Fee',
+          amount: Number.isFinite(amt) ? amt.toFixed(2) : '0.00',
+          sort_order: r.sort_order ?? 0,
+        })
+        linesByClinic[r.clinic_id] = arr
+        summedFeeByClinic[r.clinic_id] = (summedFeeByClinic[r.clinic_id] ?? 0) + amt
+      })
+      for (const arr of Object.values(linesByClinic)) {
+        arr.sort((a, b) => a.sort_order - b.sort_order)
+      }
+      setInvoiceAdditionalFeeLines(linesByClinic)
+      setInvoiceAdditionalFees(summedFeeByClinic)
 
       // Build summary rows — one per clinic
       const summaries: ClinicInvoiceSummaryRow[] = allClinics.map((clinic) => {
@@ -592,17 +624,66 @@ export default function Invoices() {
     if (!selectedClinicForNote) return
     const month = selectedMonth.getMonth() + 1
     const year = selectedMonth.getFullYear()
-    const additionalFee = parseFloat(String(additionalFeeText).replace(/[$,]/g, '')) || 0
 
-    const { error } = await apiClient.from('clinic_invoice_notes').upsert(
-      { clinic_id: selectedClinicForNote, month, year, note: noteText, additional_fee: additionalFee, updated_at: new Date().toISOString() },
+    // 1. Upsert the free-form memo. `additional_fee` is no longer stored here (it lives in
+    //    `invoice_additional_fee_lines`); we keep clinic_invoice_notes purely as the memo store.
+    const { error: noteErr } = await apiClient.from('clinic_invoice_notes').upsert(
+      { clinic_id: selectedClinicForNote, month, year, note: noteText, additional_fee: 0, updated_at: new Date().toISOString() },
       { onConflict: 'clinic_id,month,year' },
     )
-    if (error) { alert('Failed to save note.'); return }
+    if (noteErr) { alert('Failed to save invoice note.'); return }
+
+    // 2. Reconcile the additional-fee lines with the DB: any line the user deleted from the
+    //    editor gets removed; existing lines are updated; new lines (id === null) get inserted.
+    //    Empty-label, NaN, or zero-amount lines are dropped silently — they're treated as
+    //    "user hasn't filled this in yet".
+    const cleaned = editorFeeLines
+      .map((l) => ({
+        ...l,
+        label: (l.label ?? '').trim(),
+        amount: parseFloat(String(l.amount).replace(/[$,]/g, '')),
+      }))
+      .filter((l) => l.label.length > 0 && Number.isFinite(l.amount) && l.amount !== 0)
+
+    const prevLines = invoiceAdditionalFeeLines[selectedClinicForNote] ?? []
+    const keptIds = new Set(cleaned.map((l) => l.id).filter((id): id is string => !!id))
+    const removedIds = prevLines.map((l) => l.id).filter((id): id is string => !!id && !keptIds.has(id))
+
+    if (removedIds.length > 0) {
+      const { error: delErr } = await apiClient
+        .from('invoice_additional_fee_lines')
+        .delete()
+        .in('id', removedIds)
+      if (delErr) { alert('Failed to delete an additional fee line.'); return }
+    }
+
+    for (let idx = 0; idx < cleaned.length; idx++) {
+      const l = cleaned[idx]
+      const payload = {
+        clinic_id: selectedClinicForNote,
+        month,
+        year,
+        label: l.label,
+        amount: l.amount,
+        sort_order: idx,
+        updated_at: new Date().toISOString(),
+      }
+      if (l.id) {
+        const { error: updErr } = await apiClient
+          .from('invoice_additional_fee_lines')
+          .update(payload)
+          .eq('id', l.id)
+        if (updErr) { alert('Failed to update an additional fee line.'); return }
+      } else {
+        const { error: insErr } = await apiClient
+          .from('invoice_additional_fee_lines')
+          .insert(payload)
+        if (insErr) { alert('Failed to add an additional fee line.'); return }
+      }
+    }
 
     setInvoiceNotes((prev) => ({ ...prev, [selectedClinicForNote]: noteText }))
-    setInvoiceAdditionalFees((prev) => ({ ...prev, [selectedClinicForNote]: additionalFee }))
-
+    // Refresh the summary table; that also re-fetches the lines so editor + table stay in sync.
     fetchClinicSummaries().catch(() => { /* silent */ })
   }
 
@@ -838,10 +919,14 @@ export default function Invoices() {
         empIndex++
       }
 
+      const linesForClinic = invoiceAdditionalFeeLines[row.clinic_id] ?? []
       const pdfRow = {
         ...row,
         note: invoiceNotes[row.clinic_id] ?? row.note ?? '',
         additional_fee: invoiceAdditionalFees[row.clinic_id] ?? row.additional_fee ?? 0,
+        additional_fee_lines: linesForClinic
+          .map((l) => ({ label: l.label, amount: parseFloat(String(l.amount).replace(/[$,]/g, '')) || 0 }))
+          .filter((l) => Number.isFinite(l.amount) && l.amount !== 0),
       }
       const pdf = await generateClinicInvoicePdf(pdfRow, selectedMonth, paystubs)
       const monthStr = `${year}-${String(month).padStart(2, '0')}`
@@ -1067,24 +1152,73 @@ export default function Invoices() {
                     </button>
                   </div>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-                  <div>
-                    <label className="block text-sm font-medium text-white/70 mb-2">Additional fee ($)</label>
-                    <input
-                      type="text"
-                      value={additionalFeeText}
-                      onChange={(e) => setAdditionalFeeText(e.target.value)}
-                      placeholder="0.00"
-                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/40 backdrop-blur-sm"
-                    />
+                <div className="mt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-white/70">Additional fee lines</label>
+                    <button
+                      type="button"
+                      disabled={!selectedClinicForNote}
+                      onClick={() => {
+                        setEditorFeeLines((prev) => [
+                          ...prev,
+                          { id: null, label: '', amount: '', sort_order: prev.length },
+                        ])
+                      }}
+                      className="text-xs px-2.5 py-1 rounded bg-white/15 hover:bg-white/25 disabled:opacity-50 disabled:pointer-events-none border border-white/20 text-white"
+                    >
+                      + Add line
+                    </button>
                   </div>
+                  {!selectedClinicForNote ? (
+                    <p className="text-xs text-white/50 italic">Select a clinic to add additional fees.</p>
+                  ) : editorFeeLines.length === 0 ? (
+                    <p className="text-xs text-white/50 italic">No additional fees. Click "+ Add line" to add one.</p>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {editorFeeLines.map((line, idx) => (
+                        <div key={line.id ?? `new-${idx}`} className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+                          <input
+                            type="text"
+                            value={line.label}
+                            onChange={(e) => {
+                              const next = [...editorFeeLines]
+                              next[idx] = { ...next[idx], label: e.target.value }
+                              setEditorFeeLines(next)
+                            }}
+                            placeholder="Label (e.g. Reimbursement, PDF setup fee)"
+                            className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/40 backdrop-blur-sm"
+                          />
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={line.amount}
+                            onChange={(e) => {
+                              const next = [...editorFeeLines]
+                              next[idx] = { ...next[idx], amount: e.target.value }
+                              setEditorFeeLines(next)
+                            }}
+                            placeholder="0.00"
+                            className="w-40 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/40 backdrop-blur-sm"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setEditorFeeLines((prev) => prev.filter((_, i) => i !== idx))}
+                            aria-label="Delete this additional fee line"
+                            className="px-2.5 py-2 rounded bg-red-500/20 hover:bg-red-500/40 border border-red-400/30 text-red-100 text-xs"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="mt-4">
                   <label className="block text-sm font-medium text-white/70 mb-2">Add note</label>
                   <textarea
                     value={noteText}
                     onChange={(e) => setNoteText(e.target.value)}
-                    placeholder="Enter note for this clinic's invoice…"
+                    placeholder="Free-form memo for this clinic's invoice (separate from the additional fee labels above)…"
                     rows={3}
                     className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/40 backdrop-blur-sm resize-y"
                   />
