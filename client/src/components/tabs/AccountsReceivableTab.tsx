@@ -1220,16 +1220,19 @@ export default function AccountsReceivableTab({
       editor: DateOfServiceEditor,
       readOnly: !effectiveCanEdit || getReadOnly('date_of_service'),
     },
-    { 
-      data: 3, 
-      title: 'Amount', 
-      type: 'numeric' as const, 
+    {
+      data: 3,
+      title: 'Amount',
+      type: 'numeric' as const,
       width: 100,
+      // Display as USD with thousands separator + 2 decimals (e.g. `$1,234.56`). The numeric type
+      // still accepts bare-number input — the user types `1234.56` and Handsontable formats it
+      // back into the cell. Matches the other money columns on the provider sheet.
       numericFormat: {
-        pattern: '0.00',
-        culture: 'en-US'
+        pattern: '$0,0.00',
+        culture: 'en-US',
       },
-      readOnly: !effectiveCanEdit || getReadOnly('amount')
+      readOnly: !effectiveCanEdit || getReadOnly('amount'),
     },
     {
       data: 4,

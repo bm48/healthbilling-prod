@@ -140,6 +140,7 @@ export default function ClinicDashboard() {
             metrics: {
               visits: 0,
               noShows: 0,
+              cancellationsReschedulings: 0,
               paidClaims: 0,
               privatePay: 0,
               secondary: 0,
@@ -161,7 +162,7 @@ export default function ClinicDashboard() {
             claims: 0,
             unpaid: 0,
             total: 0,
-            metrics: { visits: 0, noShows: 0, paidClaims: 0, privatePay: 0, secondary: 0, ccDeclines: 0 },
+            metrics: { visits: 0, noShows: 0, cancellationsReschedulings: 0, paidClaims: 0, privatePay: 0, secondary: 0, ccDeclines: 0 },
           }
         })
 
@@ -174,7 +175,7 @@ export default function ClinicDashboard() {
               claims: 0,
               unpaid: 0,
               total: 0,
-              metrics: { visits: 0, noShows: 0, paidClaims: 0, privatePay: 0, secondary: 0, ccDeclines: 0 },
+              metrics: { visits: 0, noShows: 0, cancellationsReschedulings: 0, paidClaims: 0, privatePay: 0, secondary: 0, ccDeclines: 0 },
             }
           rows.forEach((row) => {
             byProvider[providerId].claims += 1
@@ -189,6 +190,8 @@ export default function ClinicDashboard() {
           byProvider[providerId].metrics = {
             visits: byProvider[providerId].metrics.visits + rows.length,
             noShows: byProvider[providerId].metrics.noShows + metrics.noShows,
+            cancellationsReschedulings:
+              byProvider[providerId].metrics.cancellationsReschedulings + metrics.cancellationsReschedulings,
             paidClaims: byProvider[providerId].metrics.paidClaims + metrics.paidClaims,
             privatePay: byProvider[providerId].metrics.privatePay + metrics.privatePay,
             secondary: byProvider[providerId].metrics.secondary + metrics.secondary,
@@ -202,7 +205,7 @@ export default function ClinicDashboard() {
           unpaidClaimsCount: byProvider[p.id]?.unpaid ?? 0,
           todoCount: todosRes.count ?? 0,
           currentMonthTotal: byProvider[p.id]?.total ?? 0,
-          metrics: byProvider[p.id]?.metrics ?? { visits: 0, noShows: 0, paidClaims: 0, privatePay: 0, secondary: 0, ccDeclines: 0 },
+          metrics: byProvider[p.id]?.metrics ?? { visits: 0, noShows: 0, cancellationsReschedulings: 0, paidClaims: 0, privatePay: 0, secondary: 0, ccDeclines: 0 },
         }))
         setProviderStats(providerStatsList)
         const grandTotalPaid = providersList.reduce((s, p) => s + (byProvider[p.id]?.total ?? 0), 0)
@@ -354,6 +357,7 @@ export default function ClinicDashboard() {
                       <>
                       <span>Visits: {ps?.metrics?.visits ?? 0}</span>
                       <span>No Shows: {ps?.metrics?.noShows ?? 0}</span>
+                      <span>Cancel/Resched: {ps?.metrics?.cancellationsReschedulings ?? 0}</span>
                       <span>Paid claims: {ps?.metrics?.paidClaims ?? 0}</span>
                       <span>PP: {ps?.metrics?.privatePay ?? 0}</span>
                       <span>Secondary: {ps?.metrics?.secondary ?? 0}</span>

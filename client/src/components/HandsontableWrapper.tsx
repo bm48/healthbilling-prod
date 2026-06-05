@@ -1189,20 +1189,12 @@ export default function HandsontableWrapper({
 
       event.preventDefault()
       event.stopPropagation()
+      // selectCell fires the wrapper's `afterSelection` hook synchronously, and THAT hook is the
+      // single source of "open the dropdown editor on a mouse selection". We deliberately do NOT
+      // also schedule openEditor here — two racing setTimeout(0) opens (one from `afterSelection`,
+      // one from this handler) was exactly what produced the "have to tap twice" UX Jenali was
+      // hitting on every dropdown.
       hotInstance.selectCell(row, col)
-
-      const openEditorAndDropdown = () => {
-        try {
-          if (hotInstance.isDestroyed) return
-          const editorManager = hotInstance._getEditorManager?.()
-          if (!editorManager?.openEditor) return
-          editorManager.openEditor(null, null, true)
-          // Dropdown (autocomplete) editor shows its list in open() via queryChoices. Select editor's native list cannot be opened programmatically in most browsers.
-        } catch {
-          // ignore
-        }
-      }
-      setTimeout(openEditorAndDropdown, 0)
     }
 
     const rootElement = hotInstance.rootElement
