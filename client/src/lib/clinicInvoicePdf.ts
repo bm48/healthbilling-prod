@@ -481,7 +481,12 @@ export async function generateClinicInvoicePdf(
         { content: '—', styles: { halign: 'right' } },
       ])
       tableBody.push([
-        `Billing Fee for ${line.provider_name}: ${ratePct}% of Total`,
+        // Indent the billing-fee row so it visually nests under the provider's Total above it
+        // (extra left padding on the Item cell, no extra characters that would muddle copy/paste).
+        {
+          content: `Billing Fee for ${line.provider_name}: ${ratePct}% of Total`,
+          styles: { cellPadding: { top: 3, right: 3, bottom: 3, left: 10 } },
+        },
         // Collected column intentionally blank on billing-fee rows — no quantity to show.
         { content: '—', styles: { halign: 'right' } },
         { content: formatCurrency(line.invoice_total), styles: { halign: 'right' } },
@@ -501,7 +506,11 @@ export async function generateClinicInvoicePdf(
       { content: '—', styles: { halign: 'right' } },
     ])
     tableBody.push([
-      `Billing Fee: ${clinicRatePct}% of Total`,
+      // Indent the billing-fee row so it visually nests under the Total row above it.
+      {
+        content: `Billing Fee: ${clinicRatePct}% of Total`,
+        styles: { cellPadding: { top: 3, right: 3, bottom: 3, left: 10 } },
+      },
       // Collected column intentionally blank on billing-fee rows — no quantity to show.
       { content: '—', styles: { halign: 'right' } },
       { content: formatCurrency(clinicBillingFee), styles: { halign: 'right' } },
