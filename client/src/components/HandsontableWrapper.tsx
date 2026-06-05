@@ -843,9 +843,16 @@ export default function HandsontableWrapper({
         selectionFromMouseRef.current = false
         try {
           const cellProperties = hot.getCellMeta(r, c)
+          // Same dropdown-detection rule as the mousedown handler — match on the rewritten
+          // `source` array as well as the original `selectOptions`, since the wrapper renames
+          // one to the other when processing column configs.
+          const optionArray =
+            (cellProperties as any)?.selectOptions ?? (cellProperties as any)?.source
           const isDropdown =
             cellProperties &&
-            (cellProperties.type === 'dropdown' || cellProperties.editor === 'select' || (cellProperties as any).selectOptions)
+            (cellProperties.type === 'dropdown' ||
+              cellProperties.editor === 'select' ||
+              Array.isArray(optionArray))
           if (isDropdown && !hot.isEditing()) {
             // Open editor via EditorManager (same path as Enter key); editor isn't created until we trigger open
             setTimeout(() => {
@@ -1176,9 +1183,21 @@ export default function HandsontableWrapper({
 
       try {
         const cellProperties = hotInstance.getCellMeta(row, col)
+        // A cell qualifies as a dropdown when Handsontable sees it that way (`type: 'dropdown'`),
+        // when the editor is the built-in `'select'`, OR when the cell has an option array. Note:
+        // the wrapper's safety-check rewrites `type` to `'text'` for columns whose editor is a
+        // custom class (like our colored autocomplete editor), AND it renames `selectOptions` to
+        // `source` during processing — so we have to look for BOTH `source` and `selectOptions`
+        // or this check would miss every "real" dropdown column and the handler would silently
+        // bail out, leaving only Handsontable's native double-click to open the picker. That's
+        // exactly the "needs a double-tap to open every dropdown" UX Jenali was hitting.
+        const optionArray =
+          (cellProperties as any)?.selectOptions ?? (cellProperties as any)?.source
         const isDropdown =
           cellProperties &&
-          (cellProperties.type === 'dropdown' || cellProperties.editor === 'select' || (cellProperties as any).selectOptions)
+          (cellProperties.type === 'dropdown' ||
+            cellProperties.editor === 'select' ||
+            Array.isArray(optionArray))
         const isEditing = typeof hotInstance.isEditing === 'function' ? hotInstance.isEditing() : false
         if (!isDropdown || isEditing) return
         // Skip read-only / locked cells — opening the editor on those would be confusing.
