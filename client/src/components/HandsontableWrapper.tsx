@@ -305,8 +305,6 @@ export default function HandsontableWrapper({
   const hotTableRef = useRef<any>(null)
   const hyperformulaInstanceRef = useRef<HyperFormula | null>(null)
   const isBatchOperationRef = useRef<boolean>(false)
-  /** True when the last selection was triggered by a mouse click (so we can open dropdown on single click) */
-  const selectionFromMouseRef = useRef<boolean>(false)
   /** When enableFormula: ranges to highlight with dotted border while editing a formula cell */
   const [formulaRefRanges, setFormulaRefRanges] = useState<FormulaRefRange[]>([])
   /**
@@ -833,24 +831,71 @@ export default function HandsontableWrapper({
       }
     },
     
-    // After selection callback (also open dropdown on single-cell selection when selection was from mouse)
+    // After selection callback — purely forwards to the consumer; the dropdown auto-open lives
+    // in `afterOnCellMouseDown` below, which is a Handsontable-internal hook that runs AFTER the
+    // library finishes selecting + preparing its editor for the clicked cell.
     afterSelection: (r, c, r2, c2) => {
       if (afterSelection) {
         afterSelection(r, c, r2, c2)
       }
+    },
+
+    /**
+     * Open the dropdown picker on a single mouse click for any cell with an option list.
+     *
+     * Uses Handsontable's OWN internal hook (`afterOnCellMouseDown`) rather than a DOM-level
+     * mousedown listener so we don't fight the library's selection logic. By the time this fires,
+     * Handsontable has already:
+     *   - resolved the click to (row, col)
+     *   - selected the cell
+     *   - prepared the editor for that cell (so `getActiveEditor()` returns the right instance)
+     *
+     * We then trigger `editor.beginEditing()` — the documented v16 public method that the
+     * library's own Enter-key / F2 / double-click handlers call internally. No `_getEditorManager`
+     * private API, no synthetic dblclick events, no `setTimeout` race conditions.
+     */
+    afterOnCellMouseDown: (event: MouseEvent, coords: { row: number; col: number }) => {
       const hot = hotTableRef.current?.hotInstance as any
-      // Mouse-driven open is handled entirely by the capture-phase `handleCellMouseDown`
-      // handler below: it sets `selectionFromMouseRef.current = false` BEFORE selectCell runs and
-      // dispatches a synthetic dblclick. So this hook only fires the consumer-supplied
-      // `afterSelection` and never tries to open the editor itself — previously it called the
-      // private `_getEditorManager().openEditor(...)` API which was removed in Handsontable v16
-      // (silently returning undefined and contributing to the "needs to double-tap every
-      // dropdown" bug).
-      void hot
-      void r2
-      void c2
-      void r
-      void c
+      if (!hot || hot.isDestroyed) return
+      // Header / row-header clicks come through with negative coords — skip those.
+      if (!coords || coords.row < 0 || coords.col < 0) return
+      // Modifier-driven clicks are range-select gestures; right-click opens the context menu —
+      // none of those should auto-open the picker.
+      if (event && (event.shiftKey || event.ctrlKey || event.metaKey || event.button !== 0)) return
+      // Don't disturb an editor that's already open (clicking inside the option list, etc).
+      if (typeof hot.isEditing === 'function' && hot.isEditing()) return
+      try {
+        const cellProperties = hot.getCellMeta(coords.row, coords.col)
+        if (!cellProperties || cellProperties.readOnly) return
+        // Detect dropdown-like cells. The wrapper's safety-check rewrites `type` to `'text'` for
+        // columns with a custom editor class, AND renames `selectOptions` → `source` during
+        // processing, so we have to look at both shapes. Without this, the colored autocomplete
+        // dropdowns (Appt Status, Claim Status, PT Pay Status, AR Type, month dropdowns) would
+        // all be treated as plain text cells and fall through to default double-click behavior.
+        const optionArray =
+          (cellProperties as any).selectOptions ?? (cellProperties as any).source
+        const isDropdown =
+          cellProperties.type === 'dropdown' ||
+          cellProperties.editor === 'select' ||
+          Array.isArray(optionArray)
+        if (!isDropdown) return
+        // One microtask defer so Handsontable's internal post-mousedown bookkeeping (focus moves,
+        // selection range commit, editor `prepare`) finishes before we call `beginEditing`.
+        queueMicrotask(() => {
+          try {
+            if (hot.isDestroyed || (typeof hot.isEditing === 'function' && hot.isEditing())) return
+            const editor = hot.getActiveEditor?.()
+            if (editor && typeof editor.beginEditing === 'function') {
+              editor.beginEditing()
+            }
+          } catch {
+            // Editor APIs differ across Handsontable minor versions — fall through silently and
+            // let Handsontable's native double-click open the picker as a fallback.
+          }
+        })
+      } catch {
+        // ignore
+      }
     },
 
     afterDeselect() {
@@ -1103,140 +1148,10 @@ export default function HandsontableWrapper({
     }
   }, [])
 
-  // Single-click on bubble: select cell, open editor, and open native <select> dropdown immediately
-  useEffect(() => {
-    if (!hotTableRef.current?.hotInstance) return
-    const hotInstance = hotTableRef.current.hotInstance as any
-
-    const handleCellMouseDown = (event: MouseEvent) => {
-      // Ignore our own simulated mousedown (dispatched on the <select> to open dropdown); they have isTrusted: false
-      if (!event.isTrusted) return
-      const target = event.target as HTMLElement
-      const bubble = target.closest('.handsontable-bubble-select')
-      const cell = target.closest('td')
-      // No cell when click is on the opened Select editor (it's outside the table); that's the normal "second click" to open the options list
-      if (!cell) return
-      if (cell.closest('thead') || cell.closest('.ht_clone_top') || cell.closest('.ht_clone_left')) return
-      if (!cell.closest('.ht_master')) return
-      // Bail out when the click is INSIDE an opened editor's inner Handsontable (e.g. the option
-      // list of a dropdown / autocomplete editor). That inner HOT also has `.handsontable` and
-      // `.ht_master` ancestors, so without this check we'd capture the click on an option, call
-      // stopPropagation in the capture phase, and the editor would never see the click that
-      // commits the choice — causing the picker to stay open after selecting a value.
-      const owningHandsontable = cell.closest('.handsontable')
-      if (owningHandsontable && owningHandsontable !== hotInstance.rootElement) return
-
-      // Don't auto-open during range-select gestures (shift-click extends selection, ctrl/cmd-click
-      // for multi-select). Right-clicks open the context menu instead.
-      if (event.shiftKey || event.ctrlKey || event.metaKey || event.button !== 0) return
-
-      const cellHasBubble = Boolean(cell.querySelector('.handsontable-bubble-select'))
-      selectionFromMouseRef.current = Boolean(bubble) || !cellHasBubble
-
-      let row: number | null = null
-      let col: number | null = null
-      try {
-        const coords = hotInstance.getCoords(cell)
-        if (coords) {
-          if (Array.isArray(coords) && coords.length >= 2) {
-            row = coords[0]
-            col = coords[1]
-          } else if (typeof coords === 'object' && 'row' in coords && 'col' in coords) {
-            row = (coords as { row: number; col: number }).row
-            col = (coords as { row: number; col: number }).col
-          }
-        }
-      } catch {
-        const rowElement = cell.closest('tr')
-        if (rowElement?.parentElement) {
-          const tbody = rowElement.parentElement
-          const rowIndex = Array.from(tbody.children).indexOf(rowElement)
-          const cellIndex = Array.from(rowElement.cells).indexOf(cell as HTMLTableCellElement)
-          if (rowIndex >= 0 && cellIndex >= 0) {
-            const hasRowHeaders = hotInstance.getSettings().rowHeaders
-            row = hasRowHeaders ? rowIndex : rowIndex
-            col = hasRowHeaders ? cellIndex - 1 : cellIndex
-          }
-        }
-      }
-      if (row === null || col === null || row < 0 || col < 0) return
-
-      try {
-        const cellProperties = hotInstance.getCellMeta(row, col)
-        // A cell qualifies as a dropdown when Handsontable sees it that way (`type: 'dropdown'`),
-        // when the editor is the built-in `'select'`, OR when the cell has an option array. Note:
-        // the wrapper's safety-check rewrites `type` to `'text'` for columns whose editor is a
-        // custom class (like our colored autocomplete editor), AND it renames `selectOptions` to
-        // `source` during processing — so we have to look for BOTH `source` and `selectOptions`
-        // or this check would miss every "real" dropdown column and the handler would silently
-        // bail out, leaving only Handsontable's native double-click to open the picker. That's
-        // exactly the "needs a double-tap to open every dropdown" UX Jenali was hitting.
-        const optionArray =
-          (cellProperties as any)?.selectOptions ?? (cellProperties as any)?.source
-        const isDropdown =
-          cellProperties &&
-          (cellProperties.type === 'dropdown' ||
-            cellProperties.editor === 'select' ||
-            Array.isArray(optionArray))
-        const isEditing = typeof hotInstance.isEditing === 'function' ? hotInstance.isEditing() : false
-        if (!isDropdown || isEditing) return
-        // Skip read-only / locked cells — opening the editor on those would be confusing.
-        if (cellProperties && cellProperties.readOnly) return
-      } catch {
-        return
-      }
-
-      event.preventDefault()
-      event.stopPropagation()
-      // selectCell is synchronous in Handsontable, so the active editor for the cell is available
-      // immediately after the call. We then drive the editor open synchronously via the public
-      // `beginEditing` API — no setTimeout, no race with the `afterSelection` hook, no waiting
-      // for the next microtask. Earlier versions used a `setTimeout(openEditor, 0)` AND the
-      // `afterSelection` hook also scheduled its own `setTimeout(openEditor, 0)`; the two would
-      // race within the same tick and leave the editor in a half-open state that only stabilized
-      // on a second click — that was the "double-tap to open every dropdown" Jenali was hitting.
-      // To avoid that race we now bypass `afterSelection` for mouse-driven selections (we leave
-      // its `selectionFromMouseRef.current = true` flag set so the in-flight setTimeout path
-      // becomes a no-op once `selectionFromMouseRef.current` is cleared by the hook).
-      selectionFromMouseRef.current = false
-      hotInstance.selectCell(row, col)
-      // Open the editor via Handsontable's PUBLIC v16 API: `getActiveEditor()` returns the
-      // editor instance prepared for the currently-selected cell, and `beginEditing()` starts the
-      // edit (which for AutocompleteEditor / DropdownEditor renders the option list). This is the
-      // same code path Handsontable's own Enter-key and F2 handlers use internally.
-      //
-      // History on this fix: earlier attempts used the private `_getEditorManager()` API, which
-      // was hidden in Handsontable v16 and silently returned undefined (so nothing opened, and
-      // only the library's NATIVE double-click ever triggered the editor — that's what produced
-      // the "every dropdown needs two taps" UX). We also tried dispatching a synthetic dblclick
-      // event, but Handsontable's listeners check `isTrusted` and ignore synthetic events.
-      try {
-        if (!hotInstance.isDestroyed && !hotInstance.isEditing?.()) {
-          // Defer one microtask so Handsontable finishes its own internal selection bookkeeping
-          // (selection range, focus moves, editor prepare) before we kick the editor open. Without
-          // this the editor was opening on the *previous* cell's prepared editor instance.
-          queueMicrotask(() => {
-            try {
-              if (hotInstance.isDestroyed || hotInstance.isEditing?.()) return
-              const editor = hotInstance.getActiveEditor?.()
-              if (editor && typeof editor.beginEditing === 'function') {
-                editor.beginEditing()
-              }
-            } catch {
-              // ignore — fall back to default double-click behavior
-            }
-          })
-        }
-      } catch {
-        // Some editor classes may not expose `isEditing` — fall through silently and let the
-        // user double-click as a fallback.
-      }
-    }
-
-    const rootElement = hotInstance.rootElement
-    rootElement.addEventListener('mousedown', handleCellMouseDown, true)
-    return () => rootElement.removeEventListener('mousedown', handleCellMouseDown, true)
-  }, [])
+  // (Single-click-to-open-dropdown is wired up via the `afterOnCellMouseDown` hook in the
+  // Handsontable settings above — see the long comment there. The previous capture-phase DOM
+  // mousedown listener that lived here was fighting Handsontable's own selection / editor-prepare
+  // pipeline; rather than keep racing it, we now use Handsontable's own hook.)
 
   // Handle context menu: only when right-clicking on the row header (number row), not on the sheet (data cells)
   useEffect(() => {
