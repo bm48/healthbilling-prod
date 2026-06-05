@@ -430,17 +430,21 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
   const padBillingTodosTo200 = useCallback(
     (list: TodoItem[]) => {
       const result = [...list]
+      // Strip trailing empty placeholder rows when the list is longer than 200, so they don't
+      // accumulate across edits. Stop as soon as we hit a real row from the bottom or we're
+      // back down to 200 — we never strip below 200 and never strip real rows.
       while (result.length > 200) {
         const last = result[result.length - 1]
         if (last && isBillingTodoEmptyPlaceholder(last)) result.pop()
         else break
       }
-      const trimmed = result.length > 200 ? result.slice(0, 200) : result
-      const out = [...trimmed]
-      while (out.length < 200) {
-        out.push(createEmptyTodo(nextEmptyNumericIdSuffix(out)))
+      // Pad UP to 200 when shorter — but NEVER truncate real rows when longer. Same bug class as
+      // PatientsTab.padPatientsTo200 (see comment there). Real to-do rows must be preserved at
+      // all costs; we'd rather show a long backlog with 350 items than silently drop 150.
+      while (result.length < 200) {
+        result.push(createEmptyTodo(nextEmptyNumericIdSuffix(result)))
       }
-      return out
+      return result
     },
     [createEmptyTodo, isBillingTodoEmptyPlaceholder]
   )

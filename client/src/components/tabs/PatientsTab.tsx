@@ -673,17 +673,25 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
   const padPatientsTo200 = useCallback(
     (list: Patient[]) => {
       const result = [...list]
+      // Strip trailing `empty-*` placeholder rows when the list is longer than 200, so they
+      // don't accumulate across edits. Stop as soon as we hit a non-empty row or we're back
+      // down to 200 — we never strip below 200 and never strip real rows.
       while (result.length > 200) {
         const last = result[result.length - 1]
         if (last?.id.startsWith('empty-')) result.pop()
         else break
       }
-      const trimmed = result.length > 200 ? result.slice(0, 200) : result
-      const out = [...trimmed]
-      while (out.length < 200) {
-        out.push(createEmptyPatient(nextEmptyNumericIdSuffix(out)))
+      // Pad UP to 200 (the display minimum) when the list is shorter — but NEVER truncate real
+      // rows when longer. The previous version had `result.length > 200 ? result.slice(0, 200)
+      // : result` here, which silently dropped patient rows past index 200 from the in-memory
+      // list whenever a clinic crossed 200 patients (the DB save path only UPSERTs and never
+      // DELETEs, so the dropped rows stayed in the DB — but they vanished from the grid until
+      // a page reload re-fetched them). That's the bug behind Jenali's "the bottom rows lost
+      // my patient IDs randomly" report. Real rows must be preserved at all costs.
+      while (result.length < 200) {
+        result.push(createEmptyPatient(nextEmptyNumericIdSuffix(result)))
       }
-      return out
+      return result
     },
     [createEmptyPatient]
   )

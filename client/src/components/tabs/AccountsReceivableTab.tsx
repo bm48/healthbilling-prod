@@ -893,17 +893,21 @@ export default function AccountsReceivableTab({
   const padARDisplayedTo200 = useCallback(
     (list: AccountsReceivable[]) => {
       const result = [...list]
+      // Strip trailing empty/placeholder rows when the list is longer than 200, so they don't
+      // accumulate across edits. Stop as soon as we hit a real row from the bottom or we're
+      // back down to 200 — we never strip below 200 and never strip real rows.
       while (result.length > 200) {
         const last = result[result.length - 1]
         if (last && (last.id.startsWith('empty-') || last.id.startsWith('placeholder-'))) result.pop()
         else break
       }
-      const trimmed = result.length > 200 ? result.slice(0, 200) : result
-      const out = [...trimmed]
-      while (out.length < 200) {
-        out.push(createEmptyAR(nextEmptyNumericIdSuffix(out)))
+      // Pad UP to 200 when shorter — but NEVER truncate real rows when longer. Same bug class as
+      // PatientsTab.padPatientsTo200 (see comment there). Real AR rows must be preserved at all
+      // costs; we'd rather show a busy month with 350 rows than silently drop 150 from view.
+      while (result.length < 200) {
+        result.push(createEmptyAR(nextEmptyNumericIdSuffix(result)))
       }
-      return out
+      return result
     },
     [createEmptyAR]
   )
