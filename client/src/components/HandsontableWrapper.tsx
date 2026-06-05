@@ -1200,26 +1200,28 @@ export default function HandsontableWrapper({
       // becomes a no-op once `selectionFromMouseRef.current` is cleared by the hook).
       selectionFromMouseRef.current = false
       hotInstance.selectCell(row, col)
-      // Open the dropdown by triggering Handsontable's own double-click pipeline — that's the
-      // path the library already tests and ships, so we get exactly the same fully-opened picker
-      // a user would see if they had double-clicked. We avoid the private `_getEditorManager()`
-      // API entirely (it was hidden/removed in Handsontable v16, which means our previous
-      // `editorManager.openEditor(...)` silently returned `undefined` and never opened anything
-      // — that's the bug Jenali was hitting where every dropdown needed two taps).
+      // Open the editor via Handsontable's PUBLIC v16 API: `getActiveEditor()` returns the
+      // editor instance prepared for the currently-selected cell, and `beginEditing()` starts the
+      // edit (which for AutocompleteEditor / DropdownEditor renders the option list). This is the
+      // same code path Handsontable's own Enter-key and F2 handlers use internally.
       //
-      // Dispatched on a microtask so the cell has fully selected first; bubbles up so Handsontable's
-      // listener (attached on the table internals) processes it normally.
+      // History on this fix: earlier attempts used the private `_getEditorManager()` API, which
+      // was hidden in Handsontable v16 and silently returned undefined (so nothing opened, and
+      // only the library's NATIVE double-click ever triggered the editor — that's what produced
+      // the "every dropdown needs two taps" UX). We also tried dispatching a synthetic dblclick
+      // event, but Handsontable's listeners check `isTrusted` and ignore synthetic events.
       try {
         if (!hotInstance.isDestroyed && !hotInstance.isEditing?.()) {
+          // Defer one microtask so Handsontable finishes its own internal selection bookkeeping
+          // (selection range, focus moves, editor prepare) before we kick the editor open. Without
+          // this the editor was opening on the *previous* cell's prepared editor instance.
           queueMicrotask(() => {
             try {
               if (hotInstance.isDestroyed || hotInstance.isEditing?.()) return
-              const dblclick = new MouseEvent('dblclick', {
-                bubbles: true,
-                cancelable: true,
-                view: window,
-              })
-              cell.dispatchEvent(dblclick)
+              const editor = hotInstance.getActiveEditor?.()
+              if (editor && typeof editor.beginEditing === 'function') {
+                editor.beginEditing()
+              }
             } catch {
               // ignore — fall back to default double-click behavior
             }
