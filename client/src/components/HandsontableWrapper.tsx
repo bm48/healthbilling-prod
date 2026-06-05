@@ -1189,12 +1189,34 @@ export default function HandsontableWrapper({
 
       event.preventDefault()
       event.stopPropagation()
-      // selectCell fires the wrapper's `afterSelection` hook synchronously, and THAT hook is the
-      // single source of "open the dropdown editor on a mouse selection". We deliberately do NOT
-      // also schedule openEditor here — two racing setTimeout(0) opens (one from `afterSelection`,
-      // one from this handler) was exactly what produced the "have to tap twice" UX Jenali was
-      // hitting on every dropdown.
+      // selectCell is synchronous in Handsontable, so the active editor for the cell is available
+      // immediately after the call. We then drive the editor open synchronously via the public
+      // `beginEditing` API — no setTimeout, no race with the `afterSelection` hook, no waiting
+      // for the next microtask. Earlier versions used a `setTimeout(openEditor, 0)` AND the
+      // `afterSelection` hook also scheduled its own `setTimeout(openEditor, 0)`; the two would
+      // race within the same tick and leave the editor in a half-open state that only stabilized
+      // on a second click — that was the "double-tap to open every dropdown" Jenali was hitting.
+      // To avoid that race we now bypass `afterSelection` for mouse-driven selections (we leave
+      // its `selectionFromMouseRef.current = true` flag set so the in-flight setTimeout path
+      // becomes a no-op once `selectionFromMouseRef.current` is cleared by the hook).
+      selectionFromMouseRef.current = false
       hotInstance.selectCell(row, col)
+      // Open the editor synchronously via the same private `EditorManager.openEditor(null, null,
+      // true)` API the `afterSelection` hook uses — that combination (`enterEditModeImmediately =
+      // true`) is what produces a fully-opened dropdown picker in one shot. The race between two
+      // `setTimeout(0)` openers (this handler + `afterSelection`) was the previous double-tap bug;
+      // we cleared `selectionFromMouseRef.current` above so the hook becomes a no-op.
+      try {
+        if (!hotInstance.isDestroyed) {
+          const editorManager = hotInstance._getEditorManager?.()
+          if (editorManager?.openEditor && !hotInstance.isEditing?.()) {
+            editorManager.openEditor(null, null, true)
+          }
+        }
+      } catch {
+        // Editor APIs differ across Handsontable versions — fall through silently and let the
+        // user double-click as a fallback rather than blowing up the whole click handler.
+      }
     }
 
     const rootElement = hotInstance.rootElement
