@@ -2813,7 +2813,7 @@ export default function ProvidersTab({
                   <span className="font-medium text-red-500/90">Metrics:</span>
                   <span>Visits: <strong>{billingMetrics.visits}</strong></span>
                   <span>No Shows: <strong>{billingMetrics.noShows}</strong></span>
-                  <span>Cancellations/Reschedulings: <strong>{billingMetrics.cancellationsReschedulings}</strong></span>
+                  <span>Cancel/Resched: <strong>{billingMetrics.cancellationsReschedulings}</strong></span>
                   <span>Paid claims: <strong>{billingMetrics.paidClaims}</strong></span>
                   <span>Private Pay: <strong>{billingMetrics.privatePay}</strong></span>
                   <span>Secondary: <strong>{billingMetrics.secondary}</strong></span>
