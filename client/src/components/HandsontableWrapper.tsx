@@ -839,38 +839,18 @@ export default function HandsontableWrapper({
         afterSelection(r, c, r2, c2)
       }
       const hot = hotTableRef.current?.hotInstance as any
-      if (hot && selectionFromMouseRef.current && r === r2 && c === c2) {
-        selectionFromMouseRef.current = false
-        try {
-          const cellProperties = hot.getCellMeta(r, c)
-          // Same dropdown-detection rule as the mousedown handler — match on the rewritten
-          // `source` array as well as the original `selectOptions`, since the wrapper renames
-          // one to the other when processing column configs.
-          const optionArray =
-            (cellProperties as any)?.selectOptions ?? (cellProperties as any)?.source
-          const isDropdown =
-            cellProperties &&
-            (cellProperties.type === 'dropdown' ||
-              cellProperties.editor === 'select' ||
-              Array.isArray(optionArray))
-          if (isDropdown && !hot.isEditing()) {
-            // Open editor via EditorManager (same path as Enter key); editor isn't created until we trigger open
-            setTimeout(() => {
-              try {
-                if (hot.isDestroyed) return
-                const editorManager = hot._getEditorManager?.()
-                if (editorManager?.openEditor) {
-                  editorManager.openEditor(null, null, true)
-                }
-              } catch {
-                // ignore
-              }
-            }, 0)
-          }
-        } catch {
-          // ignore
-        }
-      }
+      // Mouse-driven open is handled entirely by the capture-phase `handleCellMouseDown`
+      // handler below: it sets `selectionFromMouseRef.current = false` BEFORE selectCell runs and
+      // dispatches a synthetic dblclick. So this hook only fires the consumer-supplied
+      // `afterSelection` and never tries to open the editor itself — previously it called the
+      // private `_getEditorManager().openEditor(...)` API which was removed in Handsontable v16
+      // (silently returning undefined and contributing to the "needs to double-tap every
+      // dropdown" bug).
+      void hot
+      void r2
+      void c2
+      void r
+      void c
     },
 
     afterDeselect() {
@@ -1220,21 +1200,34 @@ export default function HandsontableWrapper({
       // becomes a no-op once `selectionFromMouseRef.current` is cleared by the hook).
       selectionFromMouseRef.current = false
       hotInstance.selectCell(row, col)
-      // Open the editor synchronously via the same private `EditorManager.openEditor(null, null,
-      // true)` API the `afterSelection` hook uses — that combination (`enterEditModeImmediately =
-      // true`) is what produces a fully-opened dropdown picker in one shot. The race between two
-      // `setTimeout(0)` openers (this handler + `afterSelection`) was the previous double-tap bug;
-      // we cleared `selectionFromMouseRef.current` above so the hook becomes a no-op.
+      // Open the dropdown by triggering Handsontable's own double-click pipeline — that's the
+      // path the library already tests and ships, so we get exactly the same fully-opened picker
+      // a user would see if they had double-clicked. We avoid the private `_getEditorManager()`
+      // API entirely (it was hidden/removed in Handsontable v16, which means our previous
+      // `editorManager.openEditor(...)` silently returned `undefined` and never opened anything
+      // — that's the bug Jenali was hitting where every dropdown needed two taps).
+      //
+      // Dispatched on a microtask so the cell has fully selected first; bubbles up so Handsontable's
+      // listener (attached on the table internals) processes it normally.
       try {
-        if (!hotInstance.isDestroyed) {
-          const editorManager = hotInstance._getEditorManager?.()
-          if (editorManager?.openEditor && !hotInstance.isEditing?.()) {
-            editorManager.openEditor(null, null, true)
-          }
+        if (!hotInstance.isDestroyed && !hotInstance.isEditing?.()) {
+          queueMicrotask(() => {
+            try {
+              if (hotInstance.isDestroyed || hotInstance.isEditing?.()) return
+              const dblclick = new MouseEvent('dblclick', {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+              })
+              cell.dispatchEvent(dblclick)
+            } catch {
+              // ignore — fall back to default double-click behavior
+            }
+          })
         }
       } catch {
-        // Editor APIs differ across Handsontable versions — fall through silently and let the
-        // user double-click as a fallback rather than blowing up the whole click handler.
+        // Some editor classes may not expose `isEditing` — fall through silently and let the
+        // user double-click as a fallback.
       }
     }
 
