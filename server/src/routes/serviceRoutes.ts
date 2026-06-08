@@ -396,6 +396,10 @@ async function saveProviderSheetRowsCore(
     }
   }
 
+  // Deletes ONLY when caller explicitly enumerates them. The old "orphan sweep" (SELECT all rows for
+  // sheet, DELETE anything not in this batch) silently destroyed months of data when a stale or partial
+  // batch was POSTed (e.g., from pagehide replay or a save fired before initial hydration). Never sweep
+  // implicitly again — orphan rows are recoverable; deleted user input is not.
   if (knownDeletedIds !== undefined) {
     const toDelete = knownDeletedIds.filter((id) => isUuid(String(id)))
     if (toDelete.length > 0) {
@@ -403,16 +407,6 @@ async function saveProviderSheetRowsCore(
         `DELETE FROM public.provider_sheet_rows WHERE id = ANY($1::uuid[]) AND sheet_id = $2::uuid`,
         [toDelete, sheetId],
       )
-    }
-  } else {
-    const existing = await pool.query<{ id: string }>(
-      `SELECT id FROM public.provider_sheet_rows WHERE sheet_id = $1::uuid`,
-      [sheetId],
-    )
-    const existingIds = existing.rows.map((r) => r.id)
-    const idsToDelete = existingIds.filter((id) => !savedIds.includes(id))
-    if (idsToDelete.length > 0) {
-      await pool.query(`DELETE FROM public.provider_sheet_rows WHERE id = ANY($1::uuid[])`, [idsToDelete])
     }
   }
 

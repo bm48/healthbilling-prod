@@ -563,6 +563,10 @@ export default function ClinicDetail() {
   }, [providerSheetRowsByMonth])
   /** Month key for the provider-sheets fetch in progress; we only set loading false when this fetch completes so we don't reveal content from an outdated fetch. */
   const lastProviderSheetsFetchMonthKeyRef = useRef<string | null>(null)
+  /** Set of `${clinicId}|${providerId}|${monthKey}` tuples that have completed hydration from the DB.
+   * Saves are blocked until hydration is done — without this, a save fired while React state is still
+   * empty would persist an empty row set on top of months of real data. */
+  const hydratedSheetKeysRef = useRef<Set<string>>(new Set())
   /** (providerId, monthKey) for the single-provider sheet fetch; only set loading false when that fetch completes. */
   const lastProviderSheetDataFetchRef = useRef<{ providerId: string; monthKey: string } | null>(null)
   /** After the latest single-provider billing sheet fetch attempt finishes (success or error), matches "providerId|monthKey" so pageReady can pass even if rows were never written (stale fetch, missing provider). */
@@ -2388,6 +2392,12 @@ export default function ClinicDetail() {
           providersWithSheet: Object.keys(sheetsMap).length,
           batchedSheetIdsForRows: sheetIds.length,
         })
+        // Mark each (clinic, provider, month) tuple as hydrated so saveProviderSheetRows will accept writes.
+        for (const providerId of providerIds) {
+          if (sheetsMap[providerId]) {
+            hydratedSheetKeysRef.current.add(`${clinicId}|${providerId}|${monthKey}`)
+          }
+        }
         setProviderSheetsByMonth(prev => ({ ...prev, [monthKey]: sheetsMap }))
         setProviderSheetRowsByMonth(prev => ({ ...prev, [monthKey]: rowsMap }))
         lastProviderSheetContextRef.current = { clinicId, providerId: null, monthKey }
@@ -2420,6 +2430,16 @@ export default function ClinicDetail() {
 
     const sheet = providerSheets[providerId]
     if (!sheet) {
+      return
+    }
+
+    // Hydration guard: never persist rows for a (clinic, provider, month) tuple whose DB rows haven't
+    // been loaded yet. Without this, a save triggered during initial mount (debounced edit, mount-restore,
+    // patient-fill effect) would persist an empty/partial state. With the orphan sweep removed this is
+    // belt-and-suspenders, but it also avoids overwriting freshly-saved rows with stale local state.
+    const hydrationKey = `${clinicId}|${providerId}|${selectedMonthKey}`
+    if (!hydratedSheetKeysRef.current.has(hydrationKey)) {
+      providersDebugClinic('saveProviderSheetRows skipped: sheet not yet hydrated', { providerId, monthKey: selectedMonthKey })
       return
     }
 
@@ -2632,9 +2652,12 @@ export default function ClinicDetail() {
   // Do not depend on providerSheetRows — it changes every edit/save and would re-run restore (duplicate DB writes / races).
   }, [clinicId, selectedMonthKey, providerSheets, saveProviderSheetRows])
 
-  // On page unload (refresh/close), send pending provider sheet rows via keepalive fetch so the save can complete even after the page is gone
+  // On page unload (refresh/close), send pending provider sheet rows via keepalive fetch so the save can complete even after the page is gone.
+  // Only replays entries that (a) match the currently open clinic, (b) are <10 min old, and (c) have at least one meaningful row.
+  // Without these guards a stale backup from a prior session could POST partial rows against the wrong sheet context.
   useEffect(() => {
     const PREFIX = 'provider_sheet_pending_'
+    const PAGEHIDE_MAX_AGE_MS = 10 * 60 * 1000
     const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
     const savePendingUrl = apiBase ? `${apiBase}/api/save-provider-sheet-rows` : '/api/save-provider-sheet-rows'
 
@@ -2648,7 +2671,9 @@ export default function ClinicDetail() {
         }
       } catch (_) {}
       if (!token) return
+      if (!clinicId) return
 
+      const now = Date.now()
       const keysToSend: string[] = []
       try {
         for (let i = 0; i < localStorage.length; i++) {
@@ -2666,14 +2691,39 @@ export default function ClinicDetail() {
             clinicId?: string
             providerId?: string
             selectedMonthKey?: string
+            savedAt?: number
           }
-          const clinicId = data.clinicId
-          const providerId = data.providerId
-          const selectedMonthKey = data.selectedMonthKey
+          const entryClinicId = data.clinicId
+          const entryProviderId = data.providerId
+          const entryMonthKey = data.selectedMonthKey
           const rows = data.rows
-          if (!clinicId || !providerId || !selectedMonthKey || !Array.isArray(rows) || rows.length === 0) return
+          if (!entryClinicId || !entryProviderId || !entryMonthKey || !Array.isArray(rows) || rows.length === 0) return
+          // Only replay for the clinic currently open in this tab — never POST stale rows for another clinic.
+          if (entryClinicId !== clinicId) return
+          // Freshness: skip entries older than 10 min (same window as restore-on-mount).
+          if (!data.savedAt || now - data.savedAt > PAGEHIDE_MAX_AGE_MS) return
+          // Require at least one row that would actually be persisted server-side; the server filters out
+          // empty-* rows with no data, so a batch of only those would arrive as an empty saved set.
+          const hasMeaningfulRow = rows.some((r) => {
+            if (!r) return false
+            if (typeof r.id === 'string' && r.id.startsWith('empty-')) {
+              return !!(
+                r.patient_id || r.appointment_date || r.cpt_code || r.appointment_status ||
+                r.claim_status || r.submit_date || r.insurance_payment || r.payment_date ||
+                r.insurance_adjustment || r.collected_from_patient || r.patient_pay_status ||
+                r.ar_date || r.total !== null || r.notes
+              )
+            }
+            return true
+          })
+          if (!hasMeaningfulRow) return
 
-          const body = JSON.stringify({ clinicId, providerId, selectedMonthKey, rows })
+          const body = JSON.stringify({
+            clinicId: entryClinicId,
+            providerId: entryProviderId,
+            selectedMonthKey: entryMonthKey,
+            rows,
+          })
           fetch(savePendingUrl, {
             method: 'POST',
             body,
@@ -2689,7 +2739,7 @@ export default function ClinicDetail() {
 
     window.addEventListener('pagehide', onPageHide)
     return () => window.removeEventListener('pagehide', onPageHide)
-  }, [])
+  }, [clinicId])
 
   const handleUpdateProviderSheetRow = useCallback((providerId: string, rowId: string, field: string, value: any) => {
     setProviderSheetRowsByMonth(prev => {

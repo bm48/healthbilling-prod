@@ -441,7 +441,7 @@ export default function ProviderSheetPage() {
   }, [applyProviderRowDerivedFields])
 
   const saveProviderSheetRows = useCallback(
-    async (providerId: string, rowsToSave: SheetRow[]) => {
+    async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]) => {
       if (!currentSheet || !provider || provider.id !== providerId || !clinicId) return
       const month = selectedMonth.getMonth() + 1
       const year = selectedMonth.getFullYear()
@@ -494,7 +494,7 @@ export default function ProviderSheetPage() {
           rows: rowsToSave.length,
           processRows: rowsToProcess.length,
         })
-        const savedRows = await saveSheetRows(apiClient, currentSheet.id, rowsToProcess, undefined, clinicId && selectedMonthKey ? { clinicId, providerId, selectedMonthKey } : undefined)
+        const savedRows = await saveSheetRows(apiClient, currentSheet.id, rowsToProcess, knownDeletedIds, clinicId && selectedMonthKey ? { clinicId, providerId, selectedMonthKey } : undefined)
         console.log('[ProviderSheetPage:ProvidersSave] db save done', {
           providerId,
           processRows: rowsToProcess.length,
@@ -619,10 +619,16 @@ export default function ProviderSheetPage() {
 
   // On page unload (refresh/close), send any pending provider sheet rows via keepalive fetch so the save
   // can complete after the page is gone. Mirrors the handler on ClinicDetail for the super admin path.
+  // Only replays entries that match the currently open clinic+provider, are <10 min old, and contain at
+  // least one meaningful row — without these guards a stale localStorage backup from a prior session
+  // could POST partial rows against the wrong sheet context.
   useEffect(() => {
     const PREFIX = 'provider_sheet_pending_'
+    const PAGEHIDE_MAX_AGE_MS = 10 * 60 * 1000
     const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
     const savePendingUrl = apiBase ? `${apiBase}/api/save-provider-sheet-rows` : '/api/save-provider-sheet-rows'
+    const currentClinicId = clinicId
+    const currentProviderId = provider?.id
 
     const onPageHide = () => {
       let token: string | null = null
@@ -634,7 +640,9 @@ export default function ProviderSheetPage() {
         }
       } catch (_) {}
       if (!token) return
+      if (!currentClinicId || !currentProviderId) return
 
+      const now = Date.now()
       const keysToSend: string[] = []
       try {
         for (let i = 0; i < localStorage.length; i++) {
@@ -652,12 +660,29 @@ export default function ProviderSheetPage() {
             clinicId?: string
             providerId?: string
             selectedMonthKey?: string
+            savedAt?: number
           }
           const cid = data.clinicId
           const pid = data.providerId
           const mk = data.selectedMonthKey
           const rows = data.rows
           if (!cid || !pid || !mk || !Array.isArray(rows) || rows.length === 0) return
+          // Only replay for the clinic+provider currently open in this tab.
+          if (cid !== currentClinicId || pid !== currentProviderId) return
+          if (!data.savedAt || now - data.savedAt > PAGEHIDE_MAX_AGE_MS) return
+          const hasMeaningfulRow = rows.some((r) => {
+            if (!r) return false
+            if (typeof r.id === 'string' && r.id.startsWith('empty-')) {
+              return !!(
+                r.patient_id || r.appointment_date || r.cpt_code || r.appointment_status ||
+                r.claim_status || r.submit_date || r.insurance_payment || r.payment_date ||
+                r.insurance_adjustment || r.collected_from_patient || r.patient_pay_status ||
+                r.ar_date || r.total !== null || r.notes
+              )
+            }
+            return true
+          })
+          if (!hasMeaningfulRow) return
 
           const body = JSON.stringify({ clinicId: cid, providerId: pid, selectedMonthKey: mk, rows })
           fetch(savePendingUrl, {
@@ -675,7 +700,7 @@ export default function ProviderSheetPage() {
 
     window.addEventListener('pagehide', onPageHide)
     return () => window.removeEventListener('pagehide', onPageHide)
-  }, [])
+  }, [clinicId, provider?.id])
 
   const handleDeleteProviderSheetRow = useCallback(
     async (providerId: string, rowId: string) => {
@@ -685,7 +710,10 @@ export default function ProviderSheetPage() {
         rowsAfterDelete = rows.filter(r => r.id !== rowId)
         return { ...prev, [providerId]: rowsAfterDelete }
       })
-      await saveProviderSheetRows(providerId, rowsAfterDelete)
+      // Must pass the deleted UUID explicitly — orphan sweep is gone, so omitting this would leave
+      // the row in the DB and it would resurrect on next load.
+      const deletedDbIds = isUuid(rowId) ? [rowId] : []
+      await saveProviderSheetRows(providerId, rowsAfterDelete, deletedDbIds)
     },
     [saveProviderSheetRows]
   )

@@ -264,30 +264,15 @@ async function saveSheetRowsDirectDb(
     saved = []
   }
 
-  if (knownDeletedIds !== undefined) {
-    if (knownDeletedIds.length > 0) {
-      const { error: deleteError } = await db
-        .from('provider_sheet_rows')
-        .delete()
-        .in('id', knownDeletedIds)
-      if (deleteError) throw deleteError
-    }
-  } else {
-    const idsToKeep = new Set(saved.filter((r) => isUuid(r.id)).map((r) => r.id))
-    const { data: existing } = await db
+  // Deletes ONLY when caller explicitly enumerates them. The implicit orphan sweep (SELECT all, DELETE
+  // anything not in this batch) was the root cause of months-of-data being wiped when stale/partial
+  // batches were saved. Mirrors the server-side guard in serviceRoutes.ts.
+  if (knownDeletedIds !== undefined && knownDeletedIds.length > 0) {
+    const { error: deleteError } = await db
       .from('provider_sheet_rows')
-      .select('id')
-      .eq('sheet_id', sheetId)
-    const idsToDelete = ((existing ?? []) as { id: string }[])
-      .map((r) => r.id)
-      .filter((id) => !idsToKeep.has(id))
-    if (idsToDelete.length > 0) {
-      const { error: deleteError } = await db
-        .from('provider_sheet_rows')
-        .delete()
-        .in('id', idsToDelete)
-      if (deleteError) throw deleteError
-    }
+      .delete()
+      .in('id', knownDeletedIds)
+    if (deleteError) throw deleteError
   }
 
   return saved
@@ -343,9 +328,10 @@ export async function fetchSheetRowsForSheetIds(
  *
  * - One batch UPSERT covers all rows: existing rows (UUID ids) update via ON CONFLICT (id),
  *   new rows (non-UUID ids) insert with a server-generated UUID.
- * - Orphan deletion: if `knownDeletedIds` is supplied the caller tells us exactly which DB
- *   rows disappeared (no SELECT needed). When omitted we fall back to a SELECT + DELETE so
- *   the behaviour is identical to the old implementation for callers that don't track deletes.
+ * - Deletes ONLY rows the caller explicitly enumerates in `knownDeletedIds`. The previous
+ *   "orphan sweep" behaviour (DELETE everything not in the batch when knownDeletedIds was
+ *   omitted) was removed after it destroyed months of provider data when a stale or partial
+ *   batch was saved. Callers that legitimately delete rows MUST pass the deleted ids.
  *
  * Returns saved rows with real UUIDs in the same order as `rows`.
  */
