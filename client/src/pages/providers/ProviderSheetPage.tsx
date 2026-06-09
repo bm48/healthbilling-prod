@@ -702,17 +702,19 @@ export default function ProviderSheetPage() {
     return () => window.removeEventListener('pagehide', onPageHide)
   }, [clinicId, provider?.id])
 
-  const handleDeleteProviderSheetRow = useCallback(
-    async (providerId: string, rowId: string) => {
+  const handleDeleteProviderSheetRows = useCallback(
+    async (providerId: string, rowIds: string[]) => {
+      if (rowIds.length === 0) return
+      const idSet = new Set(rowIds)
       let rowsAfterDelete: SheetRow[] = []
       setProviderSheetRows(prev => {
         const rows = prev[providerId] || []
-        rowsAfterDelete = rows.filter(r => r.id !== rowId)
+        rowsAfterDelete = rows.filter(r => !idSet.has(r.id))
         return { ...prev, [providerId]: rowsAfterDelete }
       })
-      // Must pass the deleted UUID explicitly — orphan sweep is gone, so omitting this would leave
-      // the row in the DB and it would resurrect on next load.
-      const deletedDbIds = isUuid(rowId) ? [rowId] : []
+      // All deleted UUIDs in one batch — orphan sweep is gone, so omitting these would leave the rows
+      // in the DB and they would resurrect on next load.
+      const deletedDbIds = rowIds.filter((id) => isUuid(id))
       await saveProviderSheetRows(providerId, rowsAfterDelete, deletedDbIds)
     },
     [saveProviderSheetRows]
@@ -928,7 +930,7 @@ export default function ProviderSheetPage() {
           onUpdateProviderSheetRow={handleUpdateProviderSheetRow}
           onReplaceProviderSheetRows={handleReplaceProviderSheetRows}
           onSaveProviderSheetRowsDirect={saveProviderSheetRowsDirect}
-          onDeleteRow={handleDeleteProviderSheetRow}
+          onDeleteRows={handleDeleteProviderSheetRows}
           onAddRowBelow={handleAddProviderRowBelow}
           onAddRowAbove={handleAddProviderRowAbove}
           onSelectMonth={handleSelectMonth}

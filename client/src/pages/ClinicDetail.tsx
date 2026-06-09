@@ -2000,6 +2000,9 @@ export default function ClinicDetail() {
       if (!isStillCurrent()) return
       setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: allRows } }))
       setProviderSheetsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: sheet } }))
+      // Single-provider URL (/clinic/:id/providers/:pid) loads via this path, not fetchProviderSheets.
+      // Without marking hydration here, saveProviderSheetRows' hydration guard silently drops every save.
+      hydratedSheetKeysRef.current.add(`${clinicId}|${providerId}|${selectedMonthKey}`)
       lastProviderSheetContextRef.current = { clinicId: clinicId!, providerId, monthKey: selectedMonthKey }
     } catch (error) {
       console.error('Error fetching provider sheet data:', error)
@@ -2996,37 +2999,51 @@ export default function ClinicDetail() {
   }, [selectedMonthKey, applyProviderRowDerivedFields])
 
 
-  const handleDeleteProviderSheetRow = useCallback(async (providerId: string, rowId: string) => {
+  const handleDeleteProviderSheetRows = useCallback(async (providerId: string, rowIds: string[]) => {
+    if (rowIds.length === 0) return
+    const idSet = new Set(rowIds)
     const rows = providerSheetRows[providerId] || []
-    const deletedRow = rows.find(r => r.id === rowId)
-    const insertIndex = deletedRow ? rows.findIndex(r => r.id === rowId) : -1
-    // Only pass the deleted UUID to saveSheetRows so it can DELETE directly without a SELECT.
-    // Non-UUID ids (empty-*, new-*) were never persisted so need no DB delete.
-    const deletedDbIds = isUuid(rowId) ? [rowId] : []
+    // Snapshot deleted rows + their original indices so undo can reinsert at the right positions.
+    const deletedWithIndex = rows
+      .map((r, i) => ({ row: r, index: i }))
+      .filter((x) => idSet.has(x.row.id))
+    // Only persisted (UUID) ids need a DB delete; empty-/new- ids were never written.
+    const deletedDbIds = rowIds.filter((id) => isUuid(id))
     let rowsAfterDelete: SheetRow[] = []
-    // Context menu removes several rows quickly; without flushSync, React defers batched updates
-    // and `rowsAfterDelete` can still be empty when save runs, so only one row persists as deleted.
+    // flushSync ensures state is committed before save reads the filtered list — without it React
+    // could batch the update and the save would see the pre-delete list (multi-row deletes lost rows).
     flushSync(() => {
       setProviderSheetRowsByMonth(prev => {
         const current = prev[selectedMonthKey] ?? {}
         const list = current[providerId] || []
-        rowsAfterDelete = list.filter(r => r.id !== rowId)
+        rowsAfterDelete = list.filter(r => !idSet.has(r.id))
         return { ...prev, [selectedMonthKey]: { ...current, [providerId]: rowsAfterDelete } }
       })
     })
     await saveProviderSheetRows(providerId, rowsAfterDelete, deletedDbIds)
-    if (deletedRow != null && insertIndex >= 0) {
+    if (deletedWithIndex.length > 0) {
       lastUndoRef.current = () => {
         setProviderSheetRowsByMonth(prev => {
           const current = prev[selectedMonthKey] ?? {}
           const list = current[providerId] || []
-          const next = [...list.slice(0, insertIndex), deletedRow, ...list.slice(insertIndex)]
+          // Reinsert ascending so each insertIndex still refers to the position in the partially-rebuilt list.
+          const ascending = [...deletedWithIndex].sort((a, b) => a.index - b.index)
+          let next = [...list]
+          for (const { row, index } of ascending) {
+            const clamped = Math.min(index, next.length)
+            next = [...next.slice(0, clamped), row, ...next.slice(clamped)]
+          }
           saveProviderSheetRows(providerId, next).catch(err => console.error('Undo provider row: save failed', err))
           return { ...prev, [selectedMonthKey]: { ...current, [providerId]: next } }
         })
       }
     }
   }, [providerSheetRows, saveProviderSheetRows, selectedMonthKey])
+
+  // Thin singular wrapper for legacy callers (context menu) so we keep one delete code path.
+  const handleDeleteProviderSheetRow = useCallback((providerId: string, rowId: string) => {
+    return handleDeleteProviderSheetRows(providerId, [rowId])
+  }, [handleDeleteProviderSheetRows])
 
   const handleAddProviderRowAbove = useCallback((providerId: string, beforeRowId: string) => {
     const rows = providerSheetRows[providerId] || []
@@ -3613,7 +3630,7 @@ export default function ClinicDetail() {
               onUpdateProviderSheetRow={handleUpdateProviderSheetRow}
               onReplaceProviderSheetRows={handleReplaceProviderSheetRows}
               onSaveProviderSheetRowsDirect={saveProviderSheetRowsDirect}
-              onDeleteRow={handleDeleteProviderSheetRow}
+              onDeleteRows={handleDeleteProviderSheetRows}
               onAddRowBelow={handleAddProviderRowBelow}
               onAddRowAbove={handleAddProviderRowAbove}
               onSelectMonth={(date, payroll) => {

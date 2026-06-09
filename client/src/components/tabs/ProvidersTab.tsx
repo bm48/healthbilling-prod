@@ -242,7 +242,10 @@ interface ProvidersTabProps {
   /** Atomic row replacement path (preferred): avoids row-id race when empty- row becomes new- during multi-cell edit. */
   onReplaceProviderSheetRows?: (providerId: string, rows: SheetRow[]) => void
   onSaveProviderSheetRowsDirect: (providerId: string, rows: SheetRow[]) => Promise<void>
-  onDeleteRow?: (providerId: string, rowId: string) => void
+  /** Bulk-delete prop: one call removes N rows. The singular per-row delete pattern lost
+   * knownDeletedIds on the save-serialization queue, so multi-row deletes left orphan rows that
+   * resurrected on next load. Pass [rowId] for single-row deletes. */
+  onDeleteRows?: (providerId: string, rowIds: string[]) => Promise<void> | void
   onAddRowBelow?: (providerId: string, afterRowId: string) => void
   onAddRowAbove?: (providerId: string, beforeRowId: string) => void
   onPreviousMonth?: () => void
@@ -305,7 +308,7 @@ export default function ProvidersTab({
   onUpdateProviderSheetRow,
   onReplaceProviderSheetRows,
   onSaveProviderSheetRowsDirect,
-  onDeleteRow,
+  onDeleteRows,
   onAddRowBelow,
   onAddRowAbove,
   onSelectMonth,
@@ -341,6 +344,8 @@ export default function ProvidersTab({
   const [commentModal, setCommentModal] = useState<{ row: number; col: number; rowId: string; colKey: string } | null>(null)
   const [commentText, setCommentText] = useState('')
   const [commentModalLoading, setCommentModalLoading] = useState(false)
+  /** Set while a delete batch is in flight so the table can show a "Deleting…" indicator. */
+  const [isDeletingRows, setIsDeletingRows] = useState(false)
   /**
    * Tri-state condense:
    *  - 'full'      → all columns
@@ -2113,14 +2118,23 @@ export default function ProvidersTab({
       }
     })
 
-    // Remove rows whose patient_id was cleared and notify parent
+    // Remove rows whose patient_id was cleared and notify parent.
+    // Bulk-call so all knownDeletedIds reach the server in one save (the per-row loop used to lose
+    // them on the save-serialization queue, leaving deleted rows in the DB).
     const uniqueDeleteIds = [...new Set(deleteRowIds)]
-    if (uniqueDeleteIds.length > 0 && onDeleteRow) {
+    if (uniqueDeleteIds.length > 0 && onDeleteRows) {
+      const idsToNotify: string[] = []
       for (let i = updatedRows.length - 1; i >= 0; i--) {
         if (uniqueDeleteIds.includes(updatedRows[i].id)) {
-          onDeleteRow(activeProvider.id, updatedRows[i].id)
+          idsToNotify.push(updatedRows[i].id)
           updatedRows.splice(i, 1)
         }
+      }
+      if (idsToNotify.length > 0) {
+        setIsDeletingRows(true)
+        Promise.resolve(onDeleteRows(activeProvider.id, idsToNotify))
+          .catch((err) => console.error('Bulk delete (patient cleared) failed:', err))
+          .finally(() => setIsDeletingRows(false))
       }
     }
 
@@ -2283,7 +2297,7 @@ export default function ProvidersTab({
     if (hadPatientIdMerge || hadPatientIdClear || hadDateColumnEdit || hadTotalAutoUpdate || uniqueDeleteIds.length > 0) {
       setStructureVersion((v) => v + 1)
     }
-  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRow, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
+  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRows, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
 
   const createEmptySheetRowForSync = useCallback(
     (providerId: string, emptySuffix: number): SheetRow => ({
@@ -2398,16 +2412,24 @@ export default function ProvidersTab({
       const snap =
         ref?.providerId === activeProvider.id ? [...ref.rows] : [...activeProviderRows]
       const removed = physicalRows.map((i) => snap[i]).filter(Boolean)
-      removed.forEach((r) => {
-        if (r.id.startsWith('empty-') || r.id.startsWith('new-')) return
-        if (onDeleteRow) onDeleteRow(activeProvider.id, r.id)
-      })
+      // Collect all persisted ids into one batch — Handsontable's afterRemoveRow fires once for a
+      // multi-row delete, but the old per-row notifier serialized through the save queue and dropped
+      // knownDeletedIds on every save after the first, so only one row actually disappeared from the DB.
+      const idsToDelete = removed
+        .filter((r) => !r.id.startsWith('empty-') && !r.id.startsWith('new-'))
+        .map((r) => r.id)
+      if (idsToDelete.length > 0 && onDeleteRows) {
+        setIsDeletingRows(true)
+        Promise.resolve(onDeleteRows(activeProvider.id, idsToDelete))
+          .catch((err) => console.error('Bulk row delete failed:', err))
+          .finally(() => setIsDeletingRows(false))
+      }
       latestTableDataRef.current = null
       matrixSourceRevisionsRef.current = null
       latestProviderRowsRef.current = null
       setStructureVersion((v) => v + 1)
     },
-    [canEdit, activeProvider, activeProviderRows, onDeleteRow]
+    [canEdit, activeProvider, activeProviderRows, onDeleteRows]
   )
 
   const syncProvidersFromHotAfterUndoRedo = useCallback((direction?: 'undo' | 'redo') => {
@@ -2726,8 +2748,8 @@ export default function ProvidersTab({
 
       <div 
         ref={tableContainerRef}
-        className="table-container dark-theme" 
-        style={{ 
+        className="table-container dark-theme"
+        style={{
           maxHeight: isInSplitScreen ? undefined : '600px',
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
@@ -2736,9 +2758,47 @@ export default function ProvidersTab({
           borderRadius: '8px',
           width: '100%',
           maxWidth: '100%',
-          backgroundColor: '#d2dbe5'
+          backgroundColor: '#d2dbe5',
+          position: 'relative',
         }}
       >
+        {isDeletingRows && (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              position: 'absolute',
+              top: 8,
+              right: 8,
+              zIndex: 30,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 12px',
+              borderRadius: 6,
+              backgroundColor: 'rgba(15, 23, 42, 0.85)',
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 500,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                width: 14,
+                height: 14,
+                border: '2px solid rgba(255,255,255,0.3)',
+                borderTopColor: '#fff',
+                borderRadius: '50%',
+                animation: 'spin 0.8s linear infinite',
+                display: 'inline-block',
+              }}
+            />
+            Deleting row{`(s)`}…
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          </div>
+        )}
         {activeProvider && (
           <HandsontableWrapper
             key={`providers-${activeProvider?.id ?? ''}`}
