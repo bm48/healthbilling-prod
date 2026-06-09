@@ -63,6 +63,19 @@ export default function ProviderSheetPage() {
     resolvers: Array<{ resolve: () => void; reject: (err: unknown) => void }>
   }
   const pendingProviderSheetSaveRef = useRef<Record<string, PendingProviderSheetSave>>({})
+  /** Deferred save when guards fail (currentSheet=null during refetch, or month mismatch). The previous
+   * behavior was a silent `return` which dropped any save triggered during the brief refetch window —
+   * the provider would type a cell, click away within 400ms, the debounced save would fire while
+   * `setCurrentSheet(null)` was still in effect, and the data would never reach the server. We hold
+   * the latest request here and let a useEffect retry once `currentSheet` / `provider` are ready. */
+  type DeferredProviderSheetSave = {
+    providerId: string
+    rowsToSave: SheetRow[]
+    knownDeletedIds?: string[]
+    targetMonth: number
+    targetYear: number
+  }
+  const deferredSaveRef = useRef<DeferredProviderSheetSave | null>(null)
   const providerSheetFetchVersionRef = useRef(0)
   const [currentSheet, setCurrentSheet] = useState<ProviderSheet | null>(null)
   const [isLockProviders, setIsLockProviders] = useState<IsLockProviders | null>(null)
@@ -449,10 +462,21 @@ export default function ProviderSheetPage() {
 
   const saveProviderSheetRows = useCallback(
     async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]) => {
-      if (!currentSheet || !provider || provider.id !== providerId || !clinicId) return
-      const month = selectedMonth.getMonth() + 1
-      const year = selectedMonth.getFullYear()
-      if (currentSheet.month !== month || currentSheet.year !== year) return
+      const targetMonth = selectedMonth.getMonth() + 1
+      const targetYear = selectedMonth.getFullYear()
+      // If guards fail, defer the save instead of dropping it. The drain-effect below replays it as
+      // soon as currentSheet/provider/clinicId line up. The OLD code silently returned here, which
+      // meant any save triggered during the setCurrentSheet(null)→fetch window was permanently lost.
+      if (!provider || provider.id !== providerId || !clinicId) {
+        if (clinicId && providerId) {
+          deferredSaveRef.current = { providerId, rowsToSave, knownDeletedIds, targetMonth, targetYear }
+        }
+        return
+      }
+      if (!currentSheet || currentSheet.month !== targetMonth || currentSheet.year !== targetYear) {
+        deferredSaveRef.current = { providerId, rowsToSave, knownDeletedIds, targetMonth, targetYear }
+        return
+      }
       if (saveProviderSheetInProgressRef.current.has(providerId)) {
         const incomingDeletes = (knownDeletedIds ?? []).filter((id) => isUuid(id))
         console.log('[ProviderSheetPage:ProvidersSave] queued while in-progress', {
@@ -617,6 +641,28 @@ export default function ProviderSheetPage() {
     },
     [saveProviderSheetRows]
   )
+
+  // Drain a deferred save once the guards line up. Without this, a save scheduled during the brief
+  // setCurrentSheet(null)→fetch window (e.g. when the user types and clicks away around the same time
+  // a month-fetch is running) would have been silently dropped — exactly the "still missing most current
+  // data" report from the provider users. By the time this effect runs, the in-flight fetch has set
+  // currentSheet and selectedMonth, so the deferred save can replay against the right sheet.
+  useEffect(() => {
+    const deferred = deferredSaveRef.current
+    if (!deferred) return
+    if (!provider || !clinicId || !currentSheet) return
+    if (provider.id !== deferred.providerId) return
+    if (currentSheet.month !== deferred.targetMonth || currentSheet.year !== deferred.targetYear) return
+    deferredSaveRef.current = null
+    console.log('[ProviderSheetPage] draining deferred save', {
+      providerId: deferred.providerId,
+      rows: deferred.rowsToSave.length,
+    })
+    // Intentionally NOT restoring deferredSaveRef on error — a persistent error would otherwise loop.
+    saveProviderSheetRows(deferred.providerId, deferred.rowsToSave, deferred.knownDeletedIds).catch((err) => {
+      console.error('[ProviderSheetPage] deferred save failed:', err)
+    })
+  }, [currentSheet, provider, clinicId, saveProviderSheetRows])
 
   // Restore provider sheet rows from localStorage after refresh: ProvidersTab.unmount writes a backup
   // when a save is in flight, but the browser may abort the actual fetch. On next mount we replay it.
