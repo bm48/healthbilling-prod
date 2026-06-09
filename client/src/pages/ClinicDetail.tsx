@@ -3492,8 +3492,9 @@ export default function ClinicDetail() {
               }
               const header = 'Description,Amount,Notes'
               const dataRows = table.slice(1).map((r) => [escapeCsv(r[0]), escapeCsv(r[1]), escapeCsv(r[2])].join(','))
-              const csv = header + '\n' + dataRows.join('\n')
-              return new Blob([csv], { type: 'text/csv' })
+              // Prefix BOM (﻿) so Excel always opens as UTF-8 and never falls into SYLK-detection.
+              const csv = '﻿' + header + '\n' + dataRows.join('\n')
+              return new Blob([csv], { type: 'text/csv;charset=utf-8' })
             }}
             onSelectVersion={async (version) => {
               const requestedId = version.id

@@ -23,7 +23,9 @@ function toCSV(rows: Record<string, unknown>[]): string {
   const keys = Object.keys(rows[0])
   const header = keys.map(escape).join(',')
   const dataLines = rows.map(row => keys.map(k => escape(row[k])).join(','))
-  return [header, ...dataLines].join('\r\n')
+  // Prefix UTF-8 BOM (﻿) so Excel never falls into legacy SYLK detection (any CSV whose first
+  // two bytes are "ID" gets rejected with "the file is corrupted") and reads as UTF-8 for special chars.
+  return '﻿' + [header, ...dataLines].join('\r\n')
 }
 
 const PATIENT_EXCLUDED_EXPORT_KEYS = new Set(['id', 'clinic_id', 'patient_id', 'created_at', 'updated_at'])

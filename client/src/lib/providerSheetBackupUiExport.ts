@@ -220,7 +220,10 @@ function formatCellForCsv(c: string | number | boolean): string {
   return escapeCsvCell(c)
 }
 
-/** CSV with header row; trailing blank rows (padding) trimmed. */
+/** CSV with header row; trailing blank rows (padding) trimmed.
+ *  Prefixes a UTF-8 BOM (﻿) because Excel treats any text file whose first two characters are
+ *  "ID" as legacy SYLK format and refuses to open it ("The file is corrupted and cannot be opened.").
+ *  The BOM tells Excel it's UTF-8 text instead and also fixes mojibake for non-ASCII characters. */
 export function sheetRowsToUiCsv(rows: SheetRow[], patients: Patient[], layout: ProviderSheetUiExportLayout): string {
   const matrix = sheetRowsToUiMatrix(rows, patients, layout)
   while (matrix.length > 0 && isRowAllBlankForTrim(matrix[matrix.length - 1]!)) {
@@ -234,5 +237,5 @@ export function sheetRowsToUiCsv(rows: SheetRow[], patients: Patient[], layout: 
   for (const row of trimmedMatrix) {
     lines.push(row.map(formatCellForCsv).join(','))
   }
-  return lines.join('\n')
+  return '﻿' + lines.join('\n')
 }

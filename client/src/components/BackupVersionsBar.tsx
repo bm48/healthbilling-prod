@@ -163,7 +163,12 @@ export default function BackupVersionsBar(
       if (getDownloadFilename) {
         const res = await fetch(url)
         if (!res.ok) throw new Error('Download failed')
-        const blob = await res.blob()
+        // Read as text so we can guarantee a UTF-8 BOM in the saved file. Older cron backups on disk
+        // start with "ID," which Excel misidentifies as legacy SYLK ("file is corrupted"); injecting
+        // a BOM at download time fixes those without rewriting the stored file.
+        const rawText = await res.text()
+        const withBom = rawText.charCodeAt(0) === 0xFEFF ? rawText : '﻿' + rawText
+        const blob = new Blob([withBom], { type: 'text/csv;charset=utf-8' })
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
         a.download = getDownloadFilename(v, displayVersionNumber)

@@ -543,7 +543,9 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         escapeCsv((t.followup_notes && t.followup_notes !== 'null') ? t.followup_notes : ''),
       ].join(',')),
     ]
-    const csv = csvRows.join('\r\n')
+    // Prefix BOM (﻿) so Excel opens as UTF-8 and never falls into legacy SYLK detection
+    // (which fires when the first two bytes are exactly "ID" and pops up "file is corrupted").
+    const csv = '﻿' + csvRows.join('\r\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

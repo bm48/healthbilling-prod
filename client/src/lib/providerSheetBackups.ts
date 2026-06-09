@@ -177,7 +177,10 @@ export async function fetchBackupCsvAsSheetRows(
  * Parse CSV string (from backup) into SheetRow[]. Accepts both UI headers (new backups) and DB column names (old backups).
  */
 export function parseCsvToSheetRows(csv: string): SheetRow[] {
-  const lines = csv.split(/\r?\n/).filter((line) => line.length > 0)
+  // Strip a leading UTF-8 BOM (added by both cron writers and UI exporters so Excel skips legacy
+  // SYLK detection). Without this the first header would become "﻿ID" and miss the lookup.
+  const cleaned = csv.charCodeAt(0) === 0xFEFF ? csv.slice(1) : csv
+  const lines = cleaned.split(/\r?\n/).filter((line) => line.length > 0)
   if (lines.length < 2) return []
   const headerRaw = parseCsvLine(lines[0])
   const headerToDb = headerRaw.map((h) => UI_HEADER_TO_DB[h.trim().toLowerCase()] ?? h.trim())

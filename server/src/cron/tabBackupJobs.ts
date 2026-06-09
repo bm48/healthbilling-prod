@@ -145,10 +145,15 @@ function arRowToDisplayValues(r: Record<string, unknown>): string[] {
   ]
 }
 
+/** UTF-8 BOM (U+FEFF). Prepended to every CSV we write so Excel never falls into legacy SYLK
+ *  detection (any text file whose first two bytes are "ID" pops up "the file is corrupted") and
+ *  parses special characters as UTF-8. */
+const UTF8_BOM = '﻿'
+
 function arRowsToCsv(rows: Record<string, unknown>[]): string {
   const header = AR_DISPLAY_HEADERS.map((c) => escapeCsvCell(c)).join(',')
   const body = rows.map((r) => arRowToDisplayValues(r).join(',')).join('\n')
-  return `${header}\n${body}`
+  return `${UTF8_BOM}${header}\n${body}`
 }
 
 const PATIENT_DISPLAY_HEADERS = ['Patient ID', 'Patient First', 'Patient Last', 'Insurance', 'Copay', 'Coinsurance']
@@ -181,7 +186,7 @@ function patientRowToDisplayValues(r: Record<string, unknown>): string[] {
 function patientRowsToCsv(rows: Record<string, unknown>[]): string {
   const header = PATIENT_DISPLAY_HEADERS.map((c) => escapeCsvCell(c)).join(',')
   const body = rows.map((r) => patientRowToDisplayValues(r).join(',')).join('\n')
-  return `${header}\n${body}`
+  return `${UTF8_BOM}${header}\n${body}`
 }
 
 const PAY_COLS = ['clinic_id', 'provider_id', 'year', 'month', 'payroll', 'pay_date', 'pay_period', 'header_notes', 'row_index', 'description', 'amount', 'notes']
@@ -218,7 +223,7 @@ function sheetRowsToCsv(rows: Record<string, unknown>[]): string {
       CSV_DB_COLUMNS.map((col) => escapeCsvCell(formatSheetCsvValue(col, row[col]))).join(','),
     )
     .join('\n')
-  return `${header}\n${body}`
+  return `${UTF8_BOM}${header}\n${body}`
 }
 
 async function writeBucketCsv(bucket: string, objectPath: string, csv: string): Promise<void> {
@@ -386,7 +391,7 @@ export async function runBackupProviderPay(pool: Pool): Promise<TabBackupJobResu
     const filePath = `provider-pay/${clinicId}/v${nextVersion}.csv`
     const headerLine = PAY_COLS.map((c) => escapeCsvCell(c)).join(',')
     const bodyLines = flatRows.map((r) => PAY_COLS.map((c) => escapeCsvCell(r[c] ?? null)).join(','))
-    const csv = `${headerLine}\n${bodyLines.join('\n')}`
+    const csv = `${UTF8_BOM}${headerLine}\n${bodyLines.join('\n')}`
 
     try {
       await writeBucketCsv(TAB_BUCKET, filePath, csv)

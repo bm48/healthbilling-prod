@@ -93,7 +93,10 @@ function parseCsvLine(line: string): string[] {
 }
 
 function parseCsv(text: string): string[][] {
-  return text.split(/\r?\n/).filter((line) => line.length > 0).map(parseCsvLine)
+  // Strip a leading UTF-8 BOM if present. Both the cron CSV writers and UI exporters prepend one so
+  // Excel skips legacy SYLK detection (any CSV starting with "ID" is otherwise flagged as corrupt).
+  const cleaned = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text
+  return cleaned.split(/\r?\n/).filter((line) => line.length > 0).map(parseCsvLine)
 }
 
 /** Parse amount from CSV (plain number or legacy). */
