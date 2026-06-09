@@ -55,7 +55,14 @@ export default function ProviderSheetPage() {
   }, [monthStorageKey, selectedMonth])
   const providerSheetRowsRef = useRef<Record<string, SheetRow[]>>({})
   const saveProviderSheetInProgressRef = useRef<Set<string>>(new Set())
-  const pendingProviderSheetSaveRef = useRef<Record<string, SheetRow[]>>({})
+  /** Pending queued save (see ClinicDetail for full notes). Mirrors that shape so deletes that race
+   * against in-flight saves don't lose their knownDeletedIds. */
+  type PendingProviderSheetSave = {
+    rows: SheetRow[]
+    deletedDbIds: string[]
+    resolvers: Array<{ resolve: () => void; reject: (err: unknown) => void }>
+  }
+  const pendingProviderSheetSaveRef = useRef<Record<string, PendingProviderSheetSave>>({})
   const providerSheetFetchVersionRef = useRef(0)
   const [currentSheet, setCurrentSheet] = useState<ProviderSheet | null>(null)
   const [isLockProviders, setIsLockProviders] = useState<IsLockProviders | null>(null)
@@ -447,12 +454,34 @@ export default function ProviderSheetPage() {
       const year = selectedMonth.getFullYear()
       if (currentSheet.month !== month || currentSheet.year !== year) return
       if (saveProviderSheetInProgressRef.current.has(providerId)) {
-        pendingProviderSheetSaveRef.current[providerId] = rowsToSave
+        const incomingDeletes = (knownDeletedIds ?? []).filter((id) => isUuid(id))
         console.log('[ProviderSheetPage:ProvidersSave] queued while in-progress', {
           providerId,
           rows: rowsToSave.length,
+          deletes: incomingDeletes.length,
         })
-        return
+        return new Promise<void>((resolve, reject) => {
+          const existing = pendingProviderSheetSaveRef.current[providerId]
+          if (existing) {
+            existing.rows = rowsToSave
+            if (incomingDeletes.length > 0) {
+              const seen = new Set(existing.deletedDbIds)
+              for (const id of incomingDeletes) {
+                if (!seen.has(id)) {
+                  existing.deletedDbIds.push(id)
+                  seen.add(id)
+                }
+              }
+            }
+            existing.resolvers.push({ resolve, reject })
+          } else {
+            pendingProviderSheetSaveRef.current[providerId] = {
+              rows: rowsToSave,
+              deletedDbIds: incomingDeletes,
+              resolvers: [{ resolve, reject }],
+            }
+          }
+        })
       }
       saveProviderSheetInProgressRef.current.add(providerId)
 
@@ -552,9 +581,9 @@ export default function ProviderSheetPage() {
         if (pending) {
           delete pendingProviderSheetSaveRef.current[providerId]
           const idMap = savedTempIdToUuidMap
-          let toSave = pending
+          let toSave = pending.rows
           if (idMap && idMap.size > 0) {
-            toSave = pending.map((row) => {
+            toSave = pending.rows.map((row) => {
               if (!isUuid(row.id)) {
                 const newId = idMap.get(row.id)
                 if (newId) {
@@ -564,13 +593,18 @@ export default function ProviderSheetPage() {
               return row
             })
           }
+          const pendingDeletes = pending.deletedDbIds.length > 0 ? pending.deletedDbIds : undefined
           console.log('[ProviderSheetPage:ProvidersSave] replay pending', {
             providerId,
             rows: toSave.length,
+            deletes: pending.deletedDbIds.length,
           })
-          saveProviderSheetRows(providerId, toSave).catch((err) =>
-            console.error('[ProviderSheetPage] pending save retry failed:', err)
-          )
+          saveProviderSheetRows(providerId, toSave, pendingDeletes)
+            .then(() => pending.resolvers.forEach((r) => r.resolve()))
+            .catch((err) => {
+              console.error('[ProviderSheetPage] pending save retry failed:', err)
+              pending.resolvers.forEach((r) => r.reject(err))
+            })
         }
       }
     },

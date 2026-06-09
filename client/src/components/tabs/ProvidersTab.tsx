@@ -346,6 +346,23 @@ export default function ProvidersTab({
   const [commentModalLoading, setCommentModalLoading] = useState(false)
   /** Set while a delete batch is in flight so the table can show a "Deleting…" indicator. */
   const [isDeletingRows, setIsDeletingRows] = useState(false)
+  /** Minimum visible duration (ms) for the deleting toast so it doesn't flash off on fast local saves. */
+  const DELETE_TOAST_MIN_MS = 700
+  const runWithDeleteToast = useCallback((promiseOrValue: Promise<unknown> | void) => {
+    setIsDeletingRows(true)
+    const startedAt = Date.now()
+    const p = Promise.resolve(promiseOrValue)
+    p.catch((err) => console.error('Bulk row delete failed:', err))
+      .finally(() => {
+        const elapsed = Date.now() - startedAt
+        const remaining = Math.max(0, DELETE_TOAST_MIN_MS - elapsed)
+        if (remaining === 0) {
+          setIsDeletingRows(false)
+        } else {
+          setTimeout(() => setIsDeletingRows(false), remaining)
+        }
+      })
+  }, [])
   /**
    * Tri-state condense:
    *  - 'full'      → all columns
@@ -2131,10 +2148,7 @@ export default function ProvidersTab({
         }
       }
       if (idsToNotify.length > 0) {
-        setIsDeletingRows(true)
-        Promise.resolve(onDeleteRows(activeProvider.id, idsToNotify))
-          .catch((err) => console.error('Bulk delete (patient cleared) failed:', err))
-          .finally(() => setIsDeletingRows(false))
+        runWithDeleteToast(onDeleteRows(activeProvider.id, idsToNotify))
       }
     }
 
@@ -2297,7 +2311,7 @@ export default function ProvidersTab({
     if (hadPatientIdMerge || hadPatientIdClear || hadDateColumnEdit || hadTotalAutoUpdate || uniqueDeleteIds.length > 0) {
       setStructureVersion((v) => v + 1)
     }
-  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRows, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
+  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRows, runWithDeleteToast, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
 
   const createEmptySheetRowForSync = useCallback(
     (providerId: string, emptySuffix: number): SheetRow => ({
@@ -2419,17 +2433,14 @@ export default function ProvidersTab({
         .filter((r) => !r.id.startsWith('empty-') && !r.id.startsWith('new-'))
         .map((r) => r.id)
       if (idsToDelete.length > 0 && onDeleteRows) {
-        setIsDeletingRows(true)
-        Promise.resolve(onDeleteRows(activeProvider.id, idsToDelete))
-          .catch((err) => console.error('Bulk row delete failed:', err))
-          .finally(() => setIsDeletingRows(false))
+        runWithDeleteToast(onDeleteRows(activeProvider.id, idsToDelete))
       }
       latestTableDataRef.current = null
       matrixSourceRevisionsRef.current = null
       latestProviderRowsRef.current = null
       setStructureVersion((v) => v + 1)
     },
-    [canEdit, activeProvider, activeProviderRows, onDeleteRows]
+    [canEdit, activeProvider, activeProviderRows, onDeleteRows, runWithDeleteToast]
   )
 
   const syncProvidersFromHotAfterUndoRedo = useCallback((direction?: 'undo' | 'redo') => {
@@ -2702,6 +2713,49 @@ export default function ProvidersTab({
 
   return (
     <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
+      {/* Top-of-viewport toast for row deletion. Portaled to body so it escapes the table's stacking
+        context (Handsontable headers use high z-indexes that occluded the in-table indicator). */}
+      {isDeletingRows && createPortal(
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'fixed',
+            top: 20,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 99999,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '12px 20px',
+            borderRadius: 8,
+            backgroundColor: 'rgba(15, 23, 42, 0.95)',
+            color: '#fff',
+            fontSize: 15,
+            fontWeight: 600,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            pointerEvents: 'none',
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              width: 18,
+              height: 18,
+              border: '3px solid rgba(255,255,255,0.25)',
+              borderTopColor: '#fff',
+              borderRadius: '50%',
+              animation: 'providers-tab-spin 0.7s linear infinite',
+              display: 'inline-block',
+            }}
+          />
+          Deleting row(s)…
+          <style>{`@keyframes providers-tab-spin { to { transform: rotate(360deg); } }`}</style>
+        </div>,
+        document.body,
+      )}
       {/* <h1 className="text-3xl font-bold text-white">{activeProvider?.first_name} {activeProvider?.last_name}</h1> */}
       <MonthYearTabs
         selectedMonth={selectedMonth}
@@ -2759,46 +2813,8 @@ export default function ProvidersTab({
           width: '100%',
           maxWidth: '100%',
           backgroundColor: '#d2dbe5',
-          position: 'relative',
         }}
       >
-        {isDeletingRows && (
-          <div
-            role="status"
-            aria-live="polite"
-            style={{
-              position: 'absolute',
-              top: 8,
-              right: 8,
-              zIndex: 30,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '6px 12px',
-              borderRadius: 6,
-              backgroundColor: 'rgba(15, 23, 42, 0.85)',
-              color: '#fff',
-              fontSize: 13,
-              fontWeight: 500,
-              boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
-            }}
-          >
-            <span
-              aria-hidden="true"
-              style={{
-                width: 14,
-                height: 14,
-                border: '2px solid rgba(255,255,255,0.3)',
-                borderTopColor: '#fff',
-                borderRadius: '50%',
-                animation: 'spin 0.8s linear infinite',
-                display: 'inline-block',
-              }}
-            />
-            Deleting row{`(s)`}…
-            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-          </div>
-        )}
         {activeProvider && (
           <HandsontableWrapper
             key={`providers-${activeProvider?.id ?? ''}`}

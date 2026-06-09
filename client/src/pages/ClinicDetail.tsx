@@ -337,7 +337,19 @@ export default function ClinicDetail() {
   const providerRowsRef = useRef<ProviderCptRowSnapshot[]>([])
   /** Serialize provider sheet saves per provider so an older save (e.g. 59 rows) cannot overwrite a newer one (67 rows) in the DB. */
   const saveProviderSheetInProgressRef = useRef<Set<string>>(new Set())
-  const pendingProviderSheetSaveRef = useRef<Record<string, SheetRow[]>>({})
+  /** Pending queued save when one is already in flight.
+   *  - `rows` is the LATEST snapshot to persist (later calls overwrite earlier rows).
+   *  - `deletedDbIds` accumulates UUIDs from every queued call so a delete that happens while a save
+   *    is in flight is not lost. Earlier code only stored `rows` and dropped knownDeletedIds, which
+   *    meant the row visually disappeared but never left the DB and came back on refresh.
+   *  - `resolvers` holds the resolve/reject pairs of every queued caller so the returned Promise
+   *    actually resolves when the replayed save completes (toast + awaits stay accurate). */
+  type PendingProviderSheetSave = {
+    rows: SheetRow[]
+    deletedDbIds: string[]
+    resolvers: Array<{ resolve: () => void; reject: (err: unknown) => void }>
+  }
+  const pendingProviderSheetSaveRef = useRef<Record<string, PendingProviderSheetSave>>({})
   /** When viewing a backup version, override rows for the current provider (super_admin only). */
   const [backupOverrideRows, setBackupOverrideRows] = useState<SheetRow[] | null>(null)
   const [selectedBackupVersion, setSelectedBackupVersion] = useState<BackupVersionMeta | null>(null)
@@ -2460,10 +2472,33 @@ export default function ClinicDetail() {
       return true
     })
 
-    // Serialize: only one save per provider at a time so an older save cannot overwrite a newer one in the DB
+    // Serialize: only one save per provider at a time so an older save cannot overwrite a newer one
+    // in the DB. When busy, queue the call (accumulating knownDeletedIds across multiple queued saves
+    // so deletes never get dropped) and return a promise that resolves when the eventual save completes.
     if (saveProviderSheetInProgressRef.current.has(providerId)) {
-      pendingProviderSheetSaveRef.current[providerId] = rowsToSave
-      return
+      const incomingDeletes = (knownDeletedIds ?? []).filter((id) => isUuid(id))
+      return new Promise<void>((resolve, reject) => {
+        const existing = pendingProviderSheetSaveRef.current[providerId]
+        if (existing) {
+          existing.rows = rowsToSave
+          if (incomingDeletes.length > 0) {
+            const seen = new Set(existing.deletedDbIds)
+            for (const id of incomingDeletes) {
+              if (!seen.has(id)) {
+                existing.deletedDbIds.push(id)
+                seen.add(id)
+              }
+            }
+          }
+          existing.resolvers.push({ resolve, reject })
+        } else {
+          pendingProviderSheetSaveRef.current[providerId] = {
+            rows: rowsToSave,
+            deletedDbIds: incomingDeletes,
+            resolvers: [{ resolve, reject }],
+          }
+        }
+      })
     }
     saveProviderSheetInProgressRef.current.add(providerId)
 
@@ -2603,9 +2638,9 @@ export default function ClinicDetail() {
       if (pending) {
         delete pendingProviderSheetSaveRef.current[providerId]
         const idMap = savedTempIdToUuidMap
-        let toSave = pending
+        let toSave = pending.rows
         if (idMap && idMap.size > 0) {
-          toSave = pending.map((row) => {
+          toSave = pending.rows.map((row) => {
             if (!isUuid(row.id)) {
               const newId = idMap.get(row.id)
               if (newId) {
@@ -2615,7 +2650,11 @@ export default function ClinicDetail() {
             return row
           })
         }
-        void saveProviderSheetRows(providerId, toSave)
+        const pendingDeletes = pending.deletedDbIds.length > 0 ? pending.deletedDbIds : undefined
+        // Forward queued knownDeletedIds + settle the promises that every queued caller awaits.
+        saveProviderSheetRows(providerId, toSave, pendingDeletes)
+          .then(() => pending.resolvers.forEach((r) => r.resolve()))
+          .catch((err) => pending.resolvers.forEach((r) => r.reject(err)))
       }
     }
   }, [clinicId, userProfile, providerSheets, selectedMonthKey, fetchPatients])
