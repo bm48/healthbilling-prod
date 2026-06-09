@@ -2289,6 +2289,30 @@ export default function ProvidersTab({
       source,
       changedCells: changes.length,
     })
+    // Immediately back up to localStorage so a hard browser close (no React unmount, no time for the
+    // debounced server save) is still recoverable. The pagehide handler in ClinicDetail / ProviderSheetPage
+    // replays this key after a freshness + clinic-match check. Without this, every typed cell sat
+    // in memory only for the 400ms debounce window — a real client lost work this way.
+    try {
+      const cid = clinicIdForPendingRef.current
+      const mk = selectedMonthKeyForPendingRef.current
+      if (cid && mk) {
+        const payload = JSON.stringify({
+          rows: updatedRows,
+          savedAt: Date.now(),
+          clinicId: cid,
+          providerId: activeProvider.id,
+          selectedMonthKey: mk,
+        })
+        if (payload.length <= PENDING_ROWS_MAX_SIZE) {
+          const key = `${PENDING_ROWS_KEY_PREFIX}${cid}_${activeProvider.id}_${mk}`
+          localStorage.setItem(key, payload)
+        }
+      }
+    } catch (e) {
+      // Quota exceeded / private mode: swallow; the debounced server save is still the primary persistence.
+      console.warn('[ProvidersTab] per-edit localStorage backup failed:', e)
+    }
     if (saveProviderSheetTimeoutRef.current) clearTimeout(saveProviderSheetTimeoutRef.current)
     // 400ms: patient_id merge from DB runs at 350ms; saving sooner could persist rows before demographics are merged on the row object.
     saveProviderSheetTimeoutRef.current = setTimeout(() => {

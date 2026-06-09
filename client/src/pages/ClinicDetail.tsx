@@ -2779,8 +2779,18 @@ export default function ClinicDetail() {
       })
     }
 
+    // visibilitychange fires when the user switches tabs, minimizes the window, or the OS hides the
+    // page. Catches cases where the user moves away mid-edit without actually closing the tab —
+    // pagehide doesn't fire then but the unsaved data could still be lost if the browser is killed.
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') onPageHide()
+    }
     window.addEventListener('pagehide', onPageHide)
-    return () => window.removeEventListener('pagehide', onPageHide)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('pagehide', onPageHide)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
   }, [clinicId])
 
   const handleUpdateProviderSheetRow = useCallback((providerId: string, rowId: string, field: string, value: any) => {

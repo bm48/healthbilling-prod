@@ -732,8 +732,17 @@ export default function ProviderSheetPage() {
       })
     }
 
+    // visibilitychange catches tab-switch / window-minimize where pagehide doesn't fire — flushes the
+    // per-edit localStorage backup to the server so the data is durable before any potential close.
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') onPageHide()
+    }
     window.addEventListener('pagehide', onPageHide)
-    return () => window.removeEventListener('pagehide', onPageHide)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('pagehide', onPageHide)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
   }, [clinicId, provider?.id])
 
   const handleDeleteProviderSheetRows = useCallback(
