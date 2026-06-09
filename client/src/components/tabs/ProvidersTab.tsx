@@ -346,6 +346,20 @@ export default function ProvidersTab({
   const [commentModalLoading, setCommentModalLoading] = useState(false)
   /** Set while a delete batch is in flight so the table can show a "Deleting…" indicator. */
   const [isDeletingRows, setIsDeletingRows] = useState(false)
+  /** Billing-sheet "Add 50 rows" button: bumps the pad-to target so the user can scroll into more
+   * empty rows when 200 isn't enough. State is per ProvidersTab instance, so it persists across
+   * provider switches in the same tab visit but resets on tab unmount (acceptable — saved rows
+   * always render at their full count regardless). */
+  const BILLING_SHEET_BASE_ROWS = 200
+  const BILLING_SHEET_ROWS_STEP = 50
+  const [extraEmptyRows, setExtraEmptyRows] = useState(0)
+  const padTargetRows = BILLING_SHEET_BASE_ROWS + extraEmptyRows
+  // Cached matrix in latestTableDataRef is built off the old (smaller) row count; invalidate when
+  // the user grows the grid so getProviderRowsHandsontableData rebuilds with the padded row set.
+  useEffect(() => {
+    latestTableDataRef.current = null
+    matrixSourceRevisionsRef.current = null
+  }, [extraEmptyRows])
   /** Minimum visible duration (ms) for the deleting toast so it doesn't flash off on fast local saves. */
   const DELETE_TOAST_MIN_MS = 700
   const runWithDeleteToast = useCallback((promiseOrValue: Promise<unknown> | void) => {
@@ -694,10 +708,38 @@ export default function ProvidersTab({
 
   // Convert rows to Handsontable data format; prefer latest from change handler, then props, to avoid losing typed data when parent re-renders after load (like PatientsTab).
   // When viewing backup, always use backup rows from props. When not viewing backup and ref is null, use props (activeProviderRows) so "Back to current" shows current data immediately instead of stale local state.
+  /** Display rows = activeProviderRows padded up to padTargetRows so the "Add 50 rows" button
+   *  actually grows the grid even before the user types (the inline pad logic in afterChange only
+   *  runs on edit, so it can't grow the grid by itself). */
+  const displayActiveProviderRows = useMemo(() => {
+    if (!activeProvider) return activeProviderRows
+    if (activeProviderRows.length >= padTargetRows) return activeProviderRows
+    const needed = padTargetRows - activeProviderRows.length
+    const existingEmpty = activeProviderRows.filter((r) => r.id.startsWith('empty-')).length
+    const iso = new Date().toISOString()
+    const extras: SheetRow[] = Array.from({ length: needed }, (_, i) => ({
+      id: `empty-${activeProvider.id}-${existingEmpty + i}`,
+      patient_id: null, patient_first_name: null, patient_last_name: null, last_initial: null,
+      patient_insurance: null, patient_copay: null, patient_coinsurance: null,
+      appointment_date: null, appointment_time: null, visit_type: null, notes: null,
+      billing_code: null, billing_code_color: null, cpt_code: null, cpt_code_color: null,
+      appointment_status: null, appointment_status_color: null,
+      claim_status: null, claim_status_color: null,
+      submit_date: null, insurance_payment: null, insurance_adjustment: null, invoice_amount: null,
+      collected_from_patient: null, patient_pay_status: null, patient_pay_status_color: null,
+      payment_date: null, payment_date_color: null,
+      ar_type: null, ar_amount: null, ar_date: null, ar_date_color: null, ar_notes: null,
+      provider_payment_amount: null, provider_payment_date: null, provider_payment_notes: null,
+      highlight_color: null, total: null,
+      created_at: iso, updated_at: iso,
+    }))
+    return [...activeProviderRows, ...extras]
+  }, [activeProvider, activeProviderRows, padTargetRows])
+
   const getProviderRowsHandsontableData = useCallback(() => {
     if (!activeProvider) return []
     if (isViewingBackup) {
-      return getTableDataFromRows(activeProviderRows)
+      return getTableDataFromRows(displayActiveProviderRows)
     }
     const obs = matrixSourceRevisionsRef.current
     const rowsVer = providerRowsVersion ?? 0
@@ -709,8 +751,8 @@ export default function ProvidersTab({
     if (useCachedMatrix) {
       return latestTableDataRef.current as (string | number | boolean)[][]
     }
-    return getTableDataFromRows(activeProviderRows)
-  }, [activeProvider, activeProviderRows, getTableDataFromRows, isViewingBackup, patientsDisplayRevision, providerRowsVersion])
+    return getTableDataFromRows(displayActiveProviderRows)
+  }, [activeProvider, displayActiveProviderRows, getTableDataFromRows, isViewingBackup, patientsDisplayRevision, providerRowsVersion])
 
   /** Column → SheetRow field mapping for current grid layout (must match handleProviderRowsHandsontableChange). */
   const providerSheetColumnFieldsForSync = useMemo((): Array<keyof SheetRow> => {
@@ -2152,9 +2194,10 @@ export default function ProvidersTab({
       }
     }
 
-    // Only pad to 200 when under 200 (allow more than 200 rows)
-    if (updatedRows.length < 200) {
-      const emptyRowsNeeded = 200 - updatedRows.length
+    // Only pad to target when under target (allow more than target rows). Target = 200 + any extra
+    // rows the user requested via the "Add 50 rows" button below the table.
+    if (updatedRows.length < padTargetRows) {
+      const emptyRowsNeeded = padTargetRows - updatedRows.length
       const existingEmptyCount = updatedRows.filter(r => r.id.startsWith('empty-')).length
       const createEmptyRow = (index: number): SheetRow => ({
         id: `empty-${activeProvider.id}-${index}`,
@@ -2483,8 +2526,8 @@ export default function ProvidersTab({
         const p = prevRows[i] ?? createEmptySheetRowForSync(activeProvider.id, i)
         merged.push(mergeProviderRowFromGridRowForSync(p, row, fields))
       }
-      if (merged.length < 200) {
-        const emptyRowsNeeded = 200 - merged.length
+      if (merged.length < padTargetRows) {
+        const emptyRowsNeeded = padTargetRows - merged.length
         const existingEmptyCount = merged.filter((r) => r.id.startsWith('empty-')).length
         for (let i = 0; i < emptyRowsNeeded; i++) {
           merged.push(createEmptySheetRowForSync(activeProvider.id, existingEmptyCount + i))
@@ -2843,7 +2886,7 @@ export default function ProvidersTab({
           <HandsontableWrapper
             key={`providers-${activeProvider?.id ?? ''}`}
             data={getProviderRowsHandsontableData()}
-            dataVersion={(providerRowsVersion ?? 0) + structureVersion + selectedMonth.getTime() + patientsDisplayRevision + (isViewingBackup ? 1000000 + backupVersionKey : 0)}
+            dataVersion={(providerRowsVersion ?? 0) + structureVersion + selectedMonth.getTime() + patientsDisplayRevision + extraEmptyRows + (isViewingBackup ? 1000000 + backupVersionKey : 0)}
             columns={providerColumnsWithLocks}
             colHeaders={columnTitles}
             colHeaderRefreshKey={providerLocksKey}
@@ -2872,6 +2915,18 @@ export default function ProvidersTab({
           />
         )}
       </div>
+
+      {activeProvider && canEdit && !isViewingBackup && (
+        <div className="mt-3 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => setExtraEmptyRows((n) => n + BILLING_SHEET_ROWS_STEP)}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-sm font-medium"
+          >
+            <span aria-hidden="true">+</span> Add {BILLING_SHEET_ROWS_STEP} rows
+          </button>
+        </div>
+      )}
 
       {/* Sum tally for provider with full access (level 2) only */}
       {activeProvider && isProviderView && providerLevel === 2 && (

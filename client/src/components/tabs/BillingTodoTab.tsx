@@ -427,26 +427,30 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     [fetchTodos, onDelete]
   )
 
+  /** Display minimum + user-requested extra rows (Jenali asked for an "add 50 more" button so the
+   * grid can grow without forcing real rows to scroll into nothing). Real rows are NEVER stripped;
+   * only trailing empty placeholders past the target are trimmed. */
+  const BILLING_TODOS_BASE_ROWS = 200
+  const BILLING_TODOS_ROWS_STEP = 50
+  const [extraEmptyRows, setExtraEmptyRows] = useState(0)
   const padBillingTodosTo200 = useCallback(
     (list: TodoItem[]) => {
+      const target = BILLING_TODOS_BASE_ROWS + extraEmptyRows
       const result = [...list]
-      // Strip trailing empty placeholder rows when the list is longer than 200, so they don't
-      // accumulate across edits. Stop as soon as we hit a real row from the bottom or we're
-      // back down to 200 — we never strip below 200 and never strip real rows.
-      while (result.length > 200) {
+      while (result.length > target) {
         const last = result[result.length - 1]
         if (last && isBillingTodoEmptyPlaceholder(last)) result.pop()
         else break
       }
-      // Pad UP to 200 when shorter — but NEVER truncate real rows when longer. Same bug class as
+      // Pad UP to target when shorter — never truncate real rows when longer. Same bug class as
       // PatientsTab.padPatientsTo200 (see comment there). Real to-do rows must be preserved at
       // all costs; we'd rather show a long backlog with 350 items than silently drop 150.
-      while (result.length < 200) {
+      while (result.length < target) {
         result.push(createEmptyTodo(nextEmptyNumericIdSuffix(result)))
       }
       return result
     },
-    [createEmptyTodo, isBillingTodoEmptyPlaceholder]
+    [createEmptyTodo, isBillingTodoEmptyPlaceholder, extraEmptyRows]
   )
 
   const syncTodosFromHotAfterUndoRedo = useCallback(() => {
@@ -1068,6 +1072,17 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
           className="handsontable-custom billing-todo-sortable"
         />
       </div>
+      {canEdit && (
+        <div className="mt-3 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => setExtraEmptyRows((n) => n + BILLING_TODOS_ROWS_STEP)}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-sm font-medium"
+          >
+            <span aria-hidden="true">+</span> Add {BILLING_TODOS_ROWS_STEP} rows
+          </button>
+        </div>
+      )}
     </div>
   )
 }

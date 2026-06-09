@@ -670,30 +670,32 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
     }
   }, [fetchPatients, onDelete])
 
+  /** Display minimum + user-requested extra rows (Jenali asked for an "add 50 more" button so the
+   * grid can grow past 200 without forcing real rows to scroll into nothing). Real (non-empty-*)
+   * rows are NEVER stripped; only trailing empty placeholders past the target are trimmed. */
+  const PATIENTS_BASE_ROWS = 200
+  const PATIENTS_ROWS_STEP = 50
+  const [extraEmptyRows, setExtraEmptyRows] = useState(0)
   const padPatientsTo200 = useCallback(
     (list: Patient[]) => {
+      const target = PATIENTS_BASE_ROWS + extraEmptyRows
       const result = [...list]
-      // Strip trailing `empty-*` placeholder rows when the list is longer than 200, so they
-      // don't accumulate across edits. Stop as soon as we hit a non-empty row or we're back
-      // down to 200 — we never strip below 200 and never strip real rows.
-      while (result.length > 200) {
+      while (result.length > target) {
         const last = result[result.length - 1]
         if (last?.id.startsWith('empty-')) result.pop()
         else break
       }
-      // Pad UP to 200 (the display minimum) when the list is shorter — but NEVER truncate real
-      // rows when longer. The previous version had `result.length > 200 ? result.slice(0, 200)
-      // : result` here, which silently dropped patient rows past index 200 from the in-memory
-      // list whenever a clinic crossed 200 patients (the DB save path only UPSERTs and never
-      // DELETEs, so the dropped rows stayed in the DB — but they vanished from the grid until
-      // a page reload re-fetched them). That's the bug behind Jenali's "the bottom rows lost
-      // my patient IDs randomly" report. Real rows must be preserved at all costs.
-      while (result.length < 200) {
+      // Pad UP to target when shorter — never truncate real rows when longer. The previous version
+      // had `result.length > 200 ? result.slice(0, 200) : result` here, which silently dropped
+      // patient rows past index 200 from the in-memory list (the DB save path only UPSERTs and
+      // never DELETEs, so the dropped rows stayed in the DB — but they vanished from the grid
+      // until a reload re-fetched them). Real rows must be preserved at all costs.
+      while (result.length < target) {
         result.push(createEmptyPatient(nextEmptyNumericIdSuffix(result)))
       }
       return result
     },
-    [createEmptyPatient]
+    [createEmptyPatient, extraEmptyRows]
   )
 
   const syncPatientsFromHotAfterUndoRedo = useCallback(() => {
@@ -1170,6 +1172,17 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
           className="handsontable-custom billing-todo-sortable"
         />
       </div>
+      {canEdit && (
+        <div className="mt-3 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => setExtraEmptyRows((n) => n + PATIENTS_ROWS_STEP)}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-sm font-medium"
+          >
+            <span aria-hidden="true">+</span> Add {PATIENTS_ROWS_STEP} rows
+          </button>
+        </div>
+      )}
     </div>
   )
 }
