@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
 import { fetchSheetRows, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
@@ -1093,6 +1094,51 @@ export default function ProviderSheetPage() {
 
   return (
     <div>
+      {/* Top-of-viewport toast that fires when the user switches months. The full-page spinner only
+        shows during the initial auth+provider resolve; subsequent fetches (month change) need their
+        own indicator so the user understands the grid is reloading rather than just stuck. Portaled
+        to body so it escapes the table's stacking context (same approach as the delete toast). */}
+      {loading && provider && createPortal(
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'fixed',
+            top: 20,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 99999,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '12px 20px',
+            borderRadius: 8,
+            backgroundColor: 'rgba(15, 23, 42, 0.95)',
+            color: '#fff',
+            fontSize: 15,
+            fontWeight: 600,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            pointerEvents: 'none',
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              width: 18,
+              height: 18,
+              border: '3px solid rgba(255,255,255,0.25)',
+              borderTopColor: '#fff',
+              borderRadius: '50%',
+              animation: 'provider-sheet-page-spin 0.7s linear infinite',
+              display: 'inline-block',
+            }}
+          />
+          Loading sheet…
+          <style>{`@keyframes provider-sheet-page-spin { to { transform: rotate(360deg); } }`}</style>
+        </div>,
+        document.body,
+      )}
       {saveErrorMessage && (
         <div
           role="alert"
