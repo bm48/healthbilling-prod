@@ -453,6 +453,16 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     [createEmptyTodo, isBillingTodoEmptyPlaceholder, extraEmptyRows]
   )
 
+  // Re-pad whenever the user clicks "Add 50 rows". Without this effect, padBillingTodosTo200 only
+  // ran from event handlers (add/delete row), so incrementing extraEmptyRows had no visible effect
+  // until the user happened to trigger one of those. The structureVersion bump pushes the new
+  // (longer) data array to the grid.
+  useEffect(() => {
+    if (extraEmptyRows === 0) return
+    setTodos((prev) => padBillingTodosTo200(prev))
+    setStructureVersion((v) => v + 1)
+  }, [extraEmptyRows, padBillingTodosTo200])
+
   const syncTodosFromHotAfterUndoRedo = useCallback(() => {
     const hot = hotRef.current
     if (!hot || (hot as any).isDestroyed) return

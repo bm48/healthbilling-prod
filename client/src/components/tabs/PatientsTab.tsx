@@ -698,6 +698,16 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
     [createEmptyPatient, extraEmptyRows]
   )
 
+  // Re-pad whenever the user clicks "Add 50 rows". Without this effect, padPatientsTo200 only ran
+  // from event handlers (row add/delete/save), so incrementing extraEmptyRows had no visible effect
+  // until the user happened to trigger one of those. structureVersion bump tells HandsontableWrapper
+  // to push the new (longer) data array to the grid.
+  useEffect(() => {
+    if (extraEmptyRows === 0) return
+    setPatients((prev) => padPatientsTo200(prev))
+    setStructureVersion((v) => v + 1)
+  }, [extraEmptyRows, padPatientsTo200])
+
   const syncPatientsFromHotAfterUndoRedo = useCallback(() => {
     const hot = hotRef.current
     if (!hot || (hot as any).isDestroyed) return
