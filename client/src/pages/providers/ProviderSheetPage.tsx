@@ -53,6 +53,31 @@ export default function ProviderSheetPage() {
       // sessionStorage may be unavailable; picker still works in-memory.
     }
   }, [monthStorageKey, selectedMonth])
+  /** For bimonthly clinics (clinic.payroll === 2), each month has two sheets: payroll=1 (first half)
+   * and payroll=2 (second half). The previous code hard-coded payroll=2 on the fetch but payroll=1
+   * on the selectedMonthKey, so fetch and save targeted different sheets — providers saw an empty
+   * sheet (Jenali had entered the data into the first-half sheet) and any save failed with "sheet
+   * not found" server-side. Mirror ClinicDetail's pattern: track a selectedPayroll state and use it
+   * for BOTH the fetch and the save. Persists alongside selectedMonth so navigation preserves it. */
+  const payrollStorageKey = urlClinicId ? `provider-sheet-payroll-${urlClinicId}` : null
+  const [selectedPayroll, setSelectedPayroll] = useState<1 | 2>(() => {
+    if (!payrollStorageKey) return 1
+    try {
+      const raw = sessionStorage.getItem(payrollStorageKey)
+      if (raw === '2') return 2
+    } catch {
+      // ignore
+    }
+    return 1
+  })
+  useEffect(() => {
+    if (!payrollStorageKey) return
+    try {
+      sessionStorage.setItem(payrollStorageKey, String(selectedPayroll))
+    } catch {
+      // ignore
+    }
+  }, [payrollStorageKey, selectedPayroll])
   const providerSheetRowsRef = useRef<Record<string, SheetRow[]>>({})
   const saveProviderSheetInProgressRef = useRef<Set<string>>(new Set())
   /** Pending queued save (see ClinicDetail for full notes). Mirrors that shape so deletes that race
@@ -206,7 +231,9 @@ export default function ProviderSheetPage() {
     const providerId = provider.id
     const month = selectedMonth.getMonth() + 1
     const year = selectedMonth.getFullYear()
-    const payroll = (clinic?.payroll ?? 1) as 1 | 2
+    // Bimonthly clinics have two sheets per month (payroll=1 first half, payroll=2 second half);
+    // use the user-selected half. Monthly clinics only ever have payroll=1 — clamp.
+    const payroll: 1 | 2 = clinic?.payroll === 2 ? selectedPayroll : 1
     const fetchVersion = ++providerSheetFetchVersionRef.current
 
     // Always show rows for the currently selected month from DB, not stale rows from prior month.
@@ -329,7 +356,7 @@ export default function ProviderSheetPage() {
         setLoading(false)
       }
     }
-  }, [provider, clinic, clinicId, selectedMonth])
+  }, [provider, clinic, clinicId, selectedMonth, selectedPayroll])
 
   useEffect(() => {
     providerSheetRowsRef.current = providerSheetRows
@@ -337,12 +364,16 @@ export default function ProviderSheetPage() {
 
   // Matches the key format ProvidersTab/ClinicDetail use for the localStorage pending-rows backup so
   // restore-on-mount and the pagehide keepalive POST line up with what the unmount cleanup writes.
+  // Uses selectedPayroll so the server's parseMonthKey resolves to the SAME sheet that fetch loaded —
+  // previously selectedMonthKey hard-coded `-1` while fetch used clinic.payroll (=2 for bimonthly),
+  // so saves targeted a different sheet than the one being displayed and failed.
   const selectedMonthKey = useMemo(() => {
     if (!clinic) return null
     const y = selectedMonth.getFullYear()
     const m = selectedMonth.getMonth() + 1
-    return (clinic.payroll ?? 1) === 2 ? `${y}-${m}-1` : `${y}-${m}`
-  }, [clinic, selectedMonth])
+    const payroll = clinic.payroll === 2 ? selectedPayroll : 1
+    return `${y}-${m}-${payroll}`
+  }, [clinic, selectedMonth, selectedPayroll])
 
   useEffect(() => {
     if (!clinicId || !provider || !selectedMonthKey) {
@@ -952,8 +983,12 @@ export default function ProviderSheetPage() {
   )
 
   const filterRowsByMonth = (rows: SheetRow[]) => rows
-  const handleSelectMonth = (date: Date) =>
+  // MonthYearTabs.onChange delivers (date, payroll). The payroll comes from the user clicking the
+  // 1st/2nd Half pill when clinic.payroll === 2; for monthly clinics it is always 1.
+  const handleSelectMonth = (date: Date, payroll: 1 | 2 = 1) => {
     setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))
+    if (clinic?.payroll === 2) setSelectedPayroll(payroll)
+  }
   if (authLoading || (userProfile?.role === 'provider' && loading && !provider)) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -1065,6 +1100,7 @@ export default function ProviderSheetPage() {
           onAddRowBelow={handleAddProviderRowBelow}
           onAddRowAbove={handleAddProviderRowAbove}
           onSelectMonth={handleSelectMonth}
+          selectedPayroll={clinic?.payroll === 2 ? selectedPayroll : undefined}
           filterRowsByMonth={filterRowsByMonth}
           isLockProviders={isLockProviders}
         />
@@ -1092,6 +1128,7 @@ export default function ProviderSheetPage() {
           canEdit={false}
           isInSplitScreen={false}
           selectedMonth={selectedMonth}
+          selectedPayroll={clinic?.payroll === 2 ? selectedPayroll : undefined}
           onSelectMonth={handleSelectMonth}
           statusColors={statusColors}
         />
