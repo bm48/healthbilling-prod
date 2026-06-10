@@ -468,9 +468,9 @@ export default function ProviderSheetPage() {
     async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]) => {
       const targetMonth = selectedMonth.getMonth() + 1
       const targetYear = selectedMonth.getFullYear()
-      // If guards fail, defer the save instead of dropping it. The drain-effect below replays it as
-      // soon as currentSheet/provider/clinicId line up. The OLD code silently returned here, which
-      // meant any save triggered during the setCurrentSheet(null)→fetch window was permanently lost.
+      // Guard checks (analogous to ClinicDetail's `if (!sheet) return` + hydration guard) — but instead
+      // of silently dropping, we defer so a save fired during the brief setCurrentSheet(null)→fetch
+      // window after a month change isn't permanently lost. The drain-effect below replays it.
       if (!provider || provider.id !== providerId || !clinicId) {
         if (clinicId && providerId) {
           deferredSaveRef.current = { providerId, rowsToSave, knownDeletedIds, targetMonth, targetYear }
@@ -481,13 +481,25 @@ export default function ProviderSheetPage() {
         deferredSaveRef.current = { providerId, rowsToSave, knownDeletedIds, targetMonth, targetYear }
         return
       }
+
+      // Step 1 — Filter empty-* placeholder rows with no data (mirrors ClinicDetail line 2462).
+      const rowsToProcess = rowsToSave.filter(r => {
+        if (r.id.startsWith('empty-')) {
+          const hasData = r.patient_id ||
+                         r.patient_first_name || r.last_initial || r.patient_insurance ||
+                         r.patient_copay != null || r.patient_coinsurance != null ||
+                         r.appointment_date || r.cpt_code || r.appointment_status || r.claim_status ||
+                         r.submit_date || r.insurance_payment || r.payment_date || r.insurance_adjustment ||
+                         r.collected_from_patient || r.patient_pay_status || r.ar_date || r.total !== null || r.notes
+          return hasData
+        }
+        return true
+      })
+
+      // Step 2 — Serialize: only one save per provider at a time. If busy, queue and return a promise
+      // that resolves when the eventual save completes. Mirrors ClinicDetail line 2478.
       if (saveProviderSheetInProgressRef.current.has(providerId)) {
         const incomingDeletes = (knownDeletedIds ?? []).filter((id) => isUuid(id))
-        console.log('[ProviderSheetPage:ProvidersSave] queued while in-progress', {
-          providerId,
-          rows: rowsToSave.length,
-          deletes: incomingDeletes.length,
-        })
         return new Promise<void>((resolve, reject) => {
           const existing = pendingProviderSheetSaveRef.current[providerId]
           if (existing) {
@@ -513,76 +525,59 @@ export default function ProviderSheetPage() {
       }
       saveProviderSheetInProgressRef.current.add(providerId)
 
-      // Optimistic state update so the user's typed values stay visible while the save is in flight.
-      // ClinicDetail does the equivalent and it's needed here too — without it, if any intervening
-      // setProviderSheetRows reset the row count (e.g. a co-patient snapshot), the user could
-      // briefly see their values blink. Matches ClinicDetail.saveProviderSheetRows behaviour.
-      setProviderSheetRows(prev => ({ ...prev, [providerId]: rowsToSave }))
-
-      const rowsToProcess = rowsToSave.filter(r => {
-        if (r.id.startsWith('empty-')) {
-          const hasData =
-            r.patient_id ||
-            r.patient_first_name ||
-            r.last_initial ||
-            r.patient_insurance ||
-            r.patient_copay != null ||
-            r.patient_coinsurance != null ||
-            r.appointment_date ||
-            r.cpt_code ||
-            r.appointment_status ||
-            r.claim_status ||
-            r.submit_date ||
-            r.insurance_payment ||
-            r.payment_date ||
-            r.insurance_adjustment ||
-            r.collected_from_patient ||
-            r.patient_pay_status ||
-            r.ar_date ||
-            r.total !== null ||
-            r.notes
-          return hasData
-        }
-        return true
-      })
-
-      // Built synchronously after saveSheetRows returns so pending-save replay can rewrite stale temp ids
-      // to the real UUIDs before re-sending — otherwise the replay re-INSERTS the same row and the orphan
-      // sweep deletes the previous version.
+      // Built synchronously from savedRows right after saveSheetRows returns — no React batching delay.
+      // Maps every temp id (new-*, empty-* with data) that was sent as an INSERT to the real UUID
+      // the DB assigned. Used in finally to reconcile any queued pending before replay so we UPDATE
+      // instead of INSERT again (creating duplicate provider_sheet_rows).
       let savedTempIdToUuidMap: Map<string, string> | null = null
 
+      // Step 3 — Optimistic state update so the row appears immediately (mirrors ClinicDetail line 2512).
+      setProviderSheetRows(prev => ({ ...prev, [providerId]: rowsToSave }))
+
       try {
-        console.log('[ProviderSheetPage:ProvidersSave] start', {
+        // Step 4 — API save call.
+        const savedRows = await saveSheetRows(apiClient, currentSheet.id, rowsToProcess, knownDeletedIds, {
+          clinicId,
           providerId,
-          rows: rowsToSave.length,
-          processRows: rowsToProcess.length,
+          selectedMonthKey: selectedMonthKey ?? `${targetYear}-${targetMonth}`,
         })
-        const savedRows = await saveSheetRows(apiClient, currentSheet.id, rowsToProcess, knownDeletedIds, clinicId && selectedMonthKey ? { clinicId, providerId, selectedMonthKey } : undefined)
-        console.log('[ProviderSheetPage:ProvidersSave] db save done', {
-          providerId,
-          processRows: rowsToProcess.length,
-        })
+
+        // Step 5 — Fetch fresh patients BEFORE the state merge (mirrors ClinicDetail line 2523).
+        const freshPatients = (await refetchPatients()) ?? []
+
+        // Step 6 — Clean up localStorage pending key.
         try {
           const pendingKey = `provider_sheet_pending_${clinicId}_${providerId}_${selectedMonthKey}`
           localStorage.removeItem(pendingKey)
         } catch (_) {}
 
+        // Step 7 — Build savedRowsByOldId AND savedRowsByAnyId so the merge survives the case where
+        // a row's id was already promoted to its UUID in state by a concurrent code path (mirrors
+        // ClinicDetail line 2532). Also populate savedTempIdToUuidMap for queue replay.
         savedTempIdToUuidMap = new Map<string, string>()
         const savedRowsByOldId = new Map<string, SheetRow>()
+        const savedRowsByAnyId = new Map<string, SheetRow>()
         rowsToProcess.forEach((row, i) => {
           const saved = savedRows[i]
           if (!saved) return
           savedRowsByOldId.set(row.id, saved)
+          savedRowsByAnyId.set(row.id, saved)
+          savedRowsByAnyId.set(saved.id, saved)
           if (!isUuid(row.id) && isUuid(saved.id)) {
             savedTempIdToUuidMap!.set(row.id, saved.id)
           }
         })
 
-        // Promote temp ids (new-*/empty-*) to real UUIDs in state so subsequent edits hit UPDATE not INSERT.
+        // Step 8 — Single state update that combines: id promotion + padding-back-to-base + co-patient
+        // snapshot. Done atomically (in one setState callback) so React only re-renders once, mirroring
+        // ClinicDetail line 2548. The previous implementation split this into 3 separate setState calls
+        // which caused intermediate states the grid could render in between.
         setProviderSheetRows((prev) => {
           const currentRows = prev[providerId] || []
-          const updatedRows = currentRows.map((row) => {
-            const savedRow = savedRowsByOldId.get(row.id)
+          // 8a — Promote temp ids to UUIDs, preserve user's latest editable values
+          // (savedRowsByAnyId fallback handles concurrent id promotions).
+          let updatedRows = currentRows.map((row) => {
+            const savedRow = savedRowsByOldId.get(row.id) ?? savedRowsByAnyId.get(row.id)
             if (savedRow) {
               return {
                 ...row,
@@ -593,31 +588,53 @@ export default function ProviderSheetPage() {
             }
             return row
           })
-          return { ...prev, [providerId]: updatedRows }
+
+          // 8b — Pad back to base row count if a row was deleted (mirrors ClinicDetail line 2566).
+          // Without this, post-delete state could fall below the display minimum.
+          const baseRows = 200
+          const nonEmptyRows = updatedRows.filter((r) => !r.id.startsWith('empty-'))
+          const emptyRowsNeeded = Math.max(0, baseRows - nonEmptyRows.length)
+          const existingEmptyCount = updatedRows.filter((r) => r.id.startsWith('empty-')).length
+          if (emptyRowsNeeded > existingEmptyCount) {
+            const iso = new Date().toISOString()
+            const extras: SheetRow[] = Array.from({ length: emptyRowsNeeded - existingEmptyCount }, (_, i) => ({
+              id: `empty-${providerId}-${existingEmptyCount + i}`,
+              patient_id: null, patient_first_name: null, patient_last_name: null, last_initial: null,
+              patient_insurance: null, patient_copay: null, patient_coinsurance: null,
+              appointment_date: null, appointment_time: null, visit_type: null, notes: null,
+              billing_code: null, billing_code_color: null, cpt_code: null, cpt_code_color: null,
+              appointment_status: null, appointment_status_color: null,
+              claim_status: null, claim_status_color: null,
+              submit_date: null, insurance_payment: null, insurance_adjustment: null, invoice_amount: null,
+              collected_from_patient: null, patient_pay_status: null, patient_pay_status_color: null,
+              payment_date: null, payment_date_color: null,
+              ar_type: null, ar_amount: null, ar_date: null, ar_date_color: null, ar_notes: null,
+              provider_payment_amount: null, provider_payment_date: null, provider_payment_notes: null,
+              highlight_color: null, total: null,
+              created_at: iso, updated_at: iso,
+            }))
+            updatedRows = [...updatedRows, ...extras]
+          }
+
+          // 8c — Apply co-patient demographics from the fresh patient list (mirrors ClinicDetail
+          // line 2621 — they apply to all providers in the month; we only have one).
+          const finalRows = freshPatients.length > 0
+            ? applyCoPatientSnapshotToSheetRows(updatedRows, freshPatients)
+            : updatedRows
+
+          return { ...prev, [providerId]: finalRows }
         })
 
-        const fresh = await refetchPatients()
-        if (fresh && provider) {
-          setProviderSheetRows((prev) => ({
-            ...prev,
-            [provider.id]: applyCoPatientSnapshotToSheetRows(prev[provider.id] || [], fresh),
-          }))
-        }
-        // Successful save — clear any prior error banner.
+        // Step 9 — Successful save: clear error banner.
         setSaveErrorMessage(null)
       } catch (e) {
-        console.error('Error saving provider sheet:', e)
-        // Surface to the user instead of swallowing silently. Previously the only signal that a save
-        // had failed was data missing after refresh; now a top-of-page banner shows the cause.
+        // Step 10 — Surface the error so the user knows what went wrong (silent catches hide bugs).
+        console.error('[ProviderSheetPage] saveProviderSheetRows failed:', e)
         const detail = e instanceof Error ? e.message : 'Unknown error'
         setSaveErrorMessage(`Save failed: ${detail}. Your changes are backed up locally; refresh after the issue is fixed to retry.`)
       } finally {
         saveProviderSheetInProgressRef.current.delete(providerId)
         const pending = pendingProviderSheetSaveRef.current[providerId]
-        console.log('[ProviderSheetPage:ProvidersSave] finish', {
-          providerId,
-          hasPending: Boolean(pending),
-        })
         if (pending) {
           delete pendingProviderSheetSaveRef.current[providerId]
           const idMap = savedTempIdToUuidMap
@@ -634,17 +651,10 @@ export default function ProviderSheetPage() {
             })
           }
           const pendingDeletes = pending.deletedDbIds.length > 0 ? pending.deletedDbIds : undefined
-          console.log('[ProviderSheetPage:ProvidersSave] replay pending', {
-            providerId,
-            rows: toSave.length,
-            deletes: pending.deletedDbIds.length,
-          })
+          // Forward queued knownDeletedIds + settle the promises that every queued caller awaits.
           saveProviderSheetRows(providerId, toSave, pendingDeletes)
             .then(() => pending.resolvers.forEach((r) => r.resolve()))
-            .catch((err) => {
-              console.error('[ProviderSheetPage] pending save retry failed:', err)
-              pending.resolvers.forEach((r) => r.reject(err))
-            })
+            .catch((err) => pending.resolvers.forEach((r) => r.reject(err)))
         }
       }
     },
