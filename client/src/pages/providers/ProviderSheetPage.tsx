@@ -114,6 +114,14 @@ export default function ProviderSheetPage() {
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null)
   const providerSheetFetchVersionRef = useRef(0)
   const [currentSheet, setCurrentSheet] = useState<ProviderSheet | null>(null)
+  /** Bumps whenever providerSheetRows changes via fetch / save / patient enrichment. Passed to
+   * ProvidersTab and folded into HandsontableWrapper's `dataVersion` so the grid actually pushes the
+   * new data to HOT. Without this bump, navigating between months changed `selectedMonth.getTime()`
+   * in dataVersion BEFORE the async fetch finished — HOT got updated with the STALE state under the
+   * NEW dataVersion, then the fetch resolved and updated React state but dataVersion didn't move
+   * again, so HOT stayed showing the previous month's data. ClinicDetail has the same state for the
+   * same reason. */
+  const [providerRowsVersion, setProviderRowsVersion] = useState(0)
   const [isLockProviders, setIsLockProviders] = useState<IsLockProviders | null>(null)
   /** When provider level is 2: 'sheet' | 'accounts_receivable' | 'provider_pay' */
   const [providerViewTab, setProviderViewTab] = useState<'sheet' | 'accounts_receivable' | 'provider_pay'>('sheet')
@@ -374,6 +382,10 @@ export default function ProviderSheetPage() {
 
       if (providerSheetFetchVersionRef.current !== fetchVersion) return
       setProviderSheetRows(prev => ({ ...prev, [providerId]: allRows }))
+      // Bump so HandsontableWrapper's dataVersion advances and HOT picks up the newly fetched rows.
+      // Without this, the grid stays showing whatever was in state when the user clicked the new
+      // month (the previous month's data).
+      setProviderRowsVersion((v) => v + 1)
     } catch (e) {
       if (providerSheetFetchVersionRef.current === fetchVersion) {
         console.error('Error fetching provider sheet:', e)
@@ -682,6 +694,9 @@ export default function ProviderSheetPage() {
 
           return { ...prev, [providerId]: finalRows }
         })
+        // Bump so HOT updateSettings runs with the merged row IDs + co-patient snapshot rather than
+        // stale data from the moment dataVersion last changed (e.g. a month-click).
+        setProviderRowsVersion((v) => v + 1)
 
         // Step 9 — Successful save: clear error banner.
         setSaveErrorMessage(null)
@@ -1165,6 +1180,7 @@ export default function ProviderSheetPage() {
           selectedPayroll={clinic?.payroll === 2 ? selectedPayroll : undefined}
           filterRowsByMonth={filterRowsByMonth}
           isLockProviders={isLockProviders}
+          providerRowsVersion={providerRowsVersion}
           onRegisterFlushBeforeTabLeave={(flush) => { providersTabFlushRef.current = flush }}
         />
       )}
