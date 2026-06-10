@@ -101,6 +101,12 @@ export default function ProviderSheetPage() {
     targetYear: number
   }
   const deferredSaveRef = useRef<DeferredProviderSheetSave | null>(null)
+  /** ProvidersTab registers a flush callback here via onRegisterFlushBeforeTabLeave. We call it BEFORE
+   * setSelectedMonth / setSelectedPayroll so any pending debounced save fires against the CURRENT
+   * (old) month — without this, a save scheduled while the user was on month X but firing after they
+   * navigated to month Y would dump month X's data into month Y's sheet. That's exactly the
+   * "her June data is in May" symptom Jenali reported. */
+  const providersTabFlushRef = useRef<(() => Promise<void>) | null>(null)
   /** Most recent save error surfaced to the user as a top-of-page banner. Silent catches were
    * previously hiding the cause of "data not saving" reports; making the failure visible lets the
    * user (and us) see whether the server is rejecting saves vs. saves never being attempted. */
@@ -985,7 +991,17 @@ export default function ProviderSheetPage() {
   const filterRowsByMonth = (rows: SheetRow[]) => rows
   // MonthYearTabs.onChange delivers (date, payroll). The payroll comes from the user clicking the
   // 1st/2nd Half pill when clinic.payroll === 2; for monthly clinics it is always 1.
-  const handleSelectMonth = (date: Date, payroll: 1 | 2 = 1) => {
+  // Flushes any pending debounced save BEFORE the month changes so the save uses the OLD selectedMonth
+  // (otherwise the closure inside saveProviderSheetRows would capture the new month and dump the old
+  // month's typed data into the new month's sheet — the "her June data is in May" bug).
+  const handleSelectMonth = async (date: Date, payroll: 1 | 2 = 1) => {
+    if (providersTabFlushRef.current) {
+      try {
+        await providersTabFlushRef.current()
+      } catch (e) {
+        console.error('[ProviderSheetPage] flush before month change failed:', e)
+      }
+    }
     setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))
     if (clinic?.payroll === 2) setSelectedPayroll(payroll)
   }
@@ -1103,6 +1119,7 @@ export default function ProviderSheetPage() {
           selectedPayroll={clinic?.payroll === 2 ? selectedPayroll : undefined}
           filterRowsByMonth={filterRowsByMonth}
           isLockProviders={isLockProviders}
+          onRegisterFlushBeforeTabLeave={(flush) => { providersTabFlushRef.current = flush }}
         />
       )}
 

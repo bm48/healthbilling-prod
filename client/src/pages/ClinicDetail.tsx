@@ -3683,7 +3683,18 @@ export default function ClinicDetail() {
               onDeleteRows={handleDeleteProviderSheetRows}
               onAddRowBelow={handleAddProviderRowBelow}
               onAddRowAbove={handleAddProviderRowAbove}
-              onSelectMonth={(date, payroll) => {
+              onSelectMonth={async (date, payroll) => {
+                // Flush any pending debounced save BEFORE the month changes so the save uses the
+                // OLD selectedMonth — without this, a save scheduled while the user was on month X
+                // but firing after navigation captures the NEW month in its closure and dumps
+                // month X's typed data into month Y's sheet ("her June data is in May" symptom).
+                if (providersTabFlushRef.current) {
+                  try {
+                    await providersTabFlushRef.current()
+                  } catch (e) {
+                    console.error('[ClinicDetail] flush before month change failed:', e)
+                  }
+                }
                 setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))
                 if (clinic?.payroll === 2) setSelectedPayroll(payroll)
               }}
