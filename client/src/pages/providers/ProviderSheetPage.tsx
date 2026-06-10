@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
 import { fetchSheetRows, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
+import { dedupeProvidersByUser, fetchActiveProviderUserEmails } from '@/lib/providerUserFilter'
 import { useAuth } from '@/contexts/AuthContext'
 import {
   Clinic,
@@ -133,40 +134,46 @@ export default function ProviderSheetPage() {
     }
   }, [user, userProfile, authLoading, navigate, urlClinicId])
 
-  // Resolve provider by user email — must pick the SAME canonical record that ClinicDetail's
-  // dedupeProvidersByUser picks, otherwise this view fetches sheets against a different provider_id
-  // than the one Jenali sees in ClinicDetail. The schema permits duplicate provider rows per email
-  // (one per clinic), and any of them can hold the billing data; only the "first" (by ClinicDetail's
-  // ordering — last_name → first_name → id) is treated as canonical and used as the FK for sheets
-  // in the super-admin view. The previous code did `.limit(1)` with no ordering, so this view picked
-  // a non-canonical duplicate, fetched an empty sheet, and the provider saw no data even though
-  // Jenali saw it correctly.
+  // Resolve provider by user email — must pick the EXACT SAME canonical record that ClinicDetail
+  // picks via dedupeProvidersByUser, otherwise this view fetches sheets against a different
+  // provider_id than the one Jenali sees, and the provider sees an empty sheet (or creates a brand
+  // new empty one because the lookup misses, while Jenali's data sits on the canonical record).
+  //
+  // Strategy: run ClinicDetail's exact query (all active providers in the clinic, ordered by
+  // last_name → first_name), call dedupeProvidersByUser with the active provider-user emails set,
+  // then find the displayed (canonical) entry whose email matches the logged-in user. That entry's
+  // provider_id is what ClinicDetail uses as the FK for sheet rows.
   useEffect(() => {
     if (!user?.email || userProfile?.role !== 'provider') return
+    if (!urlClinicId) return
 
     const resolveProvider = async () => {
       setLoading(true)
       setError(null)
       try {
-        let query = apiClient
-          .from('providers')
-          .select('*')
-          .eq('email', user.email!)
-          .eq('active', true)
+        // ClinicDetail.fetchProviders shape — same filters, same order.
+        const [providersRes, userEmails] = await Promise.all([
+          apiClient
+            .from('providers')
+            .select('*')
+            .eq('active', true)
+            .contains('clinic_ids', [urlClinicId])
+            .order('last_name')
+            .order('first_name'),
+          fetchActiveProviderUserEmails(),
+        ])
 
-        if (urlClinicId) {
-          // Scope to the clinic in the URL: the canonical record for THIS clinic is what
-          // ClinicDetail uses for sheet FKs, and that's where the data lives.
-          query = query.contains('clinic_ids', [urlClinicId])
-        } else if (userProfile?.clinic_ids?.length) {
-          query = query.overlaps('clinic_ids', userProfile.clinic_ids)
-        }
-        // Match ClinicDetail's order so we deterministically pick the same canonical row.
-        query = query.order('last_name').order('first_name').order('id')
+        if (providersRes.error) throw providersRes.error
 
-        const { data: providers, error: err } = await query
-        if (err) throw err
-        const data = (providers && providers.length > 0) ? providers[0] : null
+        const { displayedProviders } = dedupeProvidersByUser(
+          (providersRes.data || []) as Provider[],
+          userEmails,
+        )
+
+        const normalizedEmail = user.email!.trim().toLowerCase()
+        const data = displayedProviders.find(
+          (p) => (p.email ?? '').trim().toLowerCase() === normalizedEmail,
+        ) ?? null
 
         if (!data) {
           setError('Your account is not linked to a provider. Please contact your administrator.')
@@ -186,7 +193,7 @@ export default function ProviderSheetPage() {
     }
 
     resolveProvider()
-  }, [user?.email, userProfile?.role, userProfile?.clinic_ids, urlClinicId])
+  }, [user?.email, userProfile?.role, urlClinicId])
 
   // Use clinic from URL; must be one of the provider's clinics
   const clinicId = urlClinicId && provider?.clinic_ids?.includes(urlClinicId) ? urlClinicId : undefined
