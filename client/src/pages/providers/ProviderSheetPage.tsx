@@ -76,6 +76,10 @@ export default function ProviderSheetPage() {
     targetYear: number
   }
   const deferredSaveRef = useRef<DeferredProviderSheetSave | null>(null)
+  /** Most recent save error surfaced to the user as a top-of-page banner. Silent catches were
+   * previously hiding the cause of "data not saving" reports; making the failure visible lets the
+   * user (and us) see whether the server is rejecting saves vs. saves never being attempted. */
+  const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null)
   const providerSheetFetchVersionRef = useRef(0)
   const [currentSheet, setCurrentSheet] = useState<ProviderSheet | null>(null)
   const [isLockProviders, setIsLockProviders] = useState<IsLockProviders | null>(null)
@@ -509,6 +513,12 @@ export default function ProviderSheetPage() {
       }
       saveProviderSheetInProgressRef.current.add(providerId)
 
+      // Optimistic state update so the user's typed values stay visible while the save is in flight.
+      // ClinicDetail does the equivalent and it's needed here too — without it, if any intervening
+      // setProviderSheetRows reset the row count (e.g. a co-patient snapshot), the user could
+      // briefly see their values blink. Matches ClinicDetail.saveProviderSheetRows behaviour.
+      setProviderSheetRows(prev => ({ ...prev, [providerId]: rowsToSave }))
+
       const rowsToProcess = rowsToSave.filter(r => {
         if (r.id.startsWith('empty-')) {
           const hasData =
@@ -593,8 +603,14 @@ export default function ProviderSheetPage() {
             [provider.id]: applyCoPatientSnapshotToSheetRows(prev[provider.id] || [], fresh),
           }))
         }
+        // Successful save — clear any prior error banner.
+        setSaveErrorMessage(null)
       } catch (e) {
         console.error('Error saving provider sheet:', e)
+        // Surface to the user instead of swallowing silently. Previously the only signal that a save
+        // had failed was data missing after refresh; now a top-of-page banner shows the cause.
+        const detail = e instanceof Error ? e.message : 'Unknown error'
+        setSaveErrorMessage(`Save failed: ${detail}. Your changes are backed up locally; refresh after the issue is fixed to retry.`)
       } finally {
         saveProviderSheetInProgressRef.current.delete(providerId)
         const pending = pendingProviderSheetSaveRef.current[providerId]
@@ -955,6 +971,22 @@ export default function ProviderSheetPage() {
 
   return (
     <div>
+      {saveErrorMessage && (
+        <div
+          role="alert"
+          className="mb-4 rounded-lg border border-red-400 bg-red-500/15 px-4 py-3 text-red-100 text-sm flex items-start justify-between gap-3"
+        >
+          <span className="flex-1">{saveErrorMessage}</span>
+          <button
+            type="button"
+            onClick={() => setSaveErrorMessage(null)}
+            className="px-2 py-0.5 text-xs rounded bg-red-500/40 hover:bg-red-500/60 text-white"
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-white mb-2">
           {showARTab || showProviderPayTab ? (providerViewTab === 'sheet' ? 'My Sheet' : providerViewTab === 'accounts_receivable' ? 'Accounts Receivable' : 'Provider Pay') : 'My Sheet'}
