@@ -741,8 +741,15 @@ export default function ProviderSheetPage() {
     })
   }, [currentSheet, provider, clinicId, saveProviderSheetRows])
 
-  // Restore provider sheet rows from localStorage after refresh: ProvidersTab.unmount writes a backup
-  // when a save is in flight, but the browser may abort the actual fetch. On next mount we replay it.
+  // Restore provider sheet rows from localStorage after refresh: ProvidersTab writes a per-edit backup
+  // and the unmount cleanup also writes one if a save was in flight. We replay them so a hard close
+  // mid-typing isn't a data loss. Two staleness guards prevent this from CLOBBERING valid DB data:
+  //   1. Age guard: skip entries older than 10 min (a previous session's leftovers).
+  //   2. DB-vs-localStorage freshness guard: skip if any fetched DB row has updated_at newer than
+  //      localStorage.savedAt — that means the user already saved successfully and localStorage is
+  //      just stale. Replaying it would overwrite the fresh DB data with the older typing (which is
+  //      the bug the user is seeing: API returns 5 rows, restore replays 18 stale rows, screen now
+  //      shows 18 rows that DON'T match the DB).
   const PENDING_ROWS_KEY_PREFIX = 'provider_sheet_pending_'
   const PENDING_ROWS_MAX_AGE_MS = 10 * 60 * 1000
   const restoredPendingKeysRef = useRef<Set<string>>(new Set())
@@ -757,6 +764,24 @@ export default function ProviderSheetPage() {
       const data = JSON.parse(raw) as { rows: SheetRow[]; savedAt: number }
       if (!data.rows?.length || !data.savedAt) return
       if (now - data.savedAt > PENDING_ROWS_MAX_AGE_MS) {
+        localStorage.removeItem(key)
+        return
+      }
+      // DB-vs-localStorage freshness: compare the localStorage savedAt against the freshest
+      // updated_at among rows currently in React state for this provider. providerSheetRowsRef tracks
+      // the state set by the most recent fetch / save. If the DB has rows that are newer than the
+      // localStorage backup, the user already saved successfully — don't clobber the DB data.
+      const currentRows = providerSheetRowsRef.current[provider.id] ?? []
+      let mostRecentDbUpdate = 0
+      for (const row of currentRows) {
+        if (row.updated_at && typeof row.updated_at === 'string') {
+          const t = new Date(row.updated_at).getTime()
+          if (Number.isFinite(t) && t > mostRecentDbUpdate) mostRecentDbUpdate = t
+        }
+      }
+      if (mostRecentDbUpdate > data.savedAt) {
+        // DB is newer than the localStorage backup — the user already saved this work. Drop the
+        // stale entry so the next mount doesn't loop on it.
         localStorage.removeItem(key)
         return
       }

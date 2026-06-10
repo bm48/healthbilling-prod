@@ -2659,7 +2659,12 @@ export default function ClinicDetail() {
     }
   }, [clinicId, userProfile, providerSheets, selectedMonthKey, fetchPatients])
 
-  // Restore provider sheet rows from localStorage after refresh (browser aborts in-flight save; data was backed up on unload)
+  // Restore provider sheet rows from localStorage after refresh (browser aborts in-flight save; data
+  // was backed up on unload). Two staleness guards prevent clobbering valid DB data:
+  //   1. Age guard: skip entries older than 10 min.
+  //   2. DB-vs-localStorage freshness guard: skip if any fetched DB row's updated_at is newer than
+  //      localStorage.savedAt — the user already saved successfully and localStorage is just stale.
+  //      Replaying would overwrite fresh DB data with the older typing.
   const PENDING_ROWS_KEY_PREFIX = 'provider_sheet_pending_'
   const PENDING_ROWS_MAX_AGE_MS = 10 * 60 * 1000
   const restoredPendingKeysRef = useRef<Set<string>>(new Set())
@@ -2676,6 +2681,20 @@ export default function ClinicDetail() {
         const data = JSON.parse(raw) as { rows: SheetRow[]; savedAt: number }
         if (!data.rows?.length || !data.savedAt) return
         if (now - data.savedAt > PENDING_ROWS_MAX_AGE_MS) {
+          localStorage.removeItem(key)
+          return
+        }
+        // DB-vs-localStorage freshness check (matches ProviderSheetPage).
+        const currentRows =
+          (providerSheetRowsByMonthRef.current[selectedMonthKey] ?? {})[providerId] ?? []
+        let mostRecentDbUpdate = 0
+        for (const row of currentRows) {
+          if (row.updated_at && typeof row.updated_at === 'string') {
+            const t = new Date(row.updated_at).getTime()
+            if (Number.isFinite(t) && t > mostRecentDbUpdate) mostRecentDbUpdate = t
+          }
+        }
+        if (mostRecentDbUpdate > data.savedAt) {
           localStorage.removeItem(key)
           return
         }
