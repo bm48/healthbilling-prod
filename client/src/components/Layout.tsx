@@ -1344,9 +1344,10 @@ export default function Layout({ children }: LayoutProps) {
       </div>
 
       {/* Main Content */}
-      {/* Main content margin tracks `isPinned`, not hover — when the user mouses over the sidebar
-          to expand it, the content stays put and the sidebar floats over it instead of shifting. */}
-      <div className={`min-h-screen transition-all duration-300 ${isPinned ? 'ml-72' : 'ml-16'}`}>
+      {/* Main content margin tracks `sidebarExpanded` (pinned OR hovered) so the table slides right
+          when the sidebar expands instead of getting obscured by the floating panel. The 300ms
+          transition matches the sidebar's own width transition for a smooth shift. */}
+      <div className={`min-h-screen transition-all duration-300 ${sidebarExpanded ? 'ml-72' : 'ml-16'}`}>
         <main className="p-8 text-white min-h-full">
           {children}
         </main>
