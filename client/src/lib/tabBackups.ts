@@ -130,16 +130,31 @@ export async function fetchBackupCsvAsAR(
       const v = values[idx]
       row[h] = v === '' || v == null ? null : v
     })
-    // Support display headers ("id", "name", "date of service", …) and legacy ("ar_id", "clinic_id", …)
-    const isLegacyFormat = headers.includes('clinic_id')
-    const ar_id = (row['id'] ?? row.ar_id ?? '') as string
+    // Three CSV formats are supported:
+    //  1. Display (old cron): headers = ['ID', 'Name', 'Date of Service', 'Amount', 'Date Recorded', 'Type', 'Notes']
+    //     row.id IS the AR display id (ar_id) — there's no separate DB id.
+    //  2. Legacy DB (very old hand-export): headers include 'ar_id' and 'clinic_id' but no 'id' column.
+    //  3. Full backup (new cron + new manual export): headers include BOTH 'id' (DB UUID) and 'ar_id'
+    //     (the display id), plus provider_id, ar_year, ar_month, payroll, etc.
+    // Disambiguate by checking whether ar_id is present as a separate column.
+    const isFullBackupFormat = headers.includes('ar_id') && headers.includes('id')
+    const isLegacyDbFormat = headers.includes('clinic_id') && !isFullBackupFormat
+    const ar_id = isFullBackupFormat
+      ? ((row.ar_id as string) ?? '')
+      : ((row['id'] ?? row.ar_id ?? '') as string)
     const name = (row.name ?? null) as string | null
     const date_of_service = (row['date of service'] ?? row.date_of_service ?? null) as string | null
     const amount = row.amount != null && row.amount !== '' ? parseAmountFromCsv(row.amount) : null
     const date_recorded = (row['date recorded'] ?? row.date_recorded ?? null) as string | null
     const type = (row.type ?? null) as 'Insurance' | 'Patient' | 'Admin' | null
     const notes = (row.notes ?? null) as string | null
-    const id = isLegacyFormat ? ((row.id as string) || `backup-ar-${i}`) : `backup-ar-${i}`
+    // For the full-backup format, keep the real DB UUID so a restore script can match rows back to
+    // their original DB rows. Other formats don't carry the UUID — synthesize a placeholder.
+    const id = isFullBackupFormat
+      ? ((row.id as string) || `backup-ar-${i}`)
+      : isLegacyDbFormat
+        ? ((row.id as string) || `backup-ar-${i}`)
+        : `backup-ar-${i}`
     const created_at = (row.created_at as string) ?? iso
     const updated_at = (row.updated_at as string) ?? iso
     const period = inferAccountsReceivableSheetYearMonth({

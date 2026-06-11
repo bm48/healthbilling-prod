@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
 import { createBubbleDropdownRenderer, createColoredAutocompleteDropdown, DateOfServiceEditor } from '@/lib/handsontableCustomRenderers'
-import { Lock, Unlock } from 'lucide-react'
+import { Lock, Unlock, Download } from 'lucide-react'
 import MonthYearTabs from '@/components/MonthYearTabs'
 import { isPastPeriodFromMonthKey } from '@/lib/monthPeriodLock'
 import {
@@ -392,14 +392,18 @@ export default function AccountsReceivableTab({
     if (clinicPayroll === 2) {
       filtered = filtered.filter((ar) => (ar.payroll ?? 1) === selectedPayroll)
     }
-    // Per-provider scoping. When providerId is set we only show rows that either belong to that
-    // provider OR are legacy NULL-provider rows (pre-scoping data the user has chosen not to
-    // reassign). When providerId is null/omitted the sheet behaves as the clinic-wide ledger and
-    // every row is shown — matches the pre-scoping behavior for routes without a provider.
+    // Per-provider scoping. When providerId is set we only show rows that belong to that provider.
+    // We intentionally EXCLUDE legacy NULL-provider rows from per-provider views — the previous
+    // behaviour (`owner == null || owner === providerId`) meant Morgan's legacy rows showed up on
+    // Spencer's URL, and any edit Jenali made on Spencer's view UPDATEd those rows without changing
+    // provider_id, which then appeared as "Spencer's edits replacing Morgan's data" on Morgan's view.
+    // NULL-provider rows are still visible (and editable) on the clinic-wide AR view where every
+    // row is shown; they're also preserved in the DB and in backups. We're hiding them here, not
+    // deleting or reassigning them.
     if (providerId) {
       filtered = filtered.filter((ar) => {
         const owner = (ar as { provider_id?: string | null }).provider_id ?? null
-        return owner == null || owner === providerId
+        return owner === providerId
       })
     }
     if (filtered.length >= 200) return filtered
@@ -580,6 +584,69 @@ export default function AccountsReceivableTab({
     setDisplayedAR(rebuilt)
   }, [selectedMonth.getTime(), buildDisplayedFromFull])
 
+  /** Manual export: fetches every AR row for this clinic (no month / payroll / provider scoping,
+   * no filtering of empty rows) and downloads it as a CSV with the FULL schema so a re-import would
+   * preserve provider_id, ar_year / ar_month, payroll, and timestamps. The cron backup runs twice a
+   * day but is restricted to rows created in the current calendar month — this lets the user grab a
+   * complete point-in-time snapshot whenever they want, independent of the cron. */
+  const [isExportingCsv, setIsExportingCsv] = useState(false)
+  const exportCurrentARAsCsv = useCallback(async () => {
+    if (!clinicId) return
+    if (isExportingCsv) return
+    setIsExportingCsv(true)
+    try {
+      const { data, error } = await apiClient
+        .from('accounts_receivables')
+        .select('*')
+        .eq('clinic_id', clinicId)
+        .order('ar_year', { ascending: true })
+        .order('ar_month', { ascending: true })
+        .order('payroll', { ascending: true })
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      const rows = (data || []) as Array<Record<string, unknown>>
+
+      // Full schema — header keys match the DB column names so a future re-import / restore can map
+      // straight back. Parsers (fetchBackupCsvAsAR) already accept these legacy DB column headers.
+      const cols = [
+        'id', 'clinic_id', 'provider_id', 'ar_id', 'name',
+        'date_of_service', 'amount', 'date_recorded', 'type', 'notes',
+        'ar_year', 'ar_month', 'payroll',
+        'created_at', 'updated_at',
+      ] as const
+      const escape = (val: unknown): string => {
+        if (val == null || val === 'null') return ''
+        const s = String(val)
+        if (/[,"\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+        return s
+      }
+      const header = cols.join(',')
+      const body = rows.map((r) => cols.map((c) => escape(r[c])).join(','))
+      // Prefix UTF-8 BOM so Excel never mistakes "id,..." for SYLK and refuses to open the file.
+      const csv = '﻿' + [header, ...body].join('\n')
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const today = new Date()
+      const y = today.getFullYear()
+      const m = String(today.getMonth() + 1).padStart(2, '0')
+      const d = String(today.getDate()).padStart(2, '0')
+      const h = String(today.getHours()).padStart(2, '0')
+      const min = String(today.getMinutes()).padStart(2, '0')
+      a.download = `AR_full_${clinicId}_${y}-${m}-${d}_${h}${min}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('[AR export] failed:', e)
+      const msg = e instanceof Error ? e.message : 'Failed to export AR data.'
+      alert(`Export failed: ${msg}\n\nYour data hasn't been changed; nothing was written. Try again, and if it still fails contact your administrator.`)
+    } finally {
+      setIsExportingCsv(false)
+    }
+  }, [clinicId, isExportingCsv])
+
   const saveAccountsReceivable = useCallback(async (arToSave: AccountsReceivable[]) => {
     if (!clinicId || !userProfile) {
       return
@@ -632,14 +699,9 @@ export default function AccountsReceivableTab({
         const rawDr =
           ar.date_recorded != null && ar.date_recorded !== 'null' ? String(ar.date_recorded) : null
         const inferredPeriod = inferAccountsReceivableSheetYearMonth(ar)
-        const arYear =
-          ar.ar_year != null && Number.isFinite(Number(ar.ar_year))
-            ? Math.trunc(Number(ar.ar_year))
-            : inferredPeriod?.year ?? new Date().getFullYear()
-        const arMonth =
-          ar.ar_month != null && Number.isFinite(Number(ar.ar_month))
-            ? Math.trunc(Number(ar.ar_month))
-            : inferredPeriod?.month ?? new Date().getMonth() + 1
+        const isExistingRow = !ar.id.startsWith('new-') && !ar.id.startsWith('empty-')
+        const hasExplicitArYear = ar.ar_year != null && Number.isFinite(Number(ar.ar_year))
+        const hasExplicitArMonth = ar.ar_month != null && Number.isFinite(Number(ar.ar_month))
         const arData: Record<string, unknown> = {
           clinic_id: clinicId,
           ar_id: finalArId.trim(),
@@ -650,9 +712,30 @@ export default function AccountsReceivableTab({
           type: (ar.type != null && (ar.type as unknown) !== 'null') ? ar.type : null,
           notes: (ar.notes != null && ar.notes !== 'null') ? ar.notes : null,
           payroll: payrollValue,
-          ar_year: arYear,
-          ar_month: arMonth,
           updated_at: new Date().toISOString(),
+        }
+        // ar_year / ar_month rules:
+        //  - If the row already carries a valid value, preserve it.
+        //  - For NEW rows, fall back to inferred-from-dates, then to current month (the row has to
+        //    belong somewhere on first INSERT).
+        //  - For UPDATES of legacy rows with NULL ar_year/ar_month AND no dates to infer from,
+        //    do NOT stamp ar_year/ar_month — omit them from the payload so the DB row keeps its
+        //    existing value. The previous behaviour fell back to `new Date()` and would move a May
+        //    row to June the first time the user edited any unrelated field on it. That's how
+        //    "half of Morgan's May AR ended up in June" happened.
+        if (hasExplicitArYear) {
+          arData.ar_year = Math.trunc(Number(ar.ar_year))
+        } else if (inferredPeriod?.year != null) {
+          arData.ar_year = inferredPeriod.year
+        } else if (!isExistingRow) {
+          arData.ar_year = new Date().getFullYear()
+        }
+        if (hasExplicitArMonth) {
+          arData.ar_month = Math.trunc(Number(ar.ar_month))
+        } else if (inferredPeriod?.month != null) {
+          arData.ar_month = inferredPeriod.month
+        } else if (!isExistingRow) {
+          arData.ar_month = new Date().getMonth() + 1
         }
 
         let savedAR: AccountsReceivable | null = null
@@ -1643,21 +1726,35 @@ export default function AccountsReceivableTab({
           setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))
           if (clinicPayroll === 2) setSelectedPayroll(payroll)
         }}
-        rightSlot={canTogglePastMonthWholeSheetLock && isViewingPastPeriod && onTogglePastMonthWholeSheetLock ? (
-          <button
-            type="button"
-            onClick={confirmAndTogglePastMonthWholeSheetLock}
-            className="p-1.5 rounded-lg hover:bg-white/10 transition-colors text-white"
-            title={
-              wholeSheetLocked
-                ? 'Unlock sheet — allow editing this period'
-                : 'Lock sheet — make this period read-only for staff'
-            }
-            aria-label={wholeSheetLocked ? 'Unlock accounts receivable sheet' : 'Lock accounts receivable sheet'}
-          >
-            {wholeSheetLocked ? <Lock size={18} strokeWidth={2.25} /> : <Unlock size={18} strokeWidth={2.25} />}
-          </button>
-        ) : undefined}
+        rightSlot={(
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={exportCurrentARAsCsv}
+              disabled={isExportingCsv || !clinicId}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Download every AR row for this clinic as a CSV — use this to take a manual backup before making big changes."
+            >
+              <Download size={14} strokeWidth={2.25} />
+              {isExportingCsv ? 'Exporting…' : 'Download CSV'}
+            </button>
+            {canTogglePastMonthWholeSheetLock && isViewingPastPeriod && onTogglePastMonthWholeSheetLock && (
+              <button
+                type="button"
+                onClick={confirmAndTogglePastMonthWholeSheetLock}
+                className="p-1.5 rounded-lg hover:bg-white/10 transition-colors text-white"
+                title={
+                  wholeSheetLocked
+                    ? 'Unlock sheet — allow editing this period'
+                    : 'Lock sheet — make this period read-only for staff'
+                }
+                aria-label={wholeSheetLocked ? 'Unlock accounts receivable sheet' : 'Lock accounts receivable sheet'}
+              >
+                {wholeSheetLocked ? <Lock size={18} strokeWidth={2.25} /> : <Unlock size={18} strokeWidth={2.25} />}
+              </button>
+            )}
+          </div>
+        )}
       />
       <div 
         ref={tableContainerRef}

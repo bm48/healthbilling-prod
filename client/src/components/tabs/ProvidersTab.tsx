@@ -377,6 +377,8 @@ export default function ProvidersTab({
     latestTableDataRef.current = null
     matrixSourceRevisionsRef.current = null
   }, [extraEmptyRows])
+
+  const [isExportingCurrentSheet, setIsExportingCurrentSheet] = useState(false)
   /** Set while a paste / drag-fill batch is in flight so the table can show a "Saving…" indicator.
    * Paste and fill events go through the same 400ms debounced save as a single edit, but the payload
    * and downstream invoice recompute can take seconds — without a visible indicator the user has no
@@ -464,6 +466,96 @@ export default function ProvidersTab({
   // (e.g. HOT afterChange fired before React has updated the callback) still see the latest UUIDs.
   const activeProviderRowsRef = useRef<SheetRow[]>(activeProviderRows)
   activeProviderRowsRef.current = activeProviderRows
+
+  /** Manual "Download CSV" of the CURRENT billing sheet (active provider × selected month × payroll).
+   * Goes straight to the DB (rather than serializing React state) so the export contains every column
+   * including sheet_id / sort_order / timestamps, which makes a future restore script straightforward.
+   * The pre-existing BackupVersionsBar's "Download CSV" downloads a HISTORICAL backup; this one
+   * captures right-now state, which is what the user asked for to take before risky edits. */
+  const exportCurrentSheetAsCsv = useCallback(async () => {
+    if (!clinicId || !activeProvider) return
+    if (isExportingCurrentSheet) return
+    const month = selectedMonth.getMonth() + 1
+    const year = selectedMonth.getFullYear()
+    const payroll: 1 | 2 = clinicPayroll === 2 ? (selectedPayroll ?? 1) : 1
+    setIsExportingCurrentSheet(true)
+    try {
+      const { data: sheets, error: sheetErr } = await apiClient
+        .from('provider_sheets')
+        .select('id')
+        .eq('clinic_id', clinicId)
+        .eq('provider_id', activeProvider.id)
+        .eq('month', month)
+        .eq('year', year)
+        .eq('payroll', payroll)
+        .limit(1)
+      if (sheetErr) throw sheetErr
+      const sheetId = (sheets && sheets.length > 0) ? (sheets[0] as { id: string }).id : null
+      if (!sheetId) {
+        alert('No sheet exists yet for this month — nothing to download.\n\nYour data hasn\'t been changed.')
+        return
+      }
+
+      const { data: rowsRaw, error: rowsErr } = await apiClient
+        .from('provider_sheet_rows')
+        .select('*')
+        .eq('sheet_id', sheetId)
+        .order('sort_order', { ascending: true })
+      if (rowsErr) throw rowsErr
+      const rows = (rowsRaw || []) as Array<Record<string, unknown>>
+
+      const cols = [
+        'id', 'sheet_id', 'sort_order',
+        'patient_id', 'appointment_date', 'appointment_time', 'visit_type', 'notes',
+        'billing_code', 'billing_code_color', 'cpt_code', 'cpt_code_color',
+        'appointment_status', 'appointment_status_color',
+        'claim_status', 'claim_status_color',
+        'submit_date', 'insurance_payment', 'insurance_adjustment',
+        'invoice_amount', 'collected_from_patient',
+        'patient_pay_status', 'patient_pay_status_color',
+        'payment_date', 'payment_date_color',
+        'ar_type', 'ar_amount', 'ar_date', 'ar_date_color', 'ar_notes',
+        'provider_payment_amount', 'provider_payment_date', 'provider_payment_notes',
+        'highlight_color', 'total',
+        'created_at', 'updated_at',
+      ] as const
+      const escape = (val: unknown): string => {
+        if (val == null || val === 'null') return ''
+        const s = String(val)
+        if (/[,"\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+        return s
+      }
+      const header = cols.join(',')
+      const body = rows.map((r) => cols.map((c) => escape(r[c])).join(','))
+      const csv = '﻿' + [header, ...body].join('\n')
+
+      const safe = (s: string) =>
+        s.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9_\- ]/g, '').trim() || 'Provider'
+      const providerName = safe(
+        `${(activeProvider.first_name ?? '').trim()} ${(activeProvider.last_name ?? '').trim()}`,
+      )
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const today = new Date()
+      const Y = today.getFullYear()
+      const M = String(today.getMonth() + 1).padStart(2, '0')
+      const D = String(today.getDate()).padStart(2, '0')
+      const H = String(today.getHours()).padStart(2, '0')
+      const Mi = String(today.getMinutes()).padStart(2, '0')
+      const payrollLabel = clinicPayroll === 2 ? `-half${payroll}` : ''
+      a.download = `BillingSheet_${providerName}_${year}-${String(month).padStart(2, '0')}${payrollLabel}_savedAt-${Y}-${M}-${D}_${H}${Mi}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('[ProvidersTab export] failed:', e)
+      const msg = e instanceof Error ? e.message : 'Failed to export billing sheet.'
+      alert(`Export failed: ${msg}\n\nYour data hasn't been changed; nothing was written. Try again, and if it still fails contact your administrator.`)
+    } finally {
+      setIsExportingCurrentSheet(false)
+    }
+  }, [clinicId, activeProvider, selectedMonth, selectedPayroll, clinicPayroll, isExportingCurrentSheet])
 
   /** Bumps Handsontable dataVersion when Patient Info (or elsewhere) updates patients so rows with matching ID show filled fields — without auto-adding provider rows. */
   const patientsDisplayRevision = useMemo(() => {
@@ -3021,6 +3113,15 @@ export default function ProvidersTab({
 
       {activeProvider && canEdit && !isViewingBackup && (
         <div className="mt-3 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={exportCurrentSheetAsCsv}
+            disabled={isExportingCurrentSheet}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Download this sheet's current rows as a CSV — use this to take a manual backup before risky changes."
+          >
+            {isExportingCurrentSheet ? 'Exporting…' : 'Download CSV'}
+          </button>
           <button
             type="button"
             onClick={() => setExtraEmptyRows((n) => n + BILLING_SHEET_ROWS_STEP)}

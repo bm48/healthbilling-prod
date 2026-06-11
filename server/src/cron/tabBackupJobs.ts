@@ -131,18 +131,25 @@ function toDateOnly(val: unknown): string {
   return s
 }
 
-const AR_DISPLAY_HEADERS = ['ID', 'Name', 'Date of Service', 'Amount', 'Date Recorded', 'Type', 'Notes']
+/** Full-fidelity AR backup columns. Includes per-provider scoping (provider_id), month/payroll
+ *  assignment (ar_year, ar_month, payroll), and timestamps so a restore can fully reconstruct the
+ *  row. Earlier backups only had the 7 "display" columns (ID, Name, Date of Service, Amount, Date
+ *  Recorded, Type, Notes) which lost provider scoping on restore — explicitly why Jenali's AR
+ *  recovery has been impossible: even when a backup existed, the row's provider_id couldn't be
+ *  reconstructed from it. */
+const AR_BACKUP_COLUMNS = [
+  'id', 'clinic_id', 'provider_id',
+  'ar_id', 'name',
+  'date_of_service', 'amount', 'date_recorded', 'type', 'notes',
+  'ar_year', 'ar_month', 'payroll',
+  'created_at', 'updated_at',
+] as const
 
-function arRowToDisplayValues(r: Record<string, unknown>): string[] {
-  return [
-    escapeCsvCell(r.ar_id ?? ''),
-    escapeCsvCell(r.name ?? ''),
-    escapeCsvCell(toDateOnly(r.date_of_service)),
-    escapeCsvCell(r.amount ?? ''),
-    escapeCsvCell(toDateOnly(r.date_recorded)),
-    escapeCsvCell(r.type ?? ''),
-    escapeCsvCell(r.notes ?? ''),
-  ]
+function arRowToBackupValues(r: Record<string, unknown>): string[] {
+  return AR_BACKUP_COLUMNS.map((col) => {
+    if (col === 'date_of_service' || col === 'date_recorded') return escapeCsvCell(toDateOnly(r[col]))
+    return escapeCsvCell(r[col] ?? '')
+  })
 }
 
 /** UTF-8 BOM (U+FEFF). Prepended to every CSV we write so Excel never falls into legacy SYLK
@@ -151,8 +158,8 @@ function arRowToDisplayValues(r: Record<string, unknown>): string[] {
 const UTF8_BOM = '﻿'
 
 function arRowsToCsv(rows: Record<string, unknown>[]): string {
-  const header = AR_DISPLAY_HEADERS.map((c) => escapeCsvCell(c)).join(',')
-  const body = rows.map((r) => arRowToDisplayValues(r).join(',')).join('\n')
+  const header = AR_BACKUP_COLUMNS.map((c) => escapeCsvCell(c)).join(',')
+  const body = rows.map((r) => arRowToBackupValues(r).join(',')).join('\n')
   return `${UTF8_BOM}${header}\n${body}`
 }
 
@@ -235,17 +242,22 @@ async function writeBucketCsv(bucket: string, objectPath: string, csv: string): 
 export async function runBackupAr(pool: Pool): Promise<TabBackupJobResult> {
   const { rows: clinicRows } = await pool.query<{ id: string }>(`SELECT id FROM public.clinics`)
   const clinicIds = clinicRows.map((c) => c.id)
-  const { createdSince, createdUntil } = currentMonthCreatedRangePacific()
   let backedUp = 0
   const errors: string[] = []
 
   for (const clinicId of clinicIds) {
+    // Capture EVERY AR row for the clinic on every backup run. The previous query was scoped to
+    // "rows whose created_at falls in the current Pacific calendar month", which meant rows created
+    // in earlier months were absent from every subsequent backup — exactly Jenali's "I lost months
+    // of data and the backups don't have it" report. The CSV stays small relative to the
+    // provider_sheets backup (AR tables are dozens-to-hundreds of rows per clinic) so a full dump
+    // is cheap, and every version becomes a complete point-in-time snapshot.
     const { rows } = await pool.query(
       `SELECT * FROM public.accounts_receivables
        WHERE clinic_id = $1::uuid
-         AND created_at >= $2::timestamptz AND created_at <= $3::timestamptz
-       ORDER BY date_recorded ASC NULLS LAST`,
-      [clinicId, createdSince, createdUntil],
+       ORDER BY ar_year ASC NULLS LAST, ar_month ASC NULLS LAST, payroll ASC NULLS LAST,
+                date_recorded ASC NULLS LAST, created_at ASC NULLS LAST`,
+      [clinicId],
     )
     const rowMaps = rows as Record<string, unknown>[]
 

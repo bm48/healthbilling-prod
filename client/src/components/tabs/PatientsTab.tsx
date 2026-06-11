@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
 import { v4 as uuidv4 } from 'uuid'
+import { Download } from 'lucide-react'
 import { copayTextCellRenderer, coinsuranceTextCellRenderer } from '@/lib/handsontableCustomRenderers'
 import { toDisplayValue, toStoredString } from '@/lib/utils'
 
@@ -695,6 +696,61 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
       // ignore: persistence is best-effort; in-memory state still works.
     }
   }, [extraEmptyRowsStorageKey, extraEmptyRows])
+
+  /** Manual export: fetches every patient row for this clinic and downloads it as a CSV with the
+   * full DB schema so a future restore would preserve every field including timestamps and ids. */
+  const [isExportingCsv, setIsExportingCsv] = useState(false)
+  const exportCurrentPatientsAsCsv = useCallback(async () => {
+    if (!clinicId) return
+    if (isExportingCsv) return
+    setIsExportingCsv(true)
+    try {
+      const { data, error } = await apiClient
+        .from('patients')
+        .select('*')
+        .eq('clinic_id', clinicId)
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      const rows = (data || []) as Array<Record<string, unknown>>
+
+      const cols = [
+        'id', 'clinic_id', 'patient_id', 'first_name', 'last_name',
+        'subscriber_id', 'insurance', 'copay', 'coinsurance',
+        'date_of_birth', 'phone', 'email', 'address',
+        'created_at', 'updated_at',
+      ] as const
+      const escape = (val: unknown): string => {
+        if (val == null || val === 'null') return ''
+        const s = String(val)
+        if (/[,"\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+        return s
+      }
+      const header = cols.join(',')
+      const body = rows.map((r) => cols.map((c) => escape(r[c])).join(','))
+      const csv = '﻿' + [header, ...body].join('\n')
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const today = new Date()
+      const y = today.getFullYear()
+      const m = String(today.getMonth() + 1).padStart(2, '0')
+      const d = String(today.getDate()).padStart(2, '0')
+      const h = String(today.getHours()).padStart(2, '0')
+      const min = String(today.getMinutes()).padStart(2, '0')
+      a.download = `Patients_full_${clinicId}_${y}-${m}-${d}_${h}${min}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('[Patients export] failed:', e)
+      const msg = e instanceof Error ? e.message : 'Failed to export patients.'
+      alert(`Export failed: ${msg}\n\nYour data hasn't been changed; nothing was written. Try again, and if it still fails contact your administrator.`)
+    } finally {
+      setIsExportingCsv(false)
+    }
+  }, [clinicId, isExportingCsv])
+
   const padPatientsTo200 = useCallback(
     (list: Patient[]) => {
       const target = PATIENTS_BASE_ROWS + extraEmptyRows
@@ -1157,9 +1213,21 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
 
   return (
     <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
-      <div 
+      <div className="mb-3 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={exportCurrentPatientsAsCsv}
+          disabled={isExportingCsv || !clinicId}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Download every patient row for this clinic as a CSV — use this to take a manual backup before making big changes."
+        >
+          <Download size={14} strokeWidth={2.25} />
+          {isExportingCsv ? 'Exporting…' : 'Download CSV'}
+        </button>
+      </div>
+      <div
         ref={tableContainerRef}
-        className="table-container dark-theme" 
+        className="table-container dark-theme"
         style={{ 
           maxHeight: isInSplitScreen ? undefined : '600px',
           flex: isInSplitScreen ? 1 : undefined,
