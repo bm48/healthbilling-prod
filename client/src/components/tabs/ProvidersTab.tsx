@@ -377,8 +377,17 @@ export default function ProvidersTab({
     latestTableDataRef.current = null
     matrixSourceRevisionsRef.current = null
   }, [extraEmptyRows])
+  /** Set while a paste / drag-fill batch is in flight so the table can show a "Saving…" indicator.
+   * Paste and fill events go through the same 400ms debounced save as a single edit, but the payload
+   * and downstream invoice recompute can take seconds — without a visible indicator the user has no
+   * way to tell whether their paste actually landed. */
+  const [isBulkSaving, setIsBulkSaving] = useState(false)
+  /** Wall-clock at which the bulk toast was shown, so the debounced save can keep it on at least
+   * BULK_SAVE_TOAST_MIN_MS even if the save itself returns faster than that. Null = no pending bulk. */
+  const bulkSaveStartedAtRef = useRef<number | null>(null)
   /** Minimum visible duration (ms) for the deleting toast so it doesn't flash off on fast local saves. */
   const DELETE_TOAST_MIN_MS = 700
+  const BULK_SAVE_TOAST_MIN_MS = 700
   const runWithDeleteToast = useCallback((promiseOrValue: Promise<unknown> | void) => {
     setIsDeletingRows(true)
     const startedAt = Date.now()
@@ -1823,6 +1832,21 @@ export default function ProvidersTab({
     })
     if (!hasRealChange) return
 
+    // Detect paste / drag-fill — these batch many cells into one afterChange call, so the user
+    // benefits from a visible "Saving…" indicator (the save is still 400ms debounced + server
+    // recompute downstream, which on a large paste can run 2–5s). The toast shows up immediately
+    // on the bulk afterChange and the setTimeout below clears it once the actual save resolves.
+    const srcStr = String(source)
+    const isBulkChange =
+      srcStr === 'CopyPaste' ||
+      srcStr.includes('Autofill') ||
+      srcStr === 'fill' ||
+      changes.length > 1
+    if (isBulkChange && bulkSaveStartedAtRef.current == null) {
+      bulkSaveStartedAtRef.current = Date.now()
+      setIsBulkSaving(true)
+    }
+
     // Column index -> SheetRow field (visit_type inserted at 9 when showVisitTypeColumn)
     const fieldsFullBase: Array<keyof SheetRow> = [
       'patient_id', 'patient_first_name', 'last_initial', 'patient_insurance', 'patient_copay', 'patient_coinsurance',
@@ -2384,9 +2408,29 @@ export default function ProvidersTab({
           providerId: pending.providerId,
           rows: pending.rows.length,
         })
-        onSaveProviderSheetRowsDirect(pending.providerId, pending.rows).catch(err => {
+        const startedAt = bulkSaveStartedAtRef.current
+        bulkSaveStartedAtRef.current = null
+        const savePromise = onSaveProviderSheetRowsDirect(pending.providerId, pending.rows)
+        savePromise.catch(err => {
           console.error('[handleProviderRowsHandsontableChange] Error in saveProviderSheetRowsDirect:', err)
         })
+        // Clear the bulk-saving toast once the save completes, respecting a minimum visible duration
+        // so a fast network doesn't flash the indicator off before the user can register it.
+        if (startedAt != null) {
+          savePromise.finally(() => {
+            const elapsed = Date.now() - startedAt
+            const remaining = Math.max(0, BULK_SAVE_TOAST_MIN_MS - elapsed)
+            if (remaining === 0) {
+              setIsBulkSaving(false)
+            } else {
+              setTimeout(() => setIsBulkSaving(false), remaining)
+            }
+          })
+        }
+      } else if (bulkSaveStartedAtRef.current != null) {
+        // No pending save (e.g. row was emptied) — clear the toast right away.
+        bulkSaveStartedAtRef.current = null
+        setIsBulkSaving(false)
       }
     }, 400)
 
@@ -2837,6 +2881,48 @@ export default function ProvidersTab({
           />
           Deleting row(s)…
           <style>{`@keyframes providers-tab-spin { to { transform: rotate(360deg); } }`}</style>
+        </div>,
+        document.body,
+      )}
+      {/* Bulk-save toast for paste / drag-fill. Same portal + styling treatment as the delete toast,
+        offset slightly so the two don't visually collide if the user did both in quick succession. */}
+      {isBulkSaving && createPortal(
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'fixed',
+            top: 20,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 99999,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '12px 20px',
+            borderRadius: 8,
+            backgroundColor: 'rgba(15, 23, 42, 0.95)',
+            color: '#fff',
+            fontSize: 15,
+            fontWeight: 600,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            pointerEvents: 'none',
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              width: 18,
+              height: 18,
+              border: '3px solid rgba(255,255,255,0.25)',
+              borderTopColor: '#fff',
+              borderRadius: '50%',
+              animation: 'providers-tab-spin 0.7s linear infinite',
+              display: 'inline-block',
+            }}
+          />
+          Saving…
         </div>,
         document.body,
       )}
