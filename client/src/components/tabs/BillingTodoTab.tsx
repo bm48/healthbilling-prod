@@ -429,10 +429,29 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
 
   /** Display minimum + user-requested extra rows (Jenali asked for an "add 50 more" button so the
    * grid can grow without forcing real rows to scroll into nothing). Real rows are NEVER stripped;
-   * only trailing empty placeholders past the target are trimmed. */
+   * only trailing empty placeholders past the target are trimmed.
+   * Persisted to localStorage per clinic so a refresh keeps the grid at the size the user grew it to. */
   const BILLING_TODOS_BASE_ROWS = 200
   const BILLING_TODOS_ROWS_STEP = 50
-  const [extraEmptyRows, setExtraEmptyRows] = useState(0)
+  const extraEmptyRowsStorageKey = clinicId ? `billing-todo-extra-rows-${clinicId}` : null
+  const [extraEmptyRows, setExtraEmptyRows] = useState(() => {
+    if (!clinicId) return 0
+    try {
+      const raw = localStorage.getItem(`billing-todo-extra-rows-${clinicId}`)
+      const n = raw == null ? 0 : parseInt(raw, 10)
+      return Number.isFinite(n) && n >= 0 ? n : 0
+    } catch {
+      return 0
+    }
+  })
+  useEffect(() => {
+    if (!extraEmptyRowsStorageKey) return
+    try {
+      localStorage.setItem(extraEmptyRowsStorageKey, String(extraEmptyRows))
+    } catch {
+      // ignore: persistence is best-effort.
+    }
+  }, [extraEmptyRowsStorageKey, extraEmptyRows])
   const padBillingTodosTo200 = useCallback(
     (list: TodoItem[]) => {
       const target = BILLING_TODOS_BASE_ROWS + extraEmptyRows

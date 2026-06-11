@@ -672,10 +672,29 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
 
   /** Display minimum + user-requested extra rows (Jenali asked for an "add 50 more" button so the
    * grid can grow past 200 without forcing real rows to scroll into nothing). Real (non-empty-*)
-   * rows are NEVER stripped; only trailing empty placeholders past the target are trimmed. */
+   * rows are NEVER stripped; only trailing empty placeholders past the target are trimmed.
+   * Persisted to localStorage per clinic so a refresh keeps the grid at the size the user grew it to. */
   const PATIENTS_BASE_ROWS = 200
   const PATIENTS_ROWS_STEP = 50
-  const [extraEmptyRows, setExtraEmptyRows] = useState(0)
+  const extraEmptyRowsStorageKey = clinicId ? `patients-extra-rows-${clinicId}` : null
+  const [extraEmptyRows, setExtraEmptyRows] = useState(() => {
+    if (!clinicId) return 0
+    try {
+      const raw = localStorage.getItem(`patients-extra-rows-${clinicId}`)
+      const n = raw == null ? 0 : parseInt(raw, 10)
+      return Number.isFinite(n) && n >= 0 ? n : 0
+    } catch {
+      return 0
+    }
+  })
+  useEffect(() => {
+    if (!extraEmptyRowsStorageKey) return
+    try {
+      localStorage.setItem(extraEmptyRowsStorageKey, String(extraEmptyRows))
+    } catch {
+      // ignore: persistence is best-effort; in-memory state still works.
+    }
+  }, [extraEmptyRowsStorageKey, extraEmptyRows])
   const padPatientsTo200 = useCallback(
     (list: Patient[]) => {
       const target = PATIENTS_BASE_ROWS + extraEmptyRows

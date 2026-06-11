@@ -347,12 +347,29 @@ export default function ProvidersTab({
   /** Set while a delete batch is in flight so the table can show a "Deleting…" indicator. */
   const [isDeletingRows, setIsDeletingRows] = useState(false)
   /** Billing-sheet "Add 50 rows" button: bumps the pad-to target so the user can scroll into more
-   * empty rows when 200 isn't enough. State is per ProvidersTab instance, so it persists across
-   * provider switches in the same tab visit but resets on tab unmount (acceptable — saved rows
-   * always render at their full count regardless). */
+   * empty rows when 200 isn't enough. Persisted to localStorage per clinic so a refresh keeps the
+   * grid at the size the user grew it to. */
   const BILLING_SHEET_BASE_ROWS = 200
   const BILLING_SHEET_ROWS_STEP = 50
-  const [extraEmptyRows, setExtraEmptyRows] = useState(0)
+  const extraEmptyRowsStorageKey = clinicId ? `providers-extra-rows-${clinicId}` : null
+  const [extraEmptyRows, setExtraEmptyRows] = useState(() => {
+    if (!clinicId) return 0
+    try {
+      const raw = localStorage.getItem(`providers-extra-rows-${clinicId}`)
+      const n = raw == null ? 0 : parseInt(raw, 10)
+      return Number.isFinite(n) && n >= 0 ? n : 0
+    } catch {
+      return 0
+    }
+  })
+  useEffect(() => {
+    if (!extraEmptyRowsStorageKey) return
+    try {
+      localStorage.setItem(extraEmptyRowsStorageKey, String(extraEmptyRows))
+    } catch {
+      // ignore: persistence is best-effort.
+    }
+  }, [extraEmptyRowsStorageKey, extraEmptyRows])
   const padTargetRows = BILLING_SHEET_BASE_ROWS + extraEmptyRows
   // Cached matrix in latestTableDataRef is built off the old (smaller) row count; invalidate when
   // the user grows the grid so getProviderRowsHandsontableData rebuilds with the padded row set.
