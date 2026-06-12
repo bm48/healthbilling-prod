@@ -468,10 +468,10 @@ export default function ProvidersTab({
   activeProviderRowsRef.current = activeProviderRows
 
   /** Manual "Download CSV" of the CURRENT billing sheet (active provider × selected month × payroll).
-   * Goes straight to the DB (rather than serializing React state) so the export contains every column
-   * including sheet_id / sort_order / timestamps, which makes a future restore script straightforward.
-   * The pre-existing BackupVersionsBar's "Download CSV" downloads a HISTORICAL backup; this one
-   * captures right-now state, which is what the user asked for to take before risky edits. */
+   * Matches what's on screen exactly — same column order, same headers, same values — so the user
+   * can copy any row out of the CSV and paste it straight back into the live grid. We use HOT's
+   * own getData() because that's the source of truth for "what the user is looking at right now",
+   * including their sort + condense + visit-type column choices, and any unsaved edits. */
   const exportCurrentSheetAsCsv = useCallback(async () => {
     if (!clinicId || !activeProvider) return
     if (isExportingCurrentSheet) return
@@ -480,53 +480,36 @@ export default function ProvidersTab({
     const payroll: 1 | 2 = clinicPayroll === 2 ? (selectedPayroll ?? 1) : 1
     setIsExportingCurrentSheet(true)
     try {
-      const { data: sheets, error: sheetErr } = await apiClient
-        .from('provider_sheets')
-        .select('id')
-        .eq('clinic_id', clinicId)
-        .eq('provider_id', activeProvider.id)
-        .eq('month', month)
-        .eq('year', year)
-        .eq('payroll', payroll)
-        .limit(1)
-      if (sheetErr) throw sheetErr
-      const sheetId = (sheets && sheets.length > 0) ? (sheets[0] as { id: string }).id : null
-      if (!sheetId) {
-        alert('No sheet exists yet for this month — nothing to download.\n\nYour data hasn\'t been changed.')
+      const clinicRes = await apiClient
+        .from('clinics')
+        .select('name')
+        .eq('id', clinicId)
+        .maybeSingle()
+      const clinicNameRaw = (clinicRes.data as { name?: string } | null)?.name ?? ''
+      const safeClinicName = clinicNameRaw
+        .replace(/\s+/g, ' ')
+        .replace(/[^a-zA-Z0-9_\- ]/g, '')
+        .trim() || clinicId
+
+      const hot = hotInstanceRef.current
+      if (!hot || (hot as { isDestroyed?: boolean }).isDestroyed) {
+        alert('The table isn\'t ready yet — wait a second and try again.')
         return
       }
-
-      const { data: rowsRaw, error: rowsErr } = await apiClient
-        .from('provider_sheet_rows')
-        .select('*')
-        .eq('sheet_id', sheetId)
-        .order('sort_order', { ascending: true })
-      if (rowsErr) throw rowsErr
-      const rows = (rowsRaw || []) as Array<Record<string, unknown>>
-
-      const cols = [
-        'id', 'sheet_id', 'sort_order',
-        'patient_id', 'appointment_date', 'appointment_time', 'visit_type', 'notes',
-        'billing_code', 'billing_code_color', 'cpt_code', 'cpt_code_color',
-        'appointment_status', 'appointment_status_color',
-        'claim_status', 'claim_status_color',
-        'submit_date', 'insurance_payment', 'insurance_adjustment',
-        'invoice_amount', 'collected_from_patient',
-        'patient_pay_status', 'patient_pay_status_color',
-        'payment_date', 'payment_date_color',
-        'ar_type', 'ar_amount', 'ar_date', 'ar_date_color', 'ar_notes',
-        'provider_payment_amount', 'provider_payment_date', 'provider_payment_notes',
-        'highlight_color', 'total',
-        'created_at', 'updated_at',
-      ] as const
+      const grid = hot.getData() as Array<Array<string | number | boolean | null | undefined>>
       const escape = (val: unknown): string => {
         if (val == null || val === 'null') return ''
+        if (typeof val === 'boolean') return val ? 'TRUE' : ''
         const s = String(val)
         if (/[,"\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
         return s
       }
-      const header = cols.join(',')
-      const body = rows.map((r) => cols.map((c) => escape(r[c])).join(','))
+      const isRowEmpty = (row: Array<string | number | boolean | null | undefined>): boolean =>
+        row.every((c) => c == null || (typeof c === 'boolean' ? !c : String(c).trim() === ''))
+      const body = grid
+        .filter((row) => !isRowEmpty(row))
+        .map((row) => row.map((c) => escape(c)).join(','))
+      const header = columnTitles.map((t) => escape(t)).join(',')
       const csv = '﻿' + [header, ...body].join('\n')
 
       const safe = (s: string) =>
@@ -545,7 +528,7 @@ export default function ProvidersTab({
       const H = String(today.getHours()).padStart(2, '0')
       const Mi = String(today.getMinutes()).padStart(2, '0')
       const payrollLabel = clinicPayroll === 2 ? `-half${payroll}` : ''
-      a.download = `BillingSheet_${providerName}_${year}-${String(month).padStart(2, '0')}${payrollLabel}_savedAt-${Y}-${M}-${D}_${H}${Mi}.csv`
+      a.download = `BillingSheet_${safeClinicName}_${providerName}_${year}-${String(month).padStart(2, '0')}${payrollLabel}_savedAt-${Y}-${M}-${D}_${H}${Mi}.csv`
       a.click()
       URL.revokeObjectURL(url)
     } catch (e) {

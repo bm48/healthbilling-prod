@@ -705,28 +705,38 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
     if (isExportingCsv) return
     setIsExportingCsv(true)
     try {
-      const { data, error } = await apiClient
-        .from('patients')
-        .select('*')
-        .eq('clinic_id', clinicId)
-        .order('created_at', { ascending: true })
-      if (error) throw error
-      const rows = (data || []) as Array<Record<string, unknown>>
+      const clinicRes = await apiClient
+        .from('clinics')
+        .select('name')
+        .eq('id', clinicId)
+        .maybeSingle()
+      const clinicNameRaw = (clinicRes.data as { name?: string } | null)?.name ?? ''
+      const safeClinicName = clinicNameRaw
+        .replace(/\s+/g, ' ')
+        .replace(/[^a-zA-Z0-9_\- ]/g, '')
+        .trim() || clinicId
 
-      const cols = [
-        'id', 'clinic_id', 'patient_id', 'first_name', 'last_name',
-        'subscriber_id', 'insurance', 'copay', 'coinsurance',
-        'date_of_birth', 'phone', 'email', 'address',
-        'created_at', 'updated_at',
-      ] as const
+      // Pull the on-screen grid contents (the canonical "what's the user looking at right now")
+      // so the CSV's columns and values match exactly what's in the table. Copying any row back
+      // into the live grid will paste cleanly because the column order is identical.
+      const hot = hotRef.current
+      if (!hot || (hot as { isDestroyed?: boolean }).isDestroyed) {
+        alert('The table isn\'t ready yet — wait a second and try again.')
+        return
+      }
+      const grid = hot.getData() as Array<Array<string | number | null | undefined>>
       const escape = (val: unknown): string => {
         if (val == null || val === 'null') return ''
         const s = String(val)
         if (/[,"\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
         return s
       }
-      const header = cols.join(',')
-      const body = rows.map((r) => cols.map((c) => escape(r[c])).join(','))
+      const isRowEmpty = (row: Array<string | number | null | undefined>): boolean =>
+        row.every((c) => c == null || String(c).trim() === '')
+      const body = grid
+        .filter((row) => !isRowEmpty(row))
+        .map((row) => row.map((c) => escape(c)).join(','))
+      const header = columnTitles.map((t) => escape(t)).join(',')
       const csv = '﻿' + [header, ...body].join('\n')
 
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
@@ -739,7 +749,7 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
       const d = String(today.getDate()).padStart(2, '0')
       const h = String(today.getHours()).padStart(2, '0')
       const min = String(today.getMinutes()).padStart(2, '0')
-      a.download = `Patients_full_${clinicId}_${y}-${m}-${d}_${h}${min}.csv`
+      a.download = `Patients_${safeClinicName}_${y}-${m}-${d}_${h}${min}.csv`
       a.click()
       URL.revokeObjectURL(url)
     } catch (e) {

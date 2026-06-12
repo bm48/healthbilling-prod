@@ -584,45 +584,49 @@ export default function AccountsReceivableTab({
     setDisplayedAR(rebuilt)
   }, [selectedMonth.getTime(), buildDisplayedFromFull])
 
-  /** Manual export: fetches every AR row for this clinic (no month / payroll / provider scoping,
-   * no filtering of empty rows) and downloads it as a CSV with the FULL schema so a re-import would
-   * preserve provider_id, ar_year / ar_month, payroll, and timestamps. The cron backup runs twice a
-   * day but is restricted to rows created in the current calendar month — this lets the user grab a
-   * complete point-in-time snapshot whenever they want, independent of the cron. */
+  /** Manual export: dumps the AR rows currently visible on screen, in the same column order, with
+   * the same values the user sees in Handsontable — so the resulting CSV can be opened in Excel
+   * and copy/pasted straight back into the live table when restoring. We use `hot.getData()`
+   * because that's the canonical source of "what's on screen right now" (it reflects the user's
+   * sort order, any visible-but-unsaved edits, and the column visibility / order). */
   const [isExportingCsv, setIsExportingCsv] = useState(false)
   const exportCurrentARAsCsv = useCallback(async () => {
     if (!clinicId) return
     if (isExportingCsv) return
     setIsExportingCsv(true)
     try {
-      const { data, error } = await apiClient
-        .from('accounts_receivables')
-        .select('*')
-        .eq('clinic_id', clinicId)
-        .order('ar_year', { ascending: true })
-        .order('ar_month', { ascending: true })
-        .order('payroll', { ascending: true })
-        .order('created_at', { ascending: true })
-      if (error) throw error
-      const rows = (data || []) as Array<Record<string, unknown>>
+      const clinicRes = await apiClient
+        .from('clinics')
+        .select('name')
+        .eq('id', clinicId)
+        .maybeSingle()
+      const clinicNameRaw = (clinicRes.data as { name?: string } | null)?.name ?? ''
+      const safeClinicName = clinicNameRaw
+        .replace(/\s+/g, ' ')
+        .replace(/[^a-zA-Z0-9_\- ]/g, '')
+        .trim() || clinicId
 
-      // Full schema — header keys match the DB column names so a future re-import / restore can map
-      // straight back. Parsers (fetchBackupCsvAsAR) already accept these legacy DB column headers.
-      const cols = [
-        'id', 'clinic_id', 'provider_id', 'ar_id', 'name',
-        'date_of_service', 'amount', 'date_recorded', 'type', 'notes',
-        'ar_year', 'ar_month', 'payroll',
-        'created_at', 'updated_at',
-      ] as const
+      const hot = hotRef.current
+      if (!hot || (hot as { isDestroyed?: boolean }).isDestroyed) {
+        alert('The table isn\'t ready yet — wait a second and try again.')
+        return
+      }
+      // `getData()` returns a 2D array of source values in display order. Each row matches one
+      // grid row, each column matches the order of `columnTitles` shown in the header.
+      const grid = hot.getData() as Array<Array<string | number | null | undefined>>
       const escape = (val: unknown): string => {
         if (val == null || val === 'null') return ''
         const s = String(val)
         if (/[,"\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
         return s
       }
-      const header = cols.join(',')
-      const body = rows.map((r) => cols.map((c) => escape(r[c])).join(','))
-      // Prefix UTF-8 BOM so Excel never mistakes "id,..." for SYLK and refuses to open the file.
+      const isRowEmpty = (row: Array<string | number | null | undefined>): boolean =>
+        row.every((c) => c == null || String(c).trim() === '')
+      const body = grid
+        .filter((row) => !isRowEmpty(row))
+        .map((row) => row.map((c) => escape(c)).join(','))
+      const header = columnTitles.map((t) => escape(t)).join(',')
+      // Prefix UTF-8 BOM so Excel never mistakes "ID,..." for SYLK and refuses to open the file.
       const csv = '﻿' + [header, ...body].join('\n')
 
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
@@ -635,7 +639,7 @@ export default function AccountsReceivableTab({
       const d = String(today.getDate()).padStart(2, '0')
       const h = String(today.getHours()).padStart(2, '0')
       const min = String(today.getMinutes()).padStart(2, '0')
-      a.download = `AR_full_${clinicId}_${y}-${m}-${d}_${h}${min}.csv`
+      a.download = `AR_${safeClinicName}_${y}-${m}-${d}_${h}${min}.csv`
       a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
