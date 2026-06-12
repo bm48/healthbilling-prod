@@ -823,10 +823,19 @@ export default function ProvidersTab({
   const patientsLookup = useMemo(() => coPatientByIdKey(patients), [patients])
 
   // Map rows to Handsontable 2D array format (shared with provider backup CSV export in `providerSheetBackupUiExport`).
+  // Override the condense flags so the matrix is always built at full width — the column.data props
+  // in providerColumnsWithLocks reference ORIGINAL row positions (e.g. data:11 for Ins Pay, data:6 for
+  // DOS), so a compacted matrix would index those props into the wrong slots. The visual hiding of
+  // unwanted columns happens via the columns filter, not by shortening the matrix. CSV export is
+  // unaffected — it still calls sheetRowsToUiMatrix with the real (compacted) layout.
+  const fullGridLayout = useMemo(
+    (): ProviderSheetUiExportLayout => ({ ...providerSheetUiLayout, isCondensed: false, isMinimal: false }),
+    [providerSheetUiLayout],
+  )
   const getTableDataFromRows = useCallback(
     (rows: SheetRow[]) =>
-      sheetRowsToUiMatrix(rows, patients, providerSheetUiLayout, patientsLookup) as (string | number | boolean)[][],
-    [patients, providerSheetUiLayout, patientsLookup]
+      sheetRowsToUiMatrix(rows, patients, fullGridLayout, patientsLookup) as (string | number | boolean)[][],
+    [patients, fullGridLayout, patientsLookup]
   )
 
   // Convert rows to Handsontable data format; prefer latest from change handler, then props, to avoid losing typed data when parent re-renders after load (like PatientsTab).
@@ -936,12 +945,11 @@ export default function ProvidersTab({
       : fieldsOfficeStaffBase
     if (officeStaffView) return fieldsOfficeStaff
     if (isProviderView) return providerLevel === 2 ? fieldsFull : fieldsProviderView
-    if (showCondenseButton && isMinimal) {
-      return minimalVisualIndices.map((i) => fieldsFull[i]) as Array<keyof SheetRow>
-    }
-    if (showCondenseButton && isCondensed) return fieldsFull.slice(0, showVisitTypeColumn ? 10 : 9) as Array<keyof SheetRow>
+    // Minimal & condensed return fieldsFull: hot.getData() returns the underlying matrix at full
+    // width (because getTableDataFromRows now forces isMinimal/isCondensed false on the layout), so
+    // sync must iterate the full row positions.
     return fieldsFull
-  }, [officeStaffView, isProviderView, providerLevel, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices, showVisitTypeColumn])
+  }, [officeStaffView, isProviderView, providerLevel, showVisitTypeColumn])
 
   // Sum of Ins Pay, Collected from PT, AR, Total (computed from current rows; not stored in DB)
   // For provider level 2 (full) we show full tally; for admin/billing we show insPay, collectedFromPt, total; AR only for provider level 2
@@ -1970,15 +1978,16 @@ export default function ProvidersTab({
     const fieldsOfficeStaff = showVisitTypeColumn
       ? ([...fieldsOfficeStaffBase.slice(0, 9), 'visit_type', ...fieldsOfficeStaffBase.slice(9)] as Array<keyof SheetRow>)
       : fieldsOfficeStaffBase
+    // Minimal & condensed modes use fieldsFull (NOT a compacted slice) because Handsontable passes
+    // the column's `data:` prop as `col` to afterChange, and `data:` props in providerColumnsWithLocks
+    // reference ORIGINAL row positions (data:11 for Ins Pay, data:6 for DOS, etc.). A compacted
+    // fields array would map data:11 → wrong field (ar_date instead of insurance_payment), which
+    // is the bug that surfaced when editing Ins Pay in minimal mode cleared DOS/Claim/MostRecent.
     const fields: Array<keyof SheetRow> = officeStaffView
       ? fieldsOfficeStaff
       : isProviderView
         ? (providerLevel === 2 ? fieldsFull : fieldsProviderView)
-        : (showCondenseButton && isMinimal
-            ? (minimalVisualIndices.map((i) => fieldsFull[i]) as Array<keyof SheetRow>)
-            : showCondenseButton && isCondensed
-              ? fieldsFull.slice(0, showVisitTypeColumn ? 10 : 9)
-              : fieldsFull)
+        : fieldsFull
     
     const dateFields: (keyof SheetRow)[] = ['appointment_date', 'submit_date', 'payment_date', 'ar_date']
     // Start from latest ref when same provider so rapid edits accumulate (parent state may not have updated yet).
