@@ -17,10 +17,12 @@ export type ProviderSheetUiExportLayout = {
   isMinimal?: boolean
 }
 
-/** Indices (into the visual columnTitlesFull / fullRow array, after Visit Type insert) kept in minimal mode. */
+/** Indices (into the visual columnTitlesFull / fullRow array, after Visit Type insert) kept in minimal mode.
+ *  Includes index 0 (ID / Patient ID) so the patient identifier is always visible — without it
+ *  the user can't tell rows apart when only First Name + dates + claim info are shown. */
 function minimalVisualIndices(showVisitTypeColumn: boolean): number[] {
   const vtShift = showVisitTypeColumn ? 1 : 0
-  const indices: number[] = [1, 2, 6]
+  const indices: number[] = [0, 1, 2, 6]
   for (let i = 9 + vtShift; i <= 18 + vtShift; i++) indices.push(i)
   return indices
 }
