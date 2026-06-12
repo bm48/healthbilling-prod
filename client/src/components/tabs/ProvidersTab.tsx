@@ -443,10 +443,12 @@ export default function ProvidersTab({
     [showVisitTypeColumn, showCopayCoinsuranceColumns, officeStaffView, isProviderView, providerLevel, isCondensed, isMinimal]
   )
 
-  /** Indices kept (in the visual column order incl. Visit Type) for minimal-condense mode. */
+  /** Indices kept (in the visual column order incl. Visit Type) for minimal-condense mode.
+   *  Includes index 0 (ID / Patient ID) so the patient identifier is always visible — without it
+   *  Jenali can't tell rows apart when she's only looking at First Name + dates + claim info. */
   const minimalVisualIndices = useMemo(() => {
     const vtShift = showVisitTypeColumn ? 1 : 0
-    const indices: number[] = [1, 2, 6]
+    const indices: number[] = [0, 1, 2, 6]
     for (let i = 9 + vtShift; i <= 18 + vtShift; i++) indices.push(i)
     return indices
   }, [showVisitTypeColumn])
