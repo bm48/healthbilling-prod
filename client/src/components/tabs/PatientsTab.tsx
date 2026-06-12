@@ -266,7 +266,15 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
     const patientsToProcess = patientsToSave.filter(p => {
       const hasData = p.patient_id || p.first_name || p.last_name || p.insurance || p.copay !== null || p.coinsurance !== null
       if (!hasData) return false
-      if (p.id.startsWith('empty-') || p.id.startsWith('new-')) return true
+      const hasPatientId = !!(p.patient_id && String(p.patient_id).trim() !== '')
+      if (p.id.startsWith('empty-') || p.id.startsWith('new-')) {
+        // New rows are only persisted once the user has entered a Patient ID. The previous behaviour
+        // auto-generated a placeholder like "AB123456" from initials + timestamp, which Jenali
+        // couldn't tell apart from real IDs and overwrote downstream rows in the Billing Sheet. Now
+        // the row stays as a draft in the grid until the Patient ID column is filled in — at which
+        // point the next save picks it up.
+        return hasPatientId
+      }
       const snap = lastSavedSnapshotRef.current.get(p.id)
       const current = normalize(p)
       if (!snap) return true
@@ -297,19 +305,14 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         const patient = patientsToProcess[i]
         const oldId = patient.id // Store the old ID to find it in state
 
-        // Generate patient_id if missing; reuse same temp id for this row so multiple cell edits upsert one record
-        let finalPatientId = patient.patient_id || ''
+        // Patient ID must come from the user — never auto-generated. The filter above already drops
+        // new rows without a Patient ID; this is the defense-in-depth check that protects existing
+        // rows from being saved with an empty Patient ID (which would have hit a unique-constraint
+        // collision anyway, but we'd rather fail clearly than have any code path produce a "weird"
+        // ID like "AB123456").
+        const finalPatientId = (patient.patient_id ?? '').trim()
         if (!finalPatientId) {
-          patientIdGeneratedThisSave.add(oldId)
-          const existing = pendingPatientIdByRowIdRef.current.get(oldId)
-          if (existing) {
-            finalPatientId = existing
-          } else {
-            const timestamp = Date.now().toString().slice(-6)
-            const initials = `${(patient.first_name || '').charAt(0)}${(patient.last_name || '').charAt(0)}`.toUpperCase() || 'PT'
-            finalPatientId = `${initials}${timestamp}`
-            pendingPatientIdByRowIdRef.current.set(oldId, finalPatientId)
-          }
+          continue
         }
 
         // Prepare patient data (never send string "null" to DB)
