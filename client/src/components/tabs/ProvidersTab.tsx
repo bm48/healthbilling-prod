@@ -1770,11 +1770,14 @@ export default function ProvidersTab({
       },
     ])
     if (showCondenseButton && isMinimal) {
-      // Minimal keeps First Name (data:1), LI (data:2), DOS (data:6), and Claim Status onward.
-      // Each column's `data` prop is the underlying SheetRow array index, which is preserved across
-      // copay/coins hiding — so filtering by data:N is robust to that flag.
+      // Minimal keeps ID (data:0), First Name (data:1), LI (data:2), DOS (data:6), and Claim
+      // Status onward. ID is always included so the user can tell which patient each row belongs
+      // to — without it, Minimal mode shows only First Name / dates / claim info and rows blur
+      // together when multiple patients share the same first name.
+      // Each column's `data` prop is the underlying SheetRow array index, which is preserved
+      // across copay/coins hiding — so filtering by data:N is robust to that flag.
       const VToffset = showVisitTypeColumn ? 1 : 0
-      const keep = new Set<number>([1, 2, 6])
+      const keep = new Set<number>([0, 1, 2, 6])
       for (let i = 9 + VToffset; i <= 18 + VToffset; i++) keep.add(i)
       return fullProviderColumns.filter((c) => typeof c.data === 'number' && keep.has(c.data))
     }
