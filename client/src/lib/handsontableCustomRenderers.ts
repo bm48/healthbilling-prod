@@ -344,11 +344,23 @@ const _BaseDropdown =
  */
 export const DropdownEditorOpenList: typeof _BaseDropdown | null = _BaseDropdown
   ? class DropdownEditorOpenList extends _BaseDropdown {
+      /** Tracks the deferred-queryChoices timer so close() can cancel it. Without this, a user who
+       *  dismisses the dropdown before the next tick gets a stuck popup: the timer fires, calls
+       *  queryChoices on the already-closed editor, which re-renders the popup against an instance
+       *  whose event listeners (click-outside / Escape) have been removed. The popup is then
+       *  un-dismissable until the page is refreshed. */
+      private __openListTimerId: ReturnType<typeof setTimeout> | null = null
+      private __isOpen = false
+
       open(event?: Event) {
         super.open(event)
+        this.__isOpen = true
         if (typeof (this as any).queryChoices === 'function') {
           const val = (this as any).TEXTAREA?.value ?? ''
-          setTimeout(() => {
+          if (this.__openListTimerId != null) clearTimeout(this.__openListTimerId)
+          this.__openListTimerId = setTimeout(() => {
+            this.__openListTimerId = null
+            if (!this.__isOpen) return
             try {
               if (typeof (this as any).queryChoices === 'function') (this as any).queryChoices(val)
             } catch {
@@ -356,6 +368,15 @@ export const DropdownEditorOpenList: typeof _BaseDropdown | null = _BaseDropdown
             }
           }, 0)
         }
+      }
+
+      close() {
+        this.__isOpen = false
+        if (this.__openListTimerId != null) {
+          clearTimeout(this.__openListTimerId)
+          this.__openListTimerId = null
+        }
+        super.close()
       }
     }
   : null
@@ -380,14 +401,23 @@ export function createColoredAutocompleteDropdown(
      * changes (previous bug: colors appeared on first open then vanished on every subsequent open).
      */
     private __hookedHtEditor: any = null
+    /** Pending queryChoices timer. Cancelled on close so a dismissed dropdown can't re-show itself
+     *  one tick later from a stale handler — that's the "dropdown gets stuck and won't go away
+     *  until I refresh" symptom Jenali reported. */
+    private __openListTimerId: ReturnType<typeof setTimeout> | null = null
+    private __isOpen = false
 
     open(event?: Event) {
       super.open(event)
+      this.__isOpen = true
       // Mirror DropdownEditorOpenList: force the option list to render right away so the colors
       // appear on the first paint even when the editor was opened via a single click.
       if (typeof (this as any).queryChoices === 'function') {
         const val = (this as any).TEXTAREA?.value ?? ''
-        setTimeout(() => {
+        if (this.__openListTimerId != null) clearTimeout(this.__openListTimerId)
+        this.__openListTimerId = setTimeout(() => {
+          this.__openListTimerId = null
+          if (!this.__isOpen) return
           try {
             if (typeof (this as any).queryChoices === 'function') {
               ;(this as any).queryChoices(val)
@@ -400,6 +430,23 @@ export function createColoredAutocompleteDropdown(
       } else {
         this.__installColorPainter()
       }
+    }
+
+    close() {
+      this.__isOpen = false
+      if (this.__openListTimerId != null) {
+        clearTimeout(this.__openListTimerId)
+        this.__openListTimerId = null
+      }
+      // Detach the afterRender hook from the htEditor we previously hooked into. Leaving the hook
+      // attached across opens caused stale painters to fire against destroyed editor DOM, which
+      // could keep the popup partially rendered after close.
+      const hooked = this.__hookedHtEditor
+      if (hooked && typeof hooked.removeHook === 'function') {
+        try { hooked.removeHook('afterRender', this.__paint) } catch { /* ignore */ }
+      }
+      this.__hookedHtEditor = null
+      super.close()
     }
 
     private __paint = () => {
@@ -428,6 +475,11 @@ export function createColoredAutocompleteDropdown(
       // Re-attach the afterRender hook whenever the inner table instance changes (handles
       // Handsontable's teardown/recreate cycle between opens).
       if (this.__hookedHtEditor !== htEditor) {
+        // Detach from the previous htEditor first so we don't leak afterRender hooks across
+        // recreate cycles (the leak caused stale painters to fire after the editor closed).
+        if (this.__hookedHtEditor && typeof this.__hookedHtEditor.removeHook === 'function') {
+          try { this.__hookedHtEditor.removeHook('afterRender', this.__paint) } catch { /* ignore */ }
+        }
         this.__hookedHtEditor = htEditor
         htEditor.addHook('afterRender', this.__paint)
       }
