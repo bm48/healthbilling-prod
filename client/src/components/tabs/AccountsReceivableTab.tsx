@@ -614,9 +614,22 @@ export default function AccountsReceivableTab({
       // `getData()` returns a 2D array of source values in display order. Each row matches one
       // grid row, each column matches the order of `columnTitles` shown in the header.
       const grid = hot.getData() as Array<Array<string | number | null | undefined>>
+      /** Excel auto-converts strings like "6-8" to "June 8" and corrupts CPT-like leading-zero
+       *  strings ("01234" → 1234). Wrapping as `="..."` keeps Excel from interpreting them. */
+      const needsExcelTextGuard = (s: string): boolean => {
+        if (s === '') return false
+        if (/\d[-/]\d/.test(s)) return true
+        if (/^0\d+$/.test(s)) return true
+        if (/^\d{12,}$/.test(s)) return true
+        return false
+      }
       const escape = (val: unknown): string => {
         if (val == null || val === 'null') return ''
         const s = String(val)
+        if (needsExcelTextGuard(s)) {
+          const innerCsvSafe = s.replace(/"/g, '""')
+          return `"=""${innerCsvSafe}"""`
+        }
         if (/[,"\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
         return s
       }

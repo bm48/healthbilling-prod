@@ -497,10 +497,30 @@ export default function ProvidersTab({
         return
       }
       const grid = hot.getData() as Array<Array<string | number | boolean | null | undefined>>
+      /** Excel reads bare strings like "6-8" as "June 8" and silently mangles them. The standard
+       *  workaround is to write `="6-8"` — Excel treats that as a formula whose value is the literal
+       *  text "6-8" and skips its date-detection. Triggers:
+       *   - digit[-/]digit anywhere (e.g. "6-8", "5/1", "11-23-11"): date-like
+       *   - leading-zero number ("01234"): Excel strips the zero
+       *   - very long pure-digit strings (≥12 chars): Excel renders as scientific notation
+       *  Doesn't apply to boolean / empty / things that already have non-date punctuation. */
+      const needsExcelTextGuard = (s: string): boolean => {
+        if (s === '') return false
+        if (/\d[-/]\d/.test(s)) return true
+        if (/^0\d+$/.test(s)) return true
+        if (/^\d{12,}$/.test(s)) return true
+        return false
+      }
       const escape = (val: unknown): string => {
         if (val == null || val === 'null') return ''
         if (typeof val === 'boolean') return val ? 'TRUE' : ''
         const s = String(val)
+        if (needsExcelTextGuard(s)) {
+          // Build `="...inner..."` with inner double-quotes escaped, then wrap the whole thing
+          // in CSV double-quotes (and double-up any quotes for CSV escaping).
+          const innerCsvSafe = s.replace(/"/g, '""')
+          return `"=""${innerCsvSafe}"""`
+        }
         if (/[,"\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
         return s
       }
