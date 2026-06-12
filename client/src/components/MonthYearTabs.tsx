@@ -174,7 +174,7 @@ export default function MonthYearTabs({
             )}
             {rightSlot && <div className="shrink-0 ml-auto">{rightSlot}</div>}
           </div>
-          <div className="grid grid-cols-4 gap-1">
+          <div className="grid grid-cols-6 gap-1">
             {MONTHS_SHORT.map((short, idx) => {
               const monthName = MONTHS_FULL[idx]
               const mc = monthColorByName.get(monthName)
