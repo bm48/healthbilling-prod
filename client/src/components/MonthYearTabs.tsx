@@ -102,7 +102,10 @@ export default function MonthYearTabs({
   return (
     <div className={`${isInSplitScreen ? 'mb-2' : 'mb-3'}`} style={{ width: '100%' }}>
       {label && (
-        <div className="mb-2 relative flex justify-center items-center">
+        // Compact (split-screen / narrow viewport): stack the right slot below the title so the
+        // absolute-positioned button doesn't overlay the wrapped title pill. Wide: keep the original
+        // centered title + absolutely-positioned right slot layout.
+        <div className={`mb-2 ${isInSplitScreen ? 'flex flex-col items-center gap-2' : 'relative flex justify-center items-center'}`}>
           <div
             className="text-center text-base font-semibold rounded px-3 py-1.5 inline-block"
             style={{ backgroundColor: activeBg, color: activeText }}
@@ -110,12 +113,16 @@ export default function MonthYearTabs({
             {label} {labelSuffix}
           </div>
           {labelRightSlot && (
-            // top-0 bottom-0 + flex items-center vertically centers without applying a CSS transform —
-            // a transform here makes this wrapper the containing block for `position: fixed`, which
-            // traps BackupVersionsBar's modal inside the slot instead of overlaying the page.
-            <div className="absolute right-0 top-0 bottom-0 flex items-center shrink-0">
-              {labelRightSlot}
-            </div>
+            isInSplitScreen ? (
+              <div className="shrink-0">{labelRightSlot}</div>
+            ) : (
+              // top-0 bottom-0 + flex items-center vertically centers without applying a CSS transform —
+              // a transform here makes this wrapper the containing block for `position: fixed`, which
+              // traps BackupVersionsBar's modal inside the slot instead of overlaying the page.
+              <div className="absolute right-0 top-0 bottom-0 flex items-center shrink-0">
+                {labelRightSlot}
+              </div>
+            )
           )}
         </div>
       )}
