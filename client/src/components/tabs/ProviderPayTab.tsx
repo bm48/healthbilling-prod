@@ -181,6 +181,24 @@ export default function ProviderPayTab({
     void payload
   }, [])
   const containerRef = useRef<HTMLDivElement>(null)
+  /** True on narrow viewports (mobile / small tablets). Triggers the same compact layout that
+   *  isInSplitScreen uses — Jenali was seeing the desktop layout on mobile, which compressed the
+   *  month buttons, Pay Date row, and Provider select into an unreadable strip because the desktop
+   *  branch assumed the panel was at least ~700px wide. */
+  const NARROW_VIEWPORT_PX = 768
+  const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth < NARROW_VIEWPORT_PX,
+  )
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const update = () => setIsNarrowViewport(window.innerWidth < NARROW_VIEWPORT_PX)
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
+  /** Combined flag used everywhere a compact layout is needed. Lets us drive the same UI from
+   *  either an explicit Split Screen prop OR an automatic narrow-viewport detection. */
+  const isCompactLayout = isInSplitScreen || isNarrowViewport
   const [tableHeight, setTableHeight] = useState(600)
   const [payDate, setPayDate] = useState('')
   const [payPeriodFrom, setPayPeriodFrom] = useState('')
@@ -916,15 +934,24 @@ export default function ProviderPayTab({
     `bg-transparent border border-white/30 rounded outline-none text-inherit [color-scheme:dark] ${
       empty ? 'provider-pay-date-empty' : ''
     } ${
-      isInSplitScreen
+      isCompactLayout
         ? 'w-full min-w-0 max-w-full box-border px-2 py-1 text-sm'
         : 'text-sm'
     }`
 
   return (
     <div
-      className={`min-w-0 ${isInSplitScreen ? 'p-3 split-pane-tab' : 'p-6'}`}
-      style={isInSplitScreen ? undefined : { maxWidth: '45vw', width: '100%' }}
+      className={`min-w-0 ${isCompactLayout ? 'p-3 split-pane-tab' : 'p-6'}`}
+      style={
+        // On a narrow viewport (mobile) we drop the 45vw cap so the content fills the device width
+        // instead of being squashed to ~170px. The split-screen prop already enforces its own width
+        // via the parent panel, so no style override needed there.
+        isInSplitScreen
+          ? undefined
+          : isNarrowViewport
+            ? { width: '100%', maxWidth: '100%' }
+            : { maxWidth: '45vw', width: '100%' }
+      }
     >
       <MonthYearTabs
         selectedMonth={selectedMonth}
@@ -932,7 +959,7 @@ export default function ProviderPayTab({
         clinicPayroll={clinicPayroll}
         statusColors={statusColors}
         label="Provider Pay for"
-        isInSplitScreen={isInSplitScreen}
+        isInSplitScreen={isCompactLayout}
         labelRightSlot={labelRightSlot}
         belowTitleSlot={belowTitleSlot}
         compactMonthsLayout
@@ -958,7 +985,7 @@ export default function ProviderPayTab({
       />
       <div
         className={
-          isInSplitScreen
+          isCompactLayout
             ? 'flex flex-col gap-2 w-full min-w-0 mb-2 shrink-0'
             : 'flex items-center gap-2 justify-between'
         }
@@ -967,7 +994,7 @@ export default function ProviderPayTab({
         {providers.length > 0 && (
           <div
             className={
-              isInSplitScreen
+              isCompactLayout
                 ? 'flex flex-col gap-1 w-full min-w-0'
                 : 'mb-3 flex items-center gap-2'
             }
@@ -984,7 +1011,7 @@ export default function ProviderPayTab({
                 onSelectedProviderIdChange?.(id)
               }}
               className={`cursor-pointer rounded-lg border border-slate-600 bg-slate-800 text-slate-100 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                isInSplitScreen ? 'w-full min-w-0' : 'min-w-[200px]'
+                isCompactLayout ? 'w-full min-w-0' : 'min-w-[200px]'
               }`}
             >
               {providers.map((p) => (
@@ -1001,7 +1028,7 @@ export default function ProviderPayTab({
       {/* Pay Date and Pay Period - header color same as selected month */}
       <div
         className={`rounded-t-lg border border-b-0 border-slate-700 shrink-0 min-w-0 ${
-          isInSplitScreen ? 'w-full overflow-hidden' : ''
+          isCompactLayout ? 'w-full overflow-hidden' : ''
         }`}
         style={{
           backgroundColor: headerStyle.bgColor,
@@ -1010,14 +1037,14 @@ export default function ProviderPayTab({
       >
         <div
           className={
-            isInSplitScreen
-              ? 'flex flex-col gap-1 px-2 py-2 border-b border-slate-600/50 min-w-0'
+            isCompactLayout
+              ? 'flex items-center justify-between gap-2 px-2 py-2 border-b border-slate-600/50 min-w-0'
               : 'flex items-center justify-center gap-3 px-4 py-2 border-b border-slate-600/50'
           }
         >
           <span
             className={
-              isInSplitScreen ? 'font-bold text-sm shrink-0' : 'font-bold shrink-0'
+              isCompactLayout ? 'font-bold text-sm shrink-0' : 'font-bold shrink-0'
             }
           >
             Pay Date:
@@ -1028,37 +1055,38 @@ export default function ProviderPayTab({
             onChange={(e) => setPayDate(e.target.value)}
             disabled={!effectiveCanEdit}
             className={`${dateInputClass(!payDate)} ${
-              isInSplitScreen ? '' : 'w-[12rem] px-2 py-1'
+              isCompactLayout ? 'w-[8.5rem] px-1.5 py-1 text-sm shrink-0' : 'w-[12rem] px-2 py-1'
             }`}
             style={{ color: headerStyle.textColor }}
           />
         </div>
-        {isInSplitScreen ? (
+        {isCompactLayout ? (
+          // Split-screen: keep labels inline with their inputs so the date pickers sit beside the
+          // text rather than stacked underneath (Jenali asked for this in the Provider Pay panel —
+          // the prior column layout made the boxes look full-width and detached from the labels).
           <div className="flex flex-col gap-2 px-2 py-2 min-w-0">
             <span className="font-bold text-sm shrink-0">Pay Period:</span>
-            <div className="flex flex-col gap-2 w-full min-w-0">
-              <div className="flex flex-col gap-1 min-w-0">
-                <label className="text-xs font-medium opacity-90">From</label>
-                <input
-                  type="date"
-                  value={payPeriodFrom}
-                  onChange={(e) => setPayPeriodFrom(e.target.value)}
-                  disabled={!effectiveCanEdit}
-                  className={dateInputClass(!payPeriodFrom)}
-                  style={{ color: headerStyle.textColor }}
-                />
-              </div>
-              <div className="flex flex-col gap-1 min-w-0">
-                <label className="text-xs font-medium opacity-90">To</label>
-                <input
-                  type="date"
-                  value={payPeriodTo}
-                  onChange={(e) => setPayPeriodTo(e.target.value)}
-                  disabled={!effectiveCanEdit}
-                  className={dateInputClass(!payPeriodTo)}
-                  style={{ color: headerStyle.textColor }}
-                />
-              </div>
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <label className="text-xs font-medium opacity-90 shrink-0">From</label>
+              <input
+                type="date"
+                value={payPeriodFrom}
+                onChange={(e) => setPayPeriodFrom(e.target.value)}
+                disabled={!effectiveCanEdit}
+                className={`${dateInputClass(!payPeriodFrom)} w-[8.5rem] px-1.5 py-1 text-sm shrink-0`}
+                style={{ color: headerStyle.textColor }}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <label className="text-xs font-medium opacity-90 shrink-0">To</label>
+              <input
+                type="date"
+                value={payPeriodTo}
+                onChange={(e) => setPayPeriodTo(e.target.value)}
+                disabled={!effectiveCanEdit}
+                className={`${dateInputClass(!payPeriodTo)} w-[8.5rem] px-1.5 py-1 text-sm shrink-0`}
+                style={{ color: headerStyle.textColor }}
+              />
             </div>
           </div>
         ) : (
@@ -1092,7 +1120,7 @@ export default function ProviderPayTab({
 
       <div
         className={
-          isInSplitScreen
+          isCompactLayout
             ? 'mt-2 flex flex-col flex-1 min-h-0 min-w-0 gap-2'
             : 'mt-4 flex gap-4'
         }
@@ -1102,11 +1130,11 @@ export default function ProviderPayTab({
           className="table-container dark-theme flex-1 min-w-0 min-h-0"
           style={
             {
-              height: isInSplitScreen ? undefined : '50vh',
-              maxHeight: isInSplitScreen ? undefined : '50vh',
-              flex: isInSplitScreen ? 1 : undefined,
-              minHeight: isInSplitScreen ? 0 : undefined,
-              overflow: isInSplitScreen ? undefined : 'hidden' as const,
+              height: isCompactLayout ? undefined : '50vh',
+              maxHeight: isCompactLayout ? undefined : '50vh',
+              flex: isCompactLayout ? 1 : undefined,
+              minHeight: isCompactLayout ? 0 : undefined,
+              overflow: isCompactLayout ? undefined : 'hidden' as const,
               border: '1px solid rgba(0,0,0,0.2)',
               borderTop: 'none',
               borderRadius: '0 0 8px 8px',
@@ -1125,7 +1153,7 @@ export default function ProviderPayTab({
             rowHeaders={false}
             width="100%"
             height={tableHeight}
-            stretchH={isInSplitScreen ? "none" : "all"}
+            stretchH={isCompactLayout ? "none" : "all"}
             readOnly={!effectiveCanEdit}
             afterChange={afterChange}
             cells={cellsCallback}
