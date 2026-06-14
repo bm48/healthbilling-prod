@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
 import { StatusColor } from '@/types'
+import { readableTextColor } from '@/lib/utils'
 
 interface MonthYearTabsProps {
   selectedMonth: Date
@@ -56,11 +57,14 @@ export default function MonthYearTabs({
   minYear = 2024,
   compactMonthsLayout = false,
 }: MonthYearTabsProps) {
+  // Always derive the month button text color from the background luminance so dark months get
+  // white text and light months get black text — the configured text_color was unreadable in
+  // some combinations (e.g. dark-teal May with black text).
   const monthColorByName = useMemo(() => {
     const map = new Map<string, { color: string; textColor: string }>()
     for (const s of statusColors) {
       if (s.type === 'month') {
-        map.set(s.status, { color: s.color, textColor: s.text_color || '#000000' })
+        map.set(s.status, { color: s.color, textColor: readableTextColor(s.color) })
       }
     }
     return map
@@ -102,27 +106,23 @@ export default function MonthYearTabs({
   return (
     <div className={`${isInSplitScreen ? 'mb-2' : 'mb-3'}`} style={{ width: '100%' }}>
       {label && (
-        // Compact (split-screen / narrow viewport): stack the right slot below the title so the
-        // absolute-positioned button doesn't overlay the wrapped title pill. Wide: keep the original
-        // centered title + absolutely-positioned right slot layout.
-        <div className={`mb-2 ${isInSplitScreen ? 'flex flex-col items-center gap-2' : 'relative flex justify-center items-center'}`}>
+        // Compact (split-screen / narrow viewport): just the centered title pill; labelRightSlot
+        // (Select Version) is moved into the year row below to save vertical space.
+        // Wide: keep the original centered title + absolutely-positioned right slot layout.
+        <div className={`mb-2 ${isInSplitScreen ? 'flex justify-center items-center' : 'relative flex justify-center items-center'}`}>
           <div
             className="text-center text-base font-semibold rounded px-3 py-1.5 inline-block"
             style={{ backgroundColor: activeBg, color: activeText }}
           >
             {label} {labelSuffix}
           </div>
-          {labelRightSlot && (
-            isInSplitScreen ? (
-              <div className="shrink-0">{labelRightSlot}</div>
-            ) : (
-              // top-0 bottom-0 + flex items-center vertically centers without applying a CSS transform —
-              // a transform here makes this wrapper the containing block for `position: fixed`, which
-              // traps BackupVersionsBar's modal inside the slot instead of overlaying the page.
-              <div className="absolute right-0 top-0 bottom-0 flex items-center shrink-0">
-                {labelRightSlot}
-              </div>
-            )
+          {!isInSplitScreen && labelRightSlot && (
+            // top-0 bottom-0 + flex items-center vertically centers without applying a CSS transform —
+            // a transform here makes this wrapper the containing block for `position: fixed`, which
+            // traps BackupVersionsBar's modal inside the slot instead of overlaying the page.
+            <div className="absolute right-0 top-0 bottom-0 flex items-center shrink-0">
+              {labelRightSlot}
+            </div>
           )}
         </div>
       )}
@@ -130,10 +130,11 @@ export default function MonthYearTabs({
         <div className="mb-2 flex justify-center">{belowTitleSlot}</div>
       )}
       {isInSplitScreen ? (
-        // Split-screen: compact stacked layout — Year + 1st/2nd Half on one row, then a 4×3 grid of months.
-        // Avoids the previous wrap behavior where each month landed on its own line in narrow columns.
+        // Split-screen: compact stacked layout — Year + Select Version + 1st/2nd Half + rightSlot
+        // (Download CSV) on one row, then a 6×2 grid of months. Pulling labelRightSlot into this
+        // row instead of its own row saves a line of vertical space for the table below.
         <>
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center flex-wrap gap-2 mb-2 min-w-0">
             <select
               value={currentYear}
               onChange={(e) => handleYearChange(Number(e.target.value))}
@@ -146,6 +147,7 @@ export default function MonthYearTabs({
                 </option>
               ))}
             </select>
+            {labelRightSlot && <div className="shrink-0">{labelRightSlot}</div>}
             {clinicPayroll === 2 && (
               <div className="flex items-center gap-1 shrink-0 ml-auto rounded-md border border-slate-600 bg-slate-800 p-0.5">
                 <button

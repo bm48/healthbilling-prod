@@ -6,6 +6,7 @@ import Handsontable from 'handsontable'
 import type { Provider, StatusColor } from '@/types'
 import { fetchProviderPay, saveProviderPay, updateProviderPayWholeSheetLocked } from '@/lib/providerPay'
 import { isPastPeriodFromMonthKey } from '@/lib/monthPeriodLock'
+import { readableTextColor } from '@/lib/utils'
 
 export type IsLockProviderPay = {
   description?: boolean
@@ -752,8 +753,10 @@ export default function ProviderPayTab({
   const getMonthColor = useCallback(
     (month: string): { color: string; textColor: string } | null => {
       const monthColor = statusColors.find((s) => s.status === month && s.type === 'month')
+      // Derive contrast from the bg luminance so the Pay Date / Pay Period banner stays readable
+      // regardless of the configured text_color (some configs leave dark text on a dark month bg).
       if (monthColor) {
-        return { color: monthColor.color, textColor: monthColor.text_color || '#000000' }
+        return { color: monthColor.color, textColor: readableTextColor(monthColor.color) }
       }
       return null
     },
@@ -1038,7 +1041,7 @@ export default function ProviderPayTab({
         <div
           className={
             isCompactLayout
-              ? 'flex items-center justify-between gap-2 px-2 py-2 border-b border-slate-600/50 min-w-0'
+              ? 'flex items-center flex-wrap gap-x-2 gap-y-1 px-2 py-2 border-b border-slate-600/50 min-w-0'
               : 'flex items-center justify-center gap-3 px-4 py-2 border-b border-slate-600/50'
           }
         >
@@ -1055,39 +1058,34 @@ export default function ProviderPayTab({
             onChange={(e) => setPayDate(e.target.value)}
             disabled={!effectiveCanEdit}
             className={`${dateInputClass(!payDate)} ${
-              isCompactLayout ? 'w-[8.5rem] px-1.5 py-1 text-sm shrink-0' : 'w-[12rem] px-2 py-1'
+              isCompactLayout ? 'w-[7.5rem] px-1 py-0.5 text-xs shrink-0' : 'w-[12rem] px-2 py-1'
             }`}
             style={{ color: headerStyle.textColor }}
           />
         </div>
         {isCompactLayout ? (
-          // Split-screen: keep labels inline with their inputs so the date pickers sit beside the
-          // text rather than stacked underneath (Jenali asked for this in the Provider Pay panel —
-          // the prior column layout made the boxes look full-width and detached from the labels).
-          <div className="flex flex-col gap-2 px-2 py-2 min-w-0">
+          // Single-row Pay Period for compact mode: "Pay Period: From [d] To [d]". flex-wrap lets
+          // the row break gracefully if the container is too narrow for the full line.
+          <div className="flex items-center flex-wrap gap-x-2 gap-y-1 px-2 py-2 min-w-0">
             <span className="font-bold text-sm shrink-0">Pay Period:</span>
-            <div className="flex items-center justify-between gap-2 min-w-0">
-              <label className="text-xs font-medium opacity-90 shrink-0">From</label>
-              <input
-                type="date"
-                value={payPeriodFrom}
-                onChange={(e) => setPayPeriodFrom(e.target.value)}
-                disabled={!effectiveCanEdit}
-                className={`${dateInputClass(!payPeriodFrom)} w-[8.5rem] px-1.5 py-1 text-sm shrink-0`}
-                style={{ color: headerStyle.textColor }}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-2 min-w-0">
-              <label className="text-xs font-medium opacity-90 shrink-0">To</label>
-              <input
-                type="date"
-                value={payPeriodTo}
-                onChange={(e) => setPayPeriodTo(e.target.value)}
-                disabled={!effectiveCanEdit}
-                className={`${dateInputClass(!payPeriodTo)} w-[8.5rem] px-1.5 py-1 text-sm shrink-0`}
-                style={{ color: headerStyle.textColor }}
-              />
-            </div>
+            <label className="text-xs font-medium opacity-90 shrink-0">From</label>
+            <input
+              type="date"
+              value={payPeriodFrom}
+              onChange={(e) => setPayPeriodFrom(e.target.value)}
+              disabled={!effectiveCanEdit}
+              className={`${dateInputClass(!payPeriodFrom)} w-[7.5rem] px-1 py-0.5 text-xs shrink-0`}
+              style={{ color: headerStyle.textColor }}
+            />
+            <label className="text-xs font-medium opacity-90 shrink-0">To</label>
+            <input
+              type="date"
+              value={payPeriodTo}
+              onChange={(e) => setPayPeriodTo(e.target.value)}
+              disabled={!effectiveCanEdit}
+              className={`${dateInputClass(!payPeriodTo)} w-[7.5rem] px-1 py-0.5 text-xs shrink-0`}
+              style={{ color: headerStyle.textColor }}
+            />
           </div>
         ) : (
           <div className="flex items-center justify-center gap-3 px-4 py-2">

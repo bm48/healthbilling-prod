@@ -5,6 +5,31 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/** Returns `#000` for light backgrounds and `#fff` for dark ones using the WCAG relative-luminance
+ *  formula. Accepts `#rgb`, `#rrggbb`, or `rgb()/rgba()`; falls back to white for unknown formats. */
+export function readableTextColor(bg: string): '#000000' | '#ffffff' {
+  if (!bg) return '#ffffff'
+  let r = 0, g = 0, b = 0
+  const hex = bg.trim().match(/^#?([a-f0-9]{6}|[a-f0-9]{3})$/i)
+  if (hex) {
+    let h = hex[1]
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('')
+    r = parseInt(h.slice(0, 2), 16)
+    g = parseInt(h.slice(2, 4), 16)
+    b = parseInt(h.slice(4, 6), 16)
+  } else {
+    const rgb = bg.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i)
+    if (!rgb) return '#ffffff'
+    r = Number(rgb[1]); g = Number(rgb[2]); b = Number(rgb[3])
+  }
+  const srgb = [r, g, b].map((v) => {
+    const x = v / 255
+    return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4)
+  })
+  const L = 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2]
+  return L > 0.5 ? '#000000' : '#ffffff'
+}
+
 export function formatCurrency(amount: number | string | null | undefined): string {
   if (amount === null || amount === undefined) return '$0.00'
   const numAmount = typeof amount === 'string' ? parseFloat(amount) : amount
