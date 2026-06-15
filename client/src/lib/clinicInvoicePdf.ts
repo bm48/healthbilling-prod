@@ -381,9 +381,11 @@ async function addPaystubPage(
   doc.setTextColor(0, 0, 0)
   doc.setFont('helvetica', 'normal')
 
-  if (isLastPaystub) {
-    addPaystubClosingFooter(doc)
-  }
+  // Render the closing footer ("Please refer to your billing spreadsheet…" + thank-you) on every
+  // paystub page, not just the last — providers receive their paystub individually so they need
+  // the instructions on their own page even when they're not the last entry in the loop.
+  void isLastPaystub
+  addPaystubClosingFooter(doc)
 
   void pageH
 }

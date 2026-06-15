@@ -2304,26 +2304,44 @@ export default function ProvidersTab({
           }
         }
       }
-      // Auto highlight when 0 or "00" is entered in Ins Pay or PT Paid (Collected from PT). PT Paid: any 0 → yellow. Ins Pay: 0 → user color.
+      // Auto highlight when 0 or "00" is entered in Ins Pay or PT Paid (Collected from PT), or
+      // when the user changes the Patient Pay Status while Collected from PT is already 0.
+      // Rules:
+      //   - Ins Pay = 0  → user highlight color (typically blue)
+      //   - PT Paid = 0  AND Patient Pay Status = "Paid" → user highlight color (matches Ins Pay)
+      //   - PT Paid = 0  otherwise → yellow (the original "needs attention" color)
+      const parseForHighlight = (v: unknown): number | null => {
+        if (v === '' || v === null || v === undefined) return null
+        if (typeof v === 'number') return Number.isFinite(v) ? v : null
+        const cleaned = String(v).replace(/[$,\s]/g, '')
+        if (cleaned === '' || cleaned === '-') return null
+        const n = parseFloat(cleaned)
+        return Number.isFinite(n) ? n : null
+      }
+      const highlightColor = (userHighlightColor || '').trim() || YELLOW_HIGHLIGHT
       if (field === 'insurance_payment' || field === 'collected_from_patient') {
         const finalRow = updatedRows[row]
         const rowId = finalRow?.id ?? sheetRow?.id ?? `row-${row}`
         const colKey = field === 'insurance_payment' ? 'ins_pay' : 'collected_from_pt'
-        const parseForHighlight = (v: unknown): number | null => {
-          if (v === '' || v === null || v === undefined) return null
-          if (typeof v === 'number') return Number.isFinite(v) ? v : null
-          const cleaned = String(v).replace(/[$,\s]/g, '')
-          if (cleaned === '' || cleaned === '-') return null
-          const n = parseFloat(cleaned)
-          return Number.isFinite(n) ? n : null
-        }
         const num = parseForHighlight(newValue)
         const isZero = num === 0
-        const highlightColor = (userHighlightColor || '').trim() || YELLOW_HIGHLIGHT
-        // PT Paid (collected_from_patient): 0 or "0" or "00" → yellow. Ins Pay: 0 → user color.
-        const useYellow = field === 'collected_from_patient' && isZero
+        const ptStatus = String(finalRow?.patient_pay_status ?? '').trim().toLowerCase()
+        const ptStatusIsPaid = ptStatus === 'paid'
+        const useYellow = field === 'collected_from_patient' && isZero && !ptStatusIsPaid
         const colorToUse = isZero ? (useYellow ? YELLOW_HIGHLIGHT : highlightColor) : highlightColor
         zeroHighlightUpdates.push({ rowId, colKey, isZero, highlightColor: colorToUse })
+      } else if (field === 'patient_pay_status') {
+        // Status flipped — recompute the PT Paid highlight if the cell is currently 0 so it
+        // tracks the new status without the user having to re-enter the 0.
+        const finalRow = updatedRows[row]
+        const rowId = finalRow?.id ?? sheetRow?.id ?? `row-${row}`
+        const ptPaidNum = parseForHighlight(finalRow?.collected_from_patient)
+        if (ptPaidNum === 0) {
+          const nextStatus = String(newValue ?? '').trim().toLowerCase()
+          const isPaid = nextStatus === 'paid'
+          const colorToUse = isPaid ? highlightColor : YELLOW_HIGHLIGHT
+          zeroHighlightUpdates.push({ rowId, colKey: 'collected_from_pt', isZero: true, highlightColor: colorToUse })
+        }
       }
     })
 
@@ -3152,40 +3170,45 @@ export default function ProvidersTab({
       {/* Sum tally for provider with full access (level 2) only */}
       {activeProvider && isProviderView && providerLevel === 2 && (
         <div
-          className="mt-3 flex flex-col gap-2 px-4 py-3 rounded-lg border border-white/20 bg-slate-800/80 text-white"
+          className={`mt-3 flex flex-col rounded-lg border border-white/20 bg-slate-800/80 text-white ${
+            isInSplitScreen ? 'gap-1 px-3 py-2 text-sm' : 'gap-2 px-4 py-3'
+          }`}
           style={{ width: '100%', maxWidth: '100%' }}
         >
-          <div className="flex items-center gap-6 flex-wrap">
+          <div className={`flex items-center flex-wrap ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-6'}`}>
             <span className="font-medium text-red-500">Sums:</span>
-            <span className="ml-2"><strong>Insurance Pay Total:</strong> {formatCurrency(providerSums.insPay)}</span>
-            <span className="ml-2"><strong>Patient Payment Total:</strong> {formatCurrency(providerSums.collectedFromPt)}</span>
-            <span className="ml-2"><strong>AR Total:</strong> {arSumFromDb === null ? '—' : formatCurrency(arSumFromDb)}</span>
-            {/* <span className="ml-2"><strong>Total:</strong> {formatCurrency(providerSums.total)}</span> */}
+            <span><strong>Insurance Pay Total:</strong> {formatCurrency(providerSums.insPay)}</span>
+            <span><strong>Patient Payment Total:</strong> {formatCurrency(providerSums.collectedFromPt)}</span>
+            <span><strong>AR Total:</strong> {arSumFromDb === null ? '—' : formatCurrency(arSumFromDb)}</span>
           </div>
         </div>
       )}
 
       {activeProvider && !isProviderView && (
         <div
-          className="mt-3 flex flex-col gap-2 px-4 py-3 rounded-lg border border-white/20 bg-slate-800/80 text-white"
+          className={`mt-3 flex flex-col rounded-lg border border-white/20 bg-slate-800/80 text-white ${
+            isInSplitScreen ? 'gap-1 px-3 py-2 text-sm' : 'gap-2 px-4 py-3'
+          }`}
           style={{ width: '100%', maxWidth: '100%' }}
         >
           {officeStaffView ? (
-            <div className="flex items-center gap-4 flex-wrap text-sm">
+            <div className={`flex items-center flex-wrap text-sm ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-4'}`}>
               <span className="font-medium text-red-500/90">CC Declines:</span>
               <span><strong>{billingMetrics?.ccDeclines ?? 0}</strong></span>
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-6 flex-wrap">
+              <div className={`flex items-center flex-wrap ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-6'}`}>
                 <span className="font-medium text-red-500">Sums:</span>
-                <span className="ml-2"><strong>Ins Pay:</strong> {formatCurrency(providerSums.insPay)}</span>
-                <span className="ml-2"><strong>Collected from PT:</strong> {formatCurrency(providerSums.collectedFromPt)}</span>
-                <span className="ml-2"><strong>Total:</strong> {formatCurrency(providerSums.total)}</span>
-                <span className="ml-2"><strong>AR Total:</strong> {arSumFromDb === null ? '—' : formatCurrency(arSumFromDb)}</span>
+                <span><strong>Ins Pay:</strong> {formatCurrency(providerSums.insPay)}</span>
+                <span><strong>Collected from PT:</strong> {formatCurrency(providerSums.collectedFromPt)}</span>
+                <span><strong>Total:</strong> {formatCurrency(providerSums.total)}</span>
+                <span><strong>AR Total:</strong> {arSumFromDb === null ? '—' : formatCurrency(arSumFromDb)}</span>
               </div>
               {billingMetrics && (
-                <div className="flex items-center gap-4 flex-wrap text-sm border-t border-white/20 pt-2">
+                <div className={`flex items-center flex-wrap text-sm border-t border-white/20 ${
+                  isInSplitScreen ? 'gap-x-3 gap-y-1 pt-1' : 'gap-4 pt-2'
+                }`}>
                   <span className="font-medium text-red-500/90">Metrics:</span>
                   <span>Visits: <strong>{billingMetrics.visits}</strong></span>
                   <span>No Shows: <strong>{billingMetrics.noShows}</strong></span>

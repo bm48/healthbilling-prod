@@ -1122,15 +1122,24 @@ export default function AccountsReceivableTab({
 
   /** Same as PatientsTab: data from display source (override when viewing backup, else state) */
   const getARHandsontableData = useCallback(() => {
-    return displayAR.map(ar => [
-      toDisplayValue(ar.ar_id),
-      toDisplayValue(ar.name),
-      toDisplayDate(ar.date_of_service),
-      toDisplayValue(ar.amount),
-      toDisplayDate(ar.date_recorded),
-      toDisplayValue(ar.type),
-      toDisplayValue(ar.notes),
-    ])
+    return displayAR.map(ar => {
+      // Amount is rendered with Handsontable's numericFormat ('$0,0.00') so the cell must hold a
+      // real number — passing a string falls through the formatter and the user sees the raw
+      // value. Empty / non-numeric values stay '' so the cell isn't forced to 0.
+      const amountRaw: unknown = ar.amount
+      const amountNum =
+        amountRaw == null || amountRaw === '' ? null : Number(amountRaw as number | string)
+      const amountCell: string | number = amountNum != null && Number.isFinite(amountNum) ? amountNum : ''
+      return [
+        toDisplayValue(ar.ar_id),
+        toDisplayValue(ar.name),
+        toDisplayDate(ar.date_of_service),
+        amountCell,
+        toDisplayDate(ar.date_recorded),
+        toDisplayValue(ar.type),
+        toDisplayValue(ar.notes),
+      ]
+    })
   }, [displayAR])
 
   const totalARAmount = useMemo(() => {
@@ -1145,6 +1154,8 @@ export default function AccountsReceivableTab({
   const totalARAmountFormatted = useMemo(
     () =>
       new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       }).format(totalARAmount),
@@ -1309,12 +1320,15 @@ export default function AccountsReceivableTab({
       width: 80,
       readOnly: !effectiveCanEdit || getReadOnly('ar_id')
     },
-    { 
-      data: 1, 
-      title: 'Name', 
-      type: 'text' as const, 
+    {
+      data: 1,
+      title: 'Name',
+      type: 'text' as const,
       width: 120,
-      readOnly: !effectiveCanEdit || getReadOnly('name')
+      // Always read-only — Name is auto-populated from the patient record when a Patient-type AR
+      // row resolves its ID, so accepting manual edits here would only let users desync the cell
+      // from the source of truth.
+      readOnly: true,
     },
     {
       data: 2,
@@ -1822,16 +1836,16 @@ export default function AccountsReceivableTab({
 
       {/* Sum bar — same placement and chrome as billing sheet (ProvidersTab) */}
       <div
-        className={`mt-3 flex flex-col gap-2 px-4 py-3 rounded-lg border border-white/20 bg-slate-800/80 text-white ${
-          isInSplitScreen ? 'shrink-0' : ''
+        className={`mt-3 flex flex-col rounded-lg border border-white/20 bg-slate-800/80 text-white ${
+          isInSplitScreen ? 'shrink-0 gap-1 px-3 py-2 text-sm' : 'gap-2 px-4 py-3'
         }`}
         style={{ width: '100%', maxWidth: '100%' }}
         role="status"
         aria-live="polite"
       >
-        <div className="flex items-center gap-6 flex-wrap">
+        <div className={`flex items-center flex-wrap ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-6'}`}>
           <span className="font-medium text-red-500">Sums:</span>
-          <span className="ml-2">
+          <span>
             <strong>Total amount:</strong>{' '}
             <span className="tabular-nums">{totalARAmountFormatted}</span>
           </span>

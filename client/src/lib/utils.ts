@@ -83,13 +83,25 @@ export function toDisplayDate(value: string | null | undefined): string {
 }
 
 /**
- * Format raw input (digits + optional dashes) as MM-DD-YY while typing.
- * e.g. "03", "031", "0311", "03112", "031125" -> "03", "03-1", "03-11", "03-11-2", "03-11-25"
- * If 8 digits (YYYYMMDD) pasted, treats as YYYY-MM-DD and returns MM-DD-YY.
+ * Format raw input as MM-DD-YY while typing.
+ * - If the user types a separator (`/`, `-`, `.`, or space), preserve their segments verbatim and
+ *   just normalize the separator to `-`. This is how "6/9/25" stays readable instead of being
+ *   stripped to "6925" and reflowed into "69-25".
+ * - If the user types only digits, auto-insert dashes positionally: "03" → "03", "031" → "03-1",
+ *   "031125" → "03-11-25". An 8-digit blob (YYYYMMDD) is treated as YYYY-MM-DD and emitted as
+ *   MM-DD-YY.
  */
 export function formatDateOfServiceAsYouType(input: string | null | undefined): string {
   if (input == null) return ''
-  const digits = String(input).replace(/\D/g, '')
+  const raw = String(input)
+  if (raw.length === 0) return ''
+  if (/[\/\-.\s]/.test(raw)) {
+    const segments = raw.split(/[\/\-.\s]+/).slice(0, 3)
+    return segments
+      .map((seg, idx) => seg.replace(/\D/g, '').slice(0, idx === 2 ? 4 : 2))
+      .join('-')
+  }
+  const digits = raw.replace(/\D/g, '')
   if (digits.length === 0) return ''
   let mm: string, dd: string, yy: string
   if (digits.length >= 8) {
@@ -117,17 +129,20 @@ function isValidCalendarYmd(year: number, month: number, day: number): boolean {
 
 /**
  * Parse user/table input to YYYY-MM-DD for Postgres `date` columns.
- * Accepts YYYY-MM-DD (optional `T…` / time suffix from PostgREST), MM-DD-YY, MM-DD-YYYY (slashes OK: normalized to dashes).
- * Dashed US form requires two-digit month and day (MM-DD-YY / MM-DD-YYYY).
+ * Accepts:
+ *   - YYYY-MM-DD (optional `T…` / time suffix from PostgREST)
+ *   - M(M)-D(D)-YY / M(M)-D(D)-YYYY with `-`, `/`, or `.` as separator (single or double digit OK,
+ *     e.g. "6/9/25" → "2025-06-09")
+ *   - 6 or 8 raw digits — "060925" → "2025-06-09", "20250609" → "2025-06-09"
  * Returns null for empty input, partial typing ("11", "03-11"), garbage, or impossible dates.
  */
 export function parseDateOfServiceInput(value: string | null | undefined): string | null {
   if (value == null || value === '' || value === 'null') return null
   let s = String(value).trim()
   if (!s) return null
-  s = s.replace(/\//g, '-')
+  s = s.replace(/[\/.]/g, '-')
 
-  const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ].*)?$/.exec(s)
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[Tt ].*)?$/.exec(s)
   if (iso) {
     const y = parseInt(iso[1]!, 10)
     const mo = parseInt(iso[2]!, 10)
@@ -136,26 +151,35 @@ export function parseDateOfServiceInput(value: string | null | undefined): strin
     return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`
   }
 
-  // MM-DD-YY or MM-DD-YYYY (two-digit month and day — not "3-5-25")
-  const match = s.match(/^(\d{2})-(\d{2})-(\d{2}|\d{4})$/)
-  if (!match) return null
-
-  const month = parseInt(match[1]!, 10)
-  const day = parseInt(match[2]!, 10)
-  const yyPart = match[3]!
-  let year: number
-  if (yyPart.length === 2) {
-    const y = parseInt(yyPart, 10)
-    year = y >= 0 && y <= 99 ? 2000 + y : y
-  } else {
-    year = parseInt(yyPart, 10)
+  // US form with 1- or 2-digit month/day — covers "6-9-25", "06-09-2025", "6/9/25", "6.9.25".
+  const match = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2}|\d{4})$/)
+  if (match) {
+    const month = parseInt(match[1]!, 10)
+    const day = parseInt(match[2]!, 10)
+    const yyPart = match[3]!
+    const year = yyPart.length === 2 ? 2000 + parseInt(yyPart, 10) : parseInt(yyPart, 10)
+    if (!isValidCalendarYmd(year, month, day)) return null
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
   }
 
-  if (!isValidCalendarYmd(year, month, day)) return null
-  const yyyy = String(year)
-  const m = String(month).padStart(2, '0')
-  const d = String(day).padStart(2, '0')
-  return `${yyyy}-${m}-${d}`
+  // Raw digit blobs — 6 digits = MMDDYY (US), 8 digits = YYYYMMDD. Keeps the legacy "060925" entry
+  // working and lets users paste an 8-digit ISO blob from another sheet without separators.
+  const digits = s.replace(/\D/g, '')
+  if (digits.length === 6) {
+    const month = parseInt(digits.slice(0, 2), 10)
+    const day = parseInt(digits.slice(2, 4), 10)
+    const year = 2000 + parseInt(digits.slice(4, 6), 10)
+    if (!isValidCalendarYmd(year, month, day)) return null
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+  if (digits.length === 8) {
+    const year = parseInt(digits.slice(0, 4), 10)
+    const month = parseInt(digits.slice(4, 6), 10)
+    const day = parseInt(digits.slice(6, 8), 10)
+    if (!isValidCalendarYmd(year, month, day)) return null
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+  return null
 }
 
 /**
