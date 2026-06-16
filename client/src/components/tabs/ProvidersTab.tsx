@@ -3146,82 +3146,90 @@ export default function ProvidersTab({
         )}
       </div>
 
-      {activeProvider && canEdit && !isViewingBackup && (
-        <div className="mt-3 flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={exportCurrentSheetAsCsv}
-            disabled={isExportingCurrentSheet}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Download this sheet's current rows as a CSV — use this to take a manual backup before risky changes."
-          >
-            {isExportingCurrentSheet ? 'Exporting…' : 'Download CSV'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setExtraEmptyRows((n) => n + BILLING_SHEET_ROWS_STEP)}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-sm font-medium"
-          >
-            <span aria-hidden="true">+</span> Add {BILLING_SHEET_ROWS_STEP} rows
-          </button>
-        </div>
-      )}
-
-      {/* Sum tally for provider with full access (level 2) only */}
-      {activeProvider && isProviderView && providerLevel === 2 && (
-        <div
-          className={`mt-3 flex flex-col rounded-lg border border-white/20 bg-slate-800/80 text-white ${
-            isInSplitScreen ? 'gap-1 px-3 py-2 text-sm' : 'gap-2 px-4 py-3'
-          }`}
-          style={{ width: '100%', maxWidth: '100%' }}
-        >
-          <div className={`flex items-center flex-wrap ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-6'}`}>
-            <span className="font-medium text-red-500">Sums:</span>
-            <span><strong>Insurance Pay Total:</strong> {formatCurrency(providerSums.insPay)}</span>
-            <span><strong>Patient Payment Total:</strong> {formatCurrency(providerSums.collectedFromPt)}</span>
-            <span><strong>AR Total:</strong> {arSumFromDb === null ? '—' : formatCurrency(arSumFromDb)}</span>
-          </div>
-        </div>
-      )}
-
-      {activeProvider && !isProviderView && (
-        <div
-          className={`mt-3 flex flex-col rounded-lg border border-white/20 bg-slate-800/80 text-white ${
-            isInSplitScreen ? 'gap-1 px-3 py-2 text-sm' : 'gap-2 px-4 py-3'
-          }`}
-          style={{ width: '100%', maxWidth: '100%' }}
-        >
-          {officeStaffView ? (
-            <div className={`flex items-center flex-wrap text-sm ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-4'}`}>
-              <span className="font-medium text-red-500/90">CC Declines:</span>
-              <span><strong>{billingMetrics?.ccDeclines ?? 0}</strong></span>
-            </div>
-          ) : (
-            <>
-              <div className={`flex items-center flex-wrap ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-6'}`}>
-                <span className="font-medium text-red-500">Sums:</span>
-                <span><strong>Ins Pay:</strong> {formatCurrency(providerSums.insPay)}</span>
-                <span><strong>Collected from PT:</strong> {formatCurrency(providerSums.collectedFromPt)}</span>
-                <span><strong>Total:</strong> {formatCurrency(providerSums.total)}</span>
-                <span><strong>AR Total:</strong> {arSumFromDb === null ? '—' : formatCurrency(arSumFromDb)}</span>
-              </div>
-              {billingMetrics && (
-                <div className={`flex items-center flex-wrap text-sm border-t border-white/20 ${
-                  isInSplitScreen ? 'gap-x-3 gap-y-1 pt-1' : 'gap-4 pt-2'
-                }`}>
-                  <span className="font-medium text-red-500/90">Metrics:</span>
-                  <span>Visits: <strong>{billingMetrics.visits}</strong></span>
-                  <span>No Shows: <strong>{billingMetrics.noShows}</strong></span>
-                  <span>Cancel/Resched: <strong>{billingMetrics.cancellationsReschedulings}</strong></span>
-                  <span>Paid claims: <strong>{billingMetrics.paidClaims}</strong></span>
-                  <span>Private Pay: <strong>{billingMetrics.privatePay}</strong></span>
-                  <span>Secondary: <strong>{billingMetrics.secondary}</strong></span>
-                  <span>CC Declines: <strong>{billingMetrics.ccDeclines}</strong></span>
+      {/* Sums box + Download/Add buttons share one row. The sums box grows to fill the available
+       *  width (flex-1) so the buttons hug the right edge instead of getting their own full row
+       *  above the sums. flex-wrap kicks in on narrow viewports (split-screen, mobile) so the
+       *  buttons drop below the sums box rather than overflow horizontally. */}
+      {activeProvider && (
+        ((isProviderView && providerLevel === 2) || !isProviderView || (canEdit && !isViewingBackup)) && (
+          <div className="mt-3 flex items-stretch flex-wrap gap-3">
+            {/* Sum tally for provider with full access (level 2) only */}
+            {isProviderView && providerLevel === 2 && (
+              <div
+                className={`flex-1 min-w-0 flex flex-col rounded-lg border border-white/20 bg-slate-800/80 text-white ${
+                  isInSplitScreen ? 'gap-1 px-3 py-2 text-sm' : 'gap-2 px-4 py-3'
+                }`}
+              >
+                <div className={`flex items-center flex-wrap ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-6'}`}>
+                  <span className="font-medium text-red-500">Sums:</span>
+                  <span><strong>Insurance Pay Total:</strong> {formatCurrency(providerSums.insPay)}</span>
+                  <span><strong>Patient Payment Total:</strong> {formatCurrency(providerSums.collectedFromPt)}</span>
+                  <span><strong>AR Total:</strong> {arSumFromDb === null ? '—' : formatCurrency(arSumFromDb)}</span>
                 </div>
-              )}
-            </>
-          )}
-        </div>
+              </div>
+            )}
+
+            {!isProviderView && (
+              <div
+                className={`flex-1 min-w-0 flex flex-col rounded-lg border border-white/20 bg-slate-800/80 text-white ${
+                  isInSplitScreen ? 'gap-1 px-3 py-2 text-sm' : 'gap-2 px-4 py-3'
+                }`}
+              >
+                {officeStaffView ? (
+                  <div className={`flex items-center flex-wrap text-sm ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-4'}`}>
+                    <span className="font-medium text-red-500/90">CC Declines:</span>
+                    <span><strong>{billingMetrics?.ccDeclines ?? 0}</strong></span>
+                  </div>
+                ) : (
+                  <>
+                    <div className={`flex items-center flex-wrap ${isInSplitScreen ? 'gap-x-3 gap-y-1' : 'gap-6'}`}>
+                      <span className="font-medium text-red-500">Sums:</span>
+                      <span><strong>Ins Pay:</strong> {formatCurrency(providerSums.insPay)}</span>
+                      <span><strong>Collected from PT:</strong> {formatCurrency(providerSums.collectedFromPt)}</span>
+                      <span><strong>Total:</strong> {formatCurrency(providerSums.total)}</span>
+                      <span><strong>AR Total:</strong> {arSumFromDb === null ? '—' : formatCurrency(arSumFromDb)}</span>
+                    </div>
+                    {billingMetrics && (
+                      <div className={`flex items-center flex-wrap text-sm border-t border-white/20 ${
+                        isInSplitScreen ? 'gap-x-3 gap-y-1 pt-1' : 'gap-4 pt-2'
+                      }`}>
+                        <span className="font-medium text-red-500/90">Metrics:</span>
+                        <span>Visits: <strong>{billingMetrics.visits}</strong></span>
+                        <span>No Shows: <strong>{billingMetrics.noShows}</strong></span>
+                        <span>Cancel/Resched: <strong>{billingMetrics.cancellationsReschedulings}</strong></span>
+                        <span>Paid claims: <strong>{billingMetrics.paidClaims}</strong></span>
+                        <span>Private Pay: <strong>{billingMetrics.privatePay}</strong></span>
+                        <span>Secondary: <strong>{billingMetrics.secondary}</strong></span>
+                        <span>CC Declines: <strong>{billingMetrics.ccDeclines}</strong></span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {canEdit && !isViewingBackup && (
+              <div className="shrink-0 self-center flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={exportCurrentSheetAsCsv}
+                  disabled={isExportingCurrentSheet}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Download this sheet's current rows as a CSV — use this to take a manual backup before risky changes."
+                >
+                  {isExportingCurrentSheet ? 'Exporting…' : 'Download CSV'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExtraEmptyRows((n) => n + BILLING_SHEET_ROWS_STEP)}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-white text-sm font-medium"
+                >
+                  <span aria-hidden="true">+</span> Add {BILLING_SHEET_ROWS_STEP} rows
+                </button>
+              </div>
+            )}
+          </div>
+        )
       )}
 
       {commentModal != null && createPortal(

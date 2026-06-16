@@ -336,6 +336,56 @@ export function createMultiBubbleDropdownRenderer(colorMap: (value: string) => {
 const _BaseDropdown =
   (Handsontable as any).editors?.DropdownEditor ?? (Handsontable as any).editors?.AutocompleteEditor
 
+/** Walks up from a `.handsontable.listbox` popup element to whatever wrapping DOM node controls its
+ *  visibility, so the caller can hide both the inner listbox table and its parent container. The
+ *  parent is typically `div.handsontableEditor` or `div.htAutocompleteEditor`, but builds vary. */
+function findDropdownPopupRoots(el: Element): HTMLElement[] {
+  const roots: HTMLElement[] = []
+  if (el instanceof HTMLElement) roots.push(el)
+  const wrapper = el.closest('[class*="handsontableEditor"], [class*="autocompleteEditor"]')
+  if (wrapper instanceof HTMLElement && wrapper !== el) roots.push(wrapper)
+  return roots
+}
+
+/** Force every visible Handsontable dropdown popup in the document to `display:none`. We use this
+ *  as a last-resort cleanup when a popup gets orphaned (e.g. the editor instance got destroyed but
+ *  the popup DOM was left visible — the "stuck dropdown, must refresh" symptom Jenali keeps
+ *  reporting on Note/Patient Pay/Claim Status columns). */
+function hideAllDropdownPopups(): void {
+  if (typeof document === 'undefined') return
+  const popups = document.querySelectorAll('.handsontable.listbox')
+  popups.forEach((popup) => {
+    findDropdownPopupRoots(popup).forEach((node) => {
+      node.style.display = 'none'
+    })
+  })
+}
+
+/** Global mousedown + Escape watchdog. If a popup is visible and the user clicks anywhere outside a
+ *  Handsontable cell + the popup itself, force-hide every popup. This is belt-and-braces on top of
+ *  each editor's own close() — Handsontable's AutocompleteEditor occasionally leaves a popup
+ *  visible when the editor's close() races with a stale queryChoices timer, and the popup then has
+ *  no event listeners so the user can't dismiss it without refreshing. */
+let __dropdownGlobalCleanupInstalled = false
+function ensureDropdownGlobalCleanup(): void {
+  if (__dropdownGlobalCleanupInstalled || typeof document === 'undefined') return
+  __dropdownGlobalCleanupInstalled = true
+  const onMouseDown = (e: MouseEvent) => {
+    const target = e.target as Element | null
+    if (!target) return
+    // Click inside a dropdown popup → let Handsontable handle the selection.
+    if (target.closest('.handsontable.listbox')) return
+    // Click on a Handsontable cell → HT will manage editor lifecycle itself.
+    if (target.closest('.handsontable td, .handsontable th')) return
+    hideAllDropdownPopups()
+  }
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') hideAllDropdownPopups()
+  }
+  document.addEventListener('mousedown', onMouseDown, true)
+  document.addEventListener('keydown', onKeyDown, true)
+}
+
 /**
  * Dropdown editor that forces the options list to open when the editor opens.
  * The default AutocompleteEditor uses _registerTimeout for queryChoices, which can fail to show
@@ -353,6 +403,7 @@ export const DropdownEditorOpenList: typeof _BaseDropdown | null = _BaseDropdown
       private __isOpen = false
 
       open(event?: Event) {
+        ensureDropdownGlobalCleanup()
         super.open(event)
         this.__isOpen = true
         if (typeof (this as any).queryChoices === 'function') {
@@ -376,7 +427,18 @@ export const DropdownEditorOpenList: typeof _BaseDropdown | null = _BaseDropdown
           clearTimeout(this.__openListTimerId)
           this.__openListTimerId = null
         }
-        super.close()
+        try { super.close() } catch { /* ignore */ }
+        // Force-hide the popup DOM. The base AutocompleteEditor's close() does this internally,
+        // but races (Escape during open, very fast cell switching) can leave a popup on screen
+        // with no event listeners attached. Setting display:none here guarantees the popup is
+        // gone before our close() returns, so the user never has to refresh.
+        const htEditor = (this as any).htEditor
+        const rootEl = htEditor?.rootElement as HTMLElement | undefined
+        if (rootEl) {
+          findDropdownPopupRoots(rootEl).forEach((node) => {
+            try { node.style.display = 'none' } catch { /* ignore */ }
+          })
+        }
       }
     }
   : null
@@ -408,6 +470,7 @@ export function createColoredAutocompleteDropdown(
     private __isOpen = false
 
     open(event?: Event) {
+      ensureDropdownGlobalCleanup()
       super.open(event)
       this.__isOpen = true
       // Mirror DropdownEditorOpenList: force the option list to render right away so the colors
@@ -446,7 +509,16 @@ export function createColoredAutocompleteDropdown(
         try { hooked.removeHook('afterRender', this.__paint) } catch { /* ignore */ }
       }
       this.__hookedHtEditor = null
-      super.close()
+      try { super.close() } catch { /* ignore */ }
+      // Force-hide the popup DOM so a racing queryChoices that fires after super.close() can't
+      // leave the popup visible without event listeners (the "stuck dropdown, must refresh" bug).
+      const htEditor = (this as any).htEditor
+      const rootEl = htEditor?.rootElement as HTMLElement | undefined
+      if (rootEl) {
+        findDropdownPopupRoots(rootEl).forEach((node) => {
+          try { node.style.display = 'none' } catch { /* ignore */ }
+        })
+      }
     }
 
     private __paint = () => {

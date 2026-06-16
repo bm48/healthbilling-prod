@@ -103,19 +103,40 @@ export default function MonthYearTabs({
     ? `${currentMonthName} ${selectedPayroll === 1 ? '1st' : '2nd'} Half ${currentYear}`
     : `${currentMonthName} ${currentYear}`
 
+  // In compact mode, render Year ▾ on the left of the title pill and labelRightSlot (Select
+  // Version) on the right. Putting them on the title row saves a full line of vertical space
+  // versus the prior "title alone, then year row below it" layout.
+  const compactYearSelect = (
+    <select
+      value={currentYear}
+      onChange={(e) => handleYearChange(Number(e.target.value))}
+      className="px-2 py-1 rounded-md border border-slate-600 bg-slate-800 text-white text-sm font-medium shrink-0 cursor-pointer hover:border-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
+      title="Select year"
+    >
+      {yearOptions.map((y) => (
+        <option key={y} value={y}>
+          {y}
+        </option>
+      ))}
+    </select>
+  )
+
   return (
     <div className={`${isInSplitScreen ? 'mb-2' : 'mb-3'}`} style={{ width: '100%' }}>
       {label && (
-        // Compact (split-screen / narrow viewport): just the centered title pill; labelRightSlot
-        // (Select Version) is moved into the year row below to save vertical space.
-        // Wide: keep the original centered title + absolutely-positioned right slot layout.
-        <div className={`mb-2 ${isInSplitScreen ? 'flex justify-center items-center' : 'relative flex justify-center items-center'}`}>
+        // Compact (split-screen / narrow viewport): Year + Title pill + labelRightSlot on one row.
+        // Wide: original centered title + absolutely-positioned right slot.
+        <div className={`mb-2 ${isInSplitScreen ? 'flex items-center justify-between gap-2 min-w-0' : 'relative flex justify-center items-center'}`}>
+          {isInSplitScreen && compactYearSelect}
           <div
-            className="text-center text-base font-semibold rounded px-3 py-1.5 inline-block"
+            className={`text-center text-base font-semibold rounded px-3 py-1.5 inline-block ${
+              isInSplitScreen ? 'flex-1 min-w-0 truncate' : ''
+            }`}
             style={{ backgroundColor: activeBg, color: activeText }}
           >
             {label} {labelSuffix}
           </div>
+          {isInSplitScreen && labelRightSlot && <div className="shrink-0">{labelRightSlot}</div>}
           {!isInSplitScreen && labelRightSlot && (
             // top-0 bottom-0 + flex items-center vertically centers without applying a CSS transform —
             // a transform here makes this wrapper the containing block for `position: fixed`, which
@@ -130,52 +151,41 @@ export default function MonthYearTabs({
         <div className="mb-2 flex justify-center">{belowTitleSlot}</div>
       )}
       {isInSplitScreen ? (
-        // Split-screen: compact stacked layout — Year + Select Version + 1st/2nd Half + rightSlot
-        // (Download CSV) on one row, then a 6×2 grid of months. Pulling labelRightSlot into this
-        // row instead of its own row saves a line of vertical space for the table below.
+        // Split-screen: payroll toggle (if dual-payroll clinic) and rightSlot (Download CSV) sit
+        // on their own thin row only when present, then a 6×2 grid of months. Year + Select
+        // Version already moved up to the title row above to save vertical space.
         <>
-          <div className="flex items-center flex-wrap gap-2 mb-2 min-w-0">
-            <select
-              value={currentYear}
-              onChange={(e) => handleYearChange(Number(e.target.value))}
-              className="px-2 py-1 rounded-md border border-slate-600 bg-slate-800 text-white text-sm font-medium shrink-0 cursor-pointer hover:border-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
-              title="Select year"
-            >
-              {yearOptions.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
-            {labelRightSlot && <div className="shrink-0">{labelRightSlot}</div>}
-            {clinicPayroll === 2 && (
-              <div className="flex items-center gap-1 shrink-0 ml-auto rounded-md border border-slate-600 bg-slate-800 p-0.5">
-                <button
-                  type="button"
-                  onClick={() => handlePayrollChange(1)}
-                  className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
-                    selectedPayroll === 1
-                      ? 'bg-primary-600 text-white'
-                      : 'text-white/70 hover:text-white hover:bg-white/10'
-                  }`}
-                >
-                  1st Half
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handlePayrollChange(2)}
-                  className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
-                    selectedPayroll === 2
-                      ? 'bg-primary-600 text-white'
-                      : 'text-white/70 hover:text-white hover:bg-white/10'
-                  }`}
-                >
-                  2nd Half
-                </button>
-              </div>
-            )}
-            {rightSlot && <div className="shrink-0 ml-auto">{rightSlot}</div>}
-          </div>
+          {(clinicPayroll === 2 || rightSlot) && (
+            <div className="flex items-center flex-wrap gap-2 mb-2 min-w-0">
+              {clinicPayroll === 2 && (
+                <div className="flex items-center gap-1 shrink-0 rounded-md border border-slate-600 bg-slate-800 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => handlePayrollChange(1)}
+                    className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
+                      selectedPayroll === 1
+                        ? 'bg-primary-600 text-white'
+                        : 'text-white/70 hover:text-white hover:bg-white/10'
+                    }`}
+                  >
+                    1st Half
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePayrollChange(2)}
+                    className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${
+                      selectedPayroll === 2
+                        ? 'bg-primary-600 text-white'
+                        : 'text-white/70 hover:text-white hover:bg-white/10'
+                    }`}
+                  >
+                    2nd Half
+                  </button>
+                </div>
+              )}
+              {rightSlot && <div className="shrink-0 ml-auto">{rightSlot}</div>}
+            </div>
+          )}
           <div className="grid grid-cols-6 gap-1">
             {MONTHS_SHORT.map((short, idx) => {
               const monthName = MONTHS_FULL[idx]

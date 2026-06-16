@@ -1041,13 +1041,13 @@ export default function ProviderPayTab({
         <div
           className={
             isCompactLayout
-              ? 'flex items-center flex-wrap gap-x-2 gap-y-1 px-2 py-2 border-b border-slate-600/50 min-w-0'
+              ? 'flex items-center flex-wrap gap-x-1.5 gap-y-0.5 px-2 py-1 border-b border-slate-600/50 min-w-0'
               : 'flex items-center justify-center gap-3 px-4 py-2 border-b border-slate-600/50'
           }
         >
           <span
             className={
-              isCompactLayout ? 'font-bold text-sm shrink-0' : 'font-bold shrink-0'
+              isCompactLayout ? 'font-bold text-xs shrink-0' : 'font-bold shrink-0'
             }
           >
             Pay Date:
@@ -1058,7 +1058,7 @@ export default function ProviderPayTab({
             onChange={(e) => setPayDate(e.target.value)}
             disabled={!effectiveCanEdit}
             className={`${dateInputClass(!payDate)} ${
-              isCompactLayout ? 'w-[7.5rem] px-1 py-0.5 text-xs shrink-0' : 'w-[12rem] px-2 py-1'
+              isCompactLayout ? 'w-[6.25rem] px-0.5 py-0 text-xs shrink-0' : 'w-[12rem] px-2 py-1'
             }`}
             style={{ color: headerStyle.textColor }}
           />
@@ -1066,15 +1066,16 @@ export default function ProviderPayTab({
         {isCompactLayout ? (
           // Single-row Pay Period for compact mode: "Pay Period: From [d] To [d]". flex-wrap lets
           // the row break gracefully if the container is too narrow for the full line.
-          <div className="flex items-center flex-wrap gap-x-2 gap-y-1 px-2 py-2 min-w-0">
-            <span className="font-bold text-sm shrink-0">Pay Period:</span>
+          // Tightened padding + smaller inputs so the whole banner is half the previous height.
+          <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 px-2 py-1 min-w-0">
+            <span className="font-bold text-xs shrink-0">Pay Period:</span>
             <label className="text-xs font-medium opacity-90 shrink-0">From</label>
             <input
               type="date"
               value={payPeriodFrom}
               onChange={(e) => setPayPeriodFrom(e.target.value)}
               disabled={!effectiveCanEdit}
-              className={`${dateInputClass(!payPeriodFrom)} w-[7.5rem] px-1 py-0.5 text-xs shrink-0`}
+              className={`${dateInputClass(!payPeriodFrom)} w-[6.25rem] px-0.5 py-0 text-xs shrink-0`}
               style={{ color: headerStyle.textColor }}
             />
             <label className="text-xs font-medium opacity-90 shrink-0">To</label>
@@ -1083,7 +1084,7 @@ export default function ProviderPayTab({
               value={payPeriodTo}
               onChange={(e) => setPayPeriodTo(e.target.value)}
               disabled={!effectiveCanEdit}
-              className={`${dateInputClass(!payPeriodTo)} w-[7.5rem] px-1 py-0.5 text-xs shrink-0`}
+              className={`${dateInputClass(!payPeriodTo)} w-[6.25rem] px-0.5 py-0 text-xs shrink-0`}
               style={{ color: headerStyle.textColor }}
             />
           </div>
