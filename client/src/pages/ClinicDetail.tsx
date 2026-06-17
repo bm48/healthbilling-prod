@@ -347,7 +347,7 @@ export default function ClinicDetail() {
   type PendingProviderSheetSave = {
     rows: SheetRow[]
     deletedDbIds: string[]
-    resolvers: Array<{ resolve: () => void; reject: (err: unknown) => void }>
+    resolvers: Array<{ resolve: (persisted: boolean) => void; reject: (err: unknown) => void }>
   }
   const pendingProviderSheetSaveRef = useRef<Record<string, PendingProviderSheetSave>>({})
   /** When viewing a backup version, override rows for the current provider (super_admin only). */
@@ -2438,14 +2438,16 @@ export default function ClinicDetail() {
 
 
 
-  const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]) => {
+  const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]): Promise<boolean> => {
     if (!clinicId || !userProfile) {
-      return
+      console.warn('[saveProviderSheetRows] dropped — missing clinicId or userProfile', { providerId, hasClinicId: !!clinicId, hasUserProfile: !!userProfile })
+      return false
     }
 
     const sheet = providerSheets[providerId]
     if (!sheet) {
-      return
+      console.warn('[saveProviderSheetRows] dropped — providerSheets has no entry for this providerId', { providerId, monthKey: selectedMonthKey, knownProviderIds: Object.keys(providerSheets) })
+      return false
     }
 
     // Hydration guard: never persist rows for a (clinic, provider, month) tuple whose DB rows haven't
@@ -2454,8 +2456,8 @@ export default function ClinicDetail() {
     // belt-and-suspenders, but it also avoids overwriting freshly-saved rows with stale local state.
     const hydrationKey = `${clinicId}|${providerId}|${selectedMonthKey}`
     if (!hydratedSheetKeysRef.current.has(hydrationKey)) {
-      providersDebugClinic('saveProviderSheetRows skipped: sheet not yet hydrated', { providerId, monthKey: selectedMonthKey })
-      return
+      console.warn('[saveProviderSheetRows] dropped — sheet not yet hydrated', { providerId, monthKey: selectedMonthKey, hydrationKey })
+      return false
     }
 
     // Filter out only truly empty rows (empty- rows with no data)
@@ -2477,7 +2479,7 @@ export default function ClinicDetail() {
     // so deletes never get dropped) and return a promise that resolves when the eventual save completes.
     if (saveProviderSheetInProgressRef.current.has(providerId)) {
       const incomingDeletes = (knownDeletedIds ?? []).filter((id) => isUuid(id))
-      return new Promise<void>((resolve, reject) => {
+      return new Promise<boolean>((resolve, reject) => {
         const existing = pendingProviderSheetSaveRef.current[providerId]
         if (existing) {
           existing.rows = rowsToSave
@@ -2511,6 +2513,10 @@ export default function ClinicDetail() {
     // Optimistic update: apply full rows to state immediately so the row (e.g. patient fill) appears right away
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: rowsToSave } }))
 
+    // Tracks whether saveSheetRows actually persisted to the DB. Returned to the caller so the
+    // localStorage restore effect can tell the difference between a real save and a swallowed error;
+    // without this the restore .then() removed the last-resort backup even when the network call failed.
+    let didPersist = false
     try {
       // Do not coerce omitted arg to [] — [] skips deletes and skips orphan SELECT (saveSheetRows treats [] as explicit).
       // Pending replays omit knownDeletedIds so orphans are cleaned via SELECT path.
@@ -2519,6 +2525,7 @@ export default function ClinicDetail() {
         providerId,
         selectedMonthKey,
       })
+      didPersist = true
       // Patient demographics are owned by `patients` (Patients tab / API), not pushed from provider sheets.
       const freshPatients =
         patientsRef.current.length > 0
@@ -2652,11 +2659,14 @@ export default function ClinicDetail() {
         }
         const pendingDeletes = pending.deletedDbIds.length > 0 ? pending.deletedDbIds : undefined
         // Forward queued knownDeletedIds + settle the promises that every queued caller awaits.
+        // Propagate the eventual `persisted` boolean so the localStorage restore path can tell whether
+        // its replay actually reached the DB (silent guard hits would otherwise look like success).
         saveProviderSheetRows(providerId, toSave, pendingDeletes)
-          .then(() => pending.resolvers.forEach((r) => r.resolve()))
+          .then((persisted) => pending.resolvers.forEach((r) => r.resolve(persisted)))
           .catch((err) => pending.resolvers.forEach((r) => r.reject(err)))
       }
     }
+    return didPersist
   }, [clinicId, userProfile, providerSheets, selectedMonthKey, fetchPatients])
 
   // Restore provider sheet rows from localStorage after refresh (browser aborts in-flight save; data
@@ -2684,11 +2694,16 @@ export default function ClinicDetail() {
           localStorage.removeItem(key)
           return
         }
-        // DB-vs-localStorage freshness check (matches ProviderSheetPage).
+        // DB-vs-localStorage freshness check (matches ProviderSheetPage). Only consider rows that
+        // came from the DB (UUID ids). `empty-*` placeholders are minted on every fetch with
+        // `updated_at: new Date().toISOString()`, so including them made mostRecentDbUpdate ≈ "now",
+        // which falsely declared every localStorage backup stale and silently deleted it without
+        // saving — the exact "data shown for days, never reached the DB" symptom Jenali reported.
         const currentRows =
           (providerSheetRowsByMonthRef.current[selectedMonthKey] ?? {})[providerId] ?? []
         let mostRecentDbUpdate = 0
         for (const row of currentRows) {
+          if (!isUuid(row.id)) continue
           if (row.updated_at && typeof row.updated_at === 'string') {
             const t = new Date(row.updated_at).getTime()
             if (Number.isFinite(t) && t > mostRecentDbUpdate) mostRecentDbUpdate = t
@@ -2699,9 +2714,16 @@ export default function ClinicDetail() {
           return
         }
         restoredPendingKeysRef.current.add(key)
-        // Intentionally silent: avoid noisy runtime logs in normal tab usage.
-        saveProviderSheetRows(providerId, data.rows).then(() => {
-          try { localStorage.removeItem(key) } catch (_) {}
+        // Only delete the localStorage backup if saveProviderSheetRows actually persisted to DB.
+        // A silently-dropped save (guard fail, missing sheet, not yet hydrated) resolves to `false`;
+        // keeping the key gives the next mount / pagehide keepalive another chance to land the data.
+        saveProviderSheetRows(providerId, data.rows).then((persisted) => {
+          if (persisted) {
+            try { localStorage.removeItem(key) } catch (_) {}
+          } else {
+            console.warn('[ClinicDetail] Restore pending save not persisted; keeping localStorage backup', { key, providerId, monthKey: selectedMonthKey })
+            restoredPendingKeysRef.current.delete(key)
+          }
         }).catch(err => {
           console.error('[ClinicDetail] Restore pending save failed:', err)
           restoredPendingKeysRef.current.delete(key)

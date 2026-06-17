@@ -87,7 +87,7 @@ export default function ProviderSheetPage() {
   type PendingProviderSheetSave = {
     rows: SheetRow[]
     deletedDbIds: string[]
-    resolvers: Array<{ resolve: () => void; reject: (err: unknown) => void }>
+    resolvers: Array<{ resolve: (persisted: boolean) => void; reject: (err: unknown) => void }>
   }
   const pendingProviderSheetSaveRef = useRef<Record<string, PendingProviderSheetSave>>({})
   /** Deferred save when guards fail (currentSheet=null during refetch, or month mismatch). The previous
@@ -536,21 +536,25 @@ export default function ProviderSheetPage() {
   }, [applyProviderRowDerivedFields])
 
   const saveProviderSheetRows = useCallback(
-    async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]) => {
+    async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]): Promise<boolean> => {
       const targetMonth = selectedMonth.getMonth() + 1
       const targetYear = selectedMonth.getFullYear()
       // Guard checks (analogous to ClinicDetail's `if (!sheet) return` + hydration guard) — but instead
       // of silently dropping, we defer so a save fired during the brief setCurrentSheet(null)→fetch
       // window after a month change isn't permanently lost. The drain-effect below replays it.
+      // Returns `false` from any guard so the localStorage restore path can tell the difference between
+      // a real save and a deferred/skipped one and keep its backup until persistence is confirmed.
       if (!provider || provider.id !== providerId || !clinicId) {
         if (clinicId && providerId) {
           deferredSaveRef.current = { providerId, rowsToSave, knownDeletedIds, targetMonth, targetYear }
         }
-        return
+        console.warn('[ProviderSheetPage.saveProviderSheetRows] deferred — provider mismatch or missing clinicId', { providerId, currentProviderId: provider?.id, hasClinicId: !!clinicId })
+        return false
       }
       if (!currentSheet || currentSheet.month !== targetMonth || currentSheet.year !== targetYear) {
         deferredSaveRef.current = { providerId, rowsToSave, knownDeletedIds, targetMonth, targetYear }
-        return
+        console.warn('[ProviderSheetPage.saveProviderSheetRows] deferred — currentSheet missing or month mismatch', { providerId, targetMonth, targetYear, sheetMonth: currentSheet?.month, sheetYear: currentSheet?.year })
+        return false
       }
 
       // Step 1 — Filter empty-* placeholder rows with no data (mirrors ClinicDetail line 2462).
@@ -571,7 +575,7 @@ export default function ProviderSheetPage() {
       // that resolves when the eventual save completes. Mirrors ClinicDetail line 2478.
       if (saveProviderSheetInProgressRef.current.has(providerId)) {
         const incomingDeletes = (knownDeletedIds ?? []).filter((id) => isUuid(id))
-        return new Promise<void>((resolve, reject) => {
+        return new Promise<boolean>((resolve, reject) => {
           const existing = pendingProviderSheetSaveRef.current[providerId]
           if (existing) {
             existing.rows = rowsToSave
@@ -605,6 +609,9 @@ export default function ProviderSheetPage() {
       // Step 3 — Optimistic state update so the row appears immediately (mirrors ClinicDetail line 2512).
       setProviderSheetRows(prev => ({ ...prev, [providerId]: rowsToSave }))
 
+      // Tracks whether saveSheetRows actually persisted to the DB. Returned to the caller so the
+      // localStorage restore effect can tell the difference between a real save and a swallowed error.
+      let didPersist = false
       try {
         // Step 4 — API save call.
         const savedRows = await saveSheetRows(apiClient, currentSheet.id, rowsToProcess, knownDeletedIds, {
@@ -612,6 +619,7 @@ export default function ProviderSheetPage() {
           providerId,
           selectedMonthKey: selectedMonthKey ?? `${targetYear}-${targetMonth}`,
         })
+        didPersist = true
 
         // Step 5 — Fetch fresh patients BEFORE the state merge (mirrors ClinicDetail line 2523).
         const freshPatients = (await refetchPatients()) ?? []
@@ -726,11 +734,14 @@ export default function ProviderSheetPage() {
           }
           const pendingDeletes = pending.deletedDbIds.length > 0 ? pending.deletedDbIds : undefined
           // Forward queued knownDeletedIds + settle the promises that every queued caller awaits.
+          // Propagate the eventual `persisted` boolean so the localStorage restore path can tell
+          // whether its replay actually reached the DB (silent guard hits would otherwise look like success).
           saveProviderSheetRows(providerId, toSave, pendingDeletes)
-            .then(() => pending.resolvers.forEach((r) => r.resolve()))
+            .then((persisted) => pending.resolvers.forEach((r) => r.resolve(persisted)))
             .catch((err) => pending.resolvers.forEach((r) => r.reject(err)))
         }
       }
+      return didPersist
     },
     [currentSheet, provider, selectedMonth, clinicId, selectedMonthKey, refetchPatients]
   )
@@ -794,9 +805,13 @@ export default function ProviderSheetPage() {
       // updated_at among rows currently in React state for this provider. providerSheetRowsRef tracks
       // the state set by the most recent fetch / save. If the DB has rows that are newer than the
       // localStorage backup, the user already saved successfully — don't clobber the DB data.
+      // Only consider rows with UUID ids (real DB rows). `empty-*` placeholders are minted on every
+      // fetch with `updated_at: new Date().toISOString()`, so including them made mostRecentDbUpdate
+      // ≈ "now" and falsely deleted every legitimate localStorage backup without saving it.
       const currentRows = providerSheetRowsRef.current[provider.id] ?? []
       let mostRecentDbUpdate = 0
       for (const row of currentRows) {
+        if (!isUuid(row.id)) continue
         if (row.updated_at && typeof row.updated_at === 'string') {
           const t = new Date(row.updated_at).getTime()
           if (Number.isFinite(t) && t > mostRecentDbUpdate) mostRecentDbUpdate = t
@@ -809,9 +824,17 @@ export default function ProviderSheetPage() {
         return
       }
       restoredPendingKeysRef.current.add(key)
+      // Only delete the localStorage backup if saveProviderSheetRows actually persisted to DB.
+      // A deferred or guard-dropped save resolves to `false`; keeping the key gives the deferred-save
+      // drain effect (or the next mount / pagehide keepalive) another chance to land the data.
       saveProviderSheetRows(provider.id, data.rows)
-        .then(() => {
-          try { localStorage.removeItem(key) } catch (_) {}
+        .then((persisted) => {
+          if (persisted) {
+            try { localStorage.removeItem(key) } catch (_) {}
+          } else {
+            console.warn('[ProviderSheetPage] restore pending save not persisted; keeping localStorage backup', { key, providerId: provider.id, monthKey: selectedMonthKey })
+            restoredPendingKeysRef.current.delete(key)
+          }
         })
         .catch(err => {
           console.error('[ProviderSheetPage] restore pending save failed:', err)
