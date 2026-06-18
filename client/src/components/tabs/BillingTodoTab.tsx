@@ -803,7 +803,11 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       title: 'ID',
       type: 'text' as const,
       width: 80,
-      readOnly: !canEdit || getReadOnly('id_column'),
+      // Always read-only: the cell is a system-generated UUID preview (todo.id.substring(0, 8) + '...').
+      // The change handler has no branch for field === 'id', so anything the user typed here was
+      // silently dropped and the cell snapped back to the UUID truncation on the next render
+      // ("entered a number, saw a random string"). Lock the column so typing is rejected up front.
+      readOnly: true,
       columnSorting: { indicator: true },
     },
     {
