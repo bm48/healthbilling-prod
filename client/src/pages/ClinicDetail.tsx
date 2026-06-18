@@ -2016,6 +2016,12 @@ export default function ClinicDetail() {
       // Without marking hydration here, saveProviderSheetRows' hydration guard silently drops every save.
       hydratedSheetKeysRef.current.add(`${clinicId}|${providerId}|${selectedMonthKey}`)
       lastProviderSheetContextRef.current = { clinicId: clinicId!, providerId, monthKey: selectedMonthKey }
+      // Invalidate ProvidersTab's matrix cache. Without this, the cache (keyed on providerRowsVersion)
+      // keeps serving the matrix built from rows that were in state BEFORE this fetch — newly-arrived
+      // DB columns like `submit_date` / `appointment_date` appear blank in the grid even though they're
+      // present in providerSheetRowsByMonth. ProvidersTab's clear-refs effect intentionally does not
+      // depend on providerRowsVersion, so bumping here is safe (doesn't wipe latestProviderRowsRef).
+      setProviderRowsVersion((v) => v + 1)
     } catch (error) {
       console.error('Error fetching provider sheet data:', error)
     } finally {
@@ -2416,6 +2422,9 @@ export default function ClinicDetail() {
         setProviderSheetsByMonth(prev => ({ ...prev, [monthKey]: sheetsMap }))
         setProviderSheetRowsByMonth(prev => ({ ...prev, [monthKey]: rowsMap }))
         lastProviderSheetContextRef.current = { clinicId, providerId: null, monthKey }
+        // Invalidate ProvidersTab's matrix cache so newly-arrived columns (submit_date, appointment_date,
+        // etc.) actually render — see the matching bump in fetchProviderSheetData for the rationale.
+        setProviderRowsVersion((v) => v + 1)
         return { sheetsMap, rowsMap }
       }
     } catch (error) {
