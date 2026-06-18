@@ -26,6 +26,7 @@ function mergeBillingTodoFromGridRow(
   const statusRaw = row[1] != null && row[1] !== '' ? String(row[1]) : ''
   return {
     ...todo,
+    display_id: row[0] === '' || row[0] == null || row[0] === 'null' ? null : String(row[0]),
     status: statusRaw,
     issue: row[2] === '' || row[2] == null || row[2] === 'null' ? null : String(row[2]),
     notes: row[3] === '' || row[3] == null || row[3] === 'null' ? null : String(row[3]),
@@ -59,7 +60,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
   const [runPendingSaveTrigger, setRunPendingSaveTrigger] = useState(0)
   const saveCompletePromiseRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null)
   /** Snapshot of last saved fields per todo id — same idea as PatientsTab lastSavedSnapshotRef */
-  const lastSavedSnapshotRef = useRef<Map<string, { issue: string | null; notes: string | null; followup_notes: string | null; status: string }>>(new Map())
+  const lastSavedSnapshotRef = useRef<Map<string, { display_id: string | null; issue: string | null; notes: string | null; followup_notes: string | null; status: string }>>(new Map())
   const lastEditedRowRef = useRef<number | null>(null)
   const saveTriggeredByRowLeaveRef = useRef(false)
   const lastSelectedRowRef = useRef<number | null>(null)
@@ -76,6 +77,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
   const createEmptyTodo = useCallback((index: number): TodoItem => ({
     id: `empty-${index}`,
     clinic_id: clinicId,
+    display_id: null,
     issue: null,
     status: '',
     notes: null,
@@ -88,15 +90,17 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
 
   const normalizeTodoRow = useCallback((t: TodoItem): TodoItem => ({
     ...t,
+    display_id: (t.display_id && t.display_id !== 'null') ? t.display_id : null,
     issue: (t.issue && t.issue !== 'null') ? t.issue : null,
     notes: (t.notes && t.notes !== 'null') ? t.notes : null,
     followup_notes: (t.followup_notes && t.followup_notes !== 'null') ? t.followup_notes : null,
   }), [])
 
-  /** True empty placeholder rows only (not rows with status/issue data on an empty- id). */
+  /** True empty placeholder rows only (not rows with status/issue/display_id data on an empty- id). */
   const isBillingTodoEmptyPlaceholder = useCallback((t: TodoItem) => {
     return (
       t.id.startsWith('empty-') &&
+      !t.display_id &&
       !t.issue &&
       !t.notes &&
       !t.followup_notes &&
@@ -129,6 +133,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
 
       fetchedTodos.forEach((t) => {
         lastSavedSnapshotRef.current.set(t.id, {
+          display_id: t.display_id,
           issue: t.issue,
           notes: t.notes,
           followup_notes: t.followup_notes,
@@ -196,14 +201,17 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     if (!clinicId || !userProfile) return
 
     const normalizeSnap = (t: TodoItem) => ({
+      display_id: (t.display_id && t.display_id !== 'null') ? t.display_id : null,
       issue: (t.issue && t.issue !== 'null') ? t.issue : null,
       notes: (t.notes && t.notes !== 'null') ? t.notes : null,
       followup_notes: (t.followup_notes && t.followup_notes !== 'null') ? t.followup_notes : null,
       status: (t.status === 'Open' || !t.status) ? '' : t.status,
     })
 
-    // Same rule as before: only rows with issue/notes/followup_notes count as data (not status alone)
-    const hasMeaningfulData = (t: TodoItem) => !!(t.issue || t.notes || t.followup_notes)
+    // A row counts as data if the user filled in any free-form field — including the new display_id
+    // (so a row with only a reference number still persists; otherwise the typed ID would silently
+    // disappear on the next render because the row would be filtered out as an empty placeholder).
+    const hasMeaningfulData = (t: TodoItem) => !!(t.display_id || t.issue || t.notes || t.followup_notes)
 
     const seenIds = new Set<string>()
     const todosToProcess = todosToSave.filter((t) => {
@@ -216,7 +224,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       const snap = lastSavedSnapshotRef.current.get(t.id)
       const cur = normalizeSnap(t)
       if (!snap) return true
-      return snap.issue !== cur.issue || snap.notes !== cur.notes || snap.followup_notes !== cur.followup_notes || snap.status !== cur.status
+      return snap.display_id !== cur.display_id || snap.issue !== cur.issue || snap.notes !== cur.notes || snap.followup_notes !== cur.followup_notes || snap.status !== cur.status
     })
 
     if (todosToProcess.length === 0) {
@@ -240,6 +248,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         const statusValue = (todo.status === 'Open' || !todo.status) ? '' : todo.status
         const todoData: Record<string, unknown> = {
           clinic_id: clinicId,
+          display_id: (todo.display_id && todo.display_id !== 'null') ? todo.display_id : null,
           issue: (todo.issue && todo.issue !== 'null') ? todo.issue : null,
           status: statusValue,
           notes: (todo.notes && todo.notes !== 'null') ? todo.notes : null,
@@ -316,6 +325,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
               clinic_id: normalized.clinic_id,
               created_by: normalized.created_by,
               completed_at: normalized.completed_at,
+              display_id: todo.display_id !== undefined ? todo.display_id : normalized.display_id,
               issue: todo.issue !== undefined ? todo.issue : normalized.issue,
               notes: todo.notes !== undefined ? todo.notes : normalized.notes,
               followup_notes: todo.followup_notes !== undefined ? todo.followup_notes : normalized.followup_notes,
@@ -564,12 +574,12 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       }
       return s
     }
-    const rowsWithData = todos.filter(t => t.issue || t.status || t.notes || t.followup_notes)
+    const rowsWithData = todos.filter(t => t.display_id || t.issue || t.status || t.notes || t.followup_notes)
     const statusDisplay = (s: string | null) => (s && s !== 'Open') ? s : ''
     const csvRows = [
       headers.join(','),
       ...rowsWithData.map(t => [
-        t.id.startsWith('empty-') || t.id.startsWith('new-') ? '' : t.id.substring(0, 8) + '...',
+        escapeCsv((t.display_id && t.display_id !== 'null') ? t.display_id : ''),
         escapeCsv(statusDisplay(t.status || '')),
         escapeCsv((t.issue && t.issue !== 'null') ? t.issue : ''),
         escapeCsv((t.notes && t.notes !== 'null') ? t.notes : ''),
@@ -645,8 +655,8 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
   // Convert todos to Handsontable data format
   const getTodosHandsontableData = useCallback(() => {
     return todos.map(todo => [
-      // Read-only preview of real UUIDs only; keep empty for placeholder rows (like Patient ID on PatientsTab)
-      todo.id.startsWith('empty-') || todo.id.startsWith('new-') ? '' : todo.id.substring(0, 8) + '...',
+      // User-entered identifier (display_id); independent of the row UUID. Empty until filled in.
+      (todo.display_id && todo.display_id !== 'null') ? todo.display_id : '',
       // No "Open" status; when no value or legacy "Open", show empty cell
       (todo.status && todo.status !== 'Open') ? todo.status : '',
       (todo.issue && todo.issue !== 'null') ? todo.issue : '',
@@ -803,11 +813,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       title: 'ID',
       type: 'text' as const,
       width: 80,
-      // Always read-only: the cell is a system-generated UUID preview (todo.id.substring(0, 8) + '...').
-      // The change handler has no branch for field === 'id', so anything the user typed here was
-      // silently dropped and the cell snapped back to the UUID truncation on the next render
-      // ("entered a number, saw a random string"). Lock the column so typing is rejected up front.
-      readOnly: true,
+      readOnly: !canEdit || getReadOnly('id_column'),
       columnSorting: { indicator: true },
     },
     {
@@ -854,8 +860,8 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
 
       const currentTodos = todosRef.current.length > 0 ? todosRef.current : todos
       const updatedTodos = [...currentTodos]
-      const fields: Array<'id' | 'status' | 'issue' | 'notes' | 'followup_notes'> = [
-        'id',
+      const fields: Array<'display_id' | 'status' | 'issue' | 'notes' | 'followup_notes'> = [
+        'display_id',
         'status',
         'issue',
         'notes',
@@ -875,7 +881,10 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         const todo = updatedTodos[row]
         if (todo) {
           const field = fields[col as number]
-          if (field === 'status') {
+          if (field === 'display_id') {
+            const displayIdVal = newValue === '' || newValue == null || newValue === 'null' ? null : String(newValue)
+            updatedTodos[row] = { ...todo, display_id: displayIdVal, updated_at: new Date().toISOString() }
+          } else if (field === 'status') {
             updatedTodos[row] = { ...todo, status: String(newValue || ''), updated_at: new Date().toISOString() }
           } else if (field === 'issue') {
             const issueVal = newValue === '' || newValue === 'null' ? null : String(newValue)

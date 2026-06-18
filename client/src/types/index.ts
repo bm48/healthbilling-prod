@@ -418,6 +418,7 @@ export interface IsLockPatients {
 export interface TodoItem {
   id: string
   clinic_id: string
+  display_id: string | null
   issue: string | null
   status: string
   notes: string | null

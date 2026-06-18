@@ -358,6 +358,7 @@ export default function BillingTodo() {
     const newTodo: TodoItem = {
       id: tempId,
       clinic_id: clinicId,
+      display_id: null,
       issue: null,
       status: 'Open',
       notes: null,

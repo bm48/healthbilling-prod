@@ -7852,6 +7852,7 @@ DROP TABLE IF EXISTS "public"."todo_lists";
 CREATE TABLE "public"."todo_lists" (
   "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   "clinic_id" uuid NOT NULL,
+  "display_id" text COLLATE "pg_catalog"."default",
   "issue" text COLLATE "pg_catalog"."default",
   "status" text COLLATE "pg_catalog"."default" NOT NULL DEFAULT 'Open'::text,
   "notes" text COLLATE "pg_catalog"."default",
