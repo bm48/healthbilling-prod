@@ -1052,29 +1052,39 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     )
   }, [saveTodos])
 
-  // Drive the table height from the viewport so the grid grows with the window in both modes.
-  // Split-screen mode uses the container's clientHeight (its flex parent constrains it). Full-page
-  // mode uses the viewport less a fixed offset for tab header + page padding — without this the grid
-  // was pinned to 600px and a grey backplate showed below it on taller monitors.
+  // Drive the table height from the viewport in both modes. clientHeight of the table-container in
+  // split mode reads as the HOT's own height (chicken-and-egg with the `height` prop), so the grid
+  // stayed ~470px and never filled the flex slot. Measuring from the container's top to the bottom
+  // of the viewport (and subtracting the "+ Add 50 rows" row beneath it) gives a stable height that
+  // grows with the panel — no grey gap above the button.
   useEffect(() => {
-    const PAGE_CHROME_OFFSET = 220  // header + tab bar + page padding
+    const BUTTON_ROW_HEIGHT = 56  // mt-3 (12) + button padding/height (~36) + small breathing room
+    const FULL_PAGE_BOTTOM_OFFSET = 24  // p-6 page padding
+    const FULL_PAGE_TOP_FALLBACK = 220  // header + tab bar + page padding when ref isn't mounted yet
     const FULL_PAGE_MIN_HEIGHT = 480
     const computeHeight = (): number => {
-      if (isInSplitScreen) {
-        return tableContainerRef.current?.clientHeight ?? 600
-      }
-      return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - PAGE_CHROME_OFFSET)
-    }
-    setTableHeight(computeHeight())
-    const onResize = () => setTableHeight(computeHeight())
-    window.addEventListener('resize', onResize)
-    let ro: ResizeObserver | null = null
-    if (isInSplitScreen) {
       const el = tableContainerRef.current
       if (el) {
-        ro = new ResizeObserver(() => setTableHeight(el.clientHeight))
-        ro.observe(el)
+        const topPx = el.getBoundingClientRect().top
+        const available = window.innerHeight - topPx - BUTTON_ROW_HEIGHT - FULL_PAGE_BOTTOM_OFFSET
+        if (available > 100) return available
       }
+      return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
+    }
+    // requestAnimationFrame so the first read happens after the initial layout pass (so the container
+    // has a real top position, not 0).
+    const apply = () => setTableHeight(computeHeight())
+    requestAnimationFrame(apply)
+    const onResize = () => apply()
+    window.addEventListener('resize', onResize)
+    // Reapply on container size changes too (e.g. split-screen divider drag changes panel width which
+    // may affect button row wrap, indirectly affecting available height).
+    let ro: ResizeObserver | null = null
+    const el = tableContainerRef.current
+    if (el) {
+      ro = new ResizeObserver(apply)
+      ro.observe(el)
+      if (el.parentElement) ro.observe(el.parentElement)
     }
     return () => {
       window.removeEventListener('resize', onResize)
