@@ -2944,16 +2944,31 @@ export default function ProvidersTab({
 
   const tableContainerRef = useRef<HTMLDivElement>(null)
   const [tableHeight, setTableHeight] = useState(isInSplitScreen ? 400 : 600)
+  // Drive the table height from the viewport in non-split mode (was pinned at 600px, leaving a grey
+  // backplate on taller monitors). Split-screen mode still measures the container via ResizeObserver
+  // because its flex parent already constrains height.
   useEffect(() => {
-    if (!isInSplitScreen) return
-    const el = tableContainerRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      setTableHeight(el.clientHeight)
-    })
-    ro.observe(el)
-    setTableHeight(el.clientHeight)
-    return () => ro.disconnect()
+    const PAGE_CHROME_OFFSET = 320  // header + month tabs + condense row + sums/buttons row + padding
+    const FULL_PAGE_MIN_HEIGHT = 520
+    const computeHeight = (): number => {
+      if (isInSplitScreen) return tableContainerRef.current?.clientHeight ?? 400
+      return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - PAGE_CHROME_OFFSET)
+    }
+    setTableHeight(computeHeight())
+    const onResize = () => setTableHeight(computeHeight())
+    window.addEventListener('resize', onResize)
+    let ro: ResizeObserver | null = null
+    if (isInSplitScreen) {
+      const el = tableContainerRef.current
+      if (el) {
+        ro = new ResizeObserver(() => setTableHeight(el.clientHeight))
+        ro.observe(el)
+      }
+    }
+    return () => {
+      window.removeEventListener('resize', onResize)
+      ro?.disconnect()
+    }
   }, [isInSplitScreen])
 
   if (providersToShow.length === 0) {
@@ -3097,19 +3112,19 @@ export default function ProvidersTab({
         )
       })()}
 
-      <div 
+      <div
         ref={tableContainerRef}
         className="table-container dark-theme"
         style={{
-          maxHeight: isInSplitScreen ? undefined : '600px',
+          // Removed the hardcoded `maxHeight: 600px` cap and the opaque grey backplate so the table
+          // owns its visible bounds (height now comes from the viewport calculation above).
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
-          overflow: isInSplitScreen ? undefined : 'hidden' as const,
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: '8px',
           width: '100%',
           maxWidth: '100%',
-          backgroundColor: '#d2dbe5',
+          backgroundColor: 'transparent',
         }}
       >
         {activeProvider && (
@@ -3123,7 +3138,7 @@ export default function ProvidersTab({
             afterGetColHeader={afterGetProviderColHeader}
             rowHeaders={true}
             width="100%"
-            height={isInSplitScreen ? tableHeight : 600}
+            height={tableHeight}
             stretchH={isInSplitScreen ? "none" : "all"}
             beforeChangeCorrect={beforeChangeCorrectProviderRows}
             afterChange={handleProviderRowsHandsontableChange}

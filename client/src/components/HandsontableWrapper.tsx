@@ -260,6 +260,18 @@ interface HandsontableWrapperProps {
    * `direction` lets callers reverse the action (call `hot.redo()` after a cancelled undo and vice-versa).
    */
   onAfterUndoRedoSync?: (direction?: 'undo' | 'redo') => void
+  /**
+   * Override the default fixed row height (24). Pass a number, an array per row, or a function that
+   * returns a height per row. Leave undefined to keep the default.
+   * NB: Handsontable will still grow a row when a renderer / editor demands more space.
+   */
+  rowHeights?: number | number[] | ((row: number) => number)
+  /**
+   * Opt in to Handsontable's autoRowSize plugin so rows grow to fit wrapped content. Required for
+   * column-level `wordWrap: true` to actually be visible — without this, wrapped text is clipped at
+   * the fixed `rowHeights`. Pass `true` or a config object (e.g. `{ syncLimit: 200 }`).
+   */
+  autoRowSize?: boolean | Record<string, unknown>
 }
 
 export default function HandsontableWrapper({
@@ -299,6 +311,8 @@ export default function HandsontableWrapper({
   columnSorting: columnSortingProp = false,
   hotInstanceRef,
   onAfterUndoRedoSync,
+  rowHeights: rowHeightsProp,
+  autoRowSize: autoRowSizeProp,
 }: HandsontableWrapperProps) {
   const decorateColHeaderRef = useRef(afterGetColHeader)
   decorateColHeaderRef.current = afterGetColHeader
@@ -640,8 +654,11 @@ export default function HandsontableWrapper({
     renderAllRows: false,
     // Ensure Handsontable recognizes all rows for virtual scrolling
     minSpareRows: 0,
-    // Default row height; can still grow when Handsontable sets larger height (e.g. dropdown/select)
-    rowHeights: 24,
+    // Default row height; can still grow when Handsontable sets larger height (e.g. dropdown/select).
+    // Tabs that want wrapped multi-line content (e.g. Billing To-Do) override via the rowHeights /
+    // autoRowSize props.
+    rowHeights: rowHeightsProp ?? 24,
+    ...(autoRowSizeProp ? { autoRowSize: autoRowSizeProp } : {}),
     outsideClickDeselects: true,
     
     // Keyboard shortcuts configuration

@@ -828,27 +828,32 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       readOnly: !canEdit || getReadOnly('status'),
       columnSorting: { headerAction: false },
     },
-    { 
-      data: 2, 
-      title: 'Issue', 
-      type: 'text' as const, 
+    {
+      data: 2,
+      title: 'Issue',
+      type: 'text' as const,
       width: 200,
+      // wordWrap + grid-level autoRowSize lets long Issue/Notes/F-u notes wrap across multiple lines.
+      // Without autoRowSize, wrapped text would be clipped at the default 24px row height.
+      wordWrap: true,
       readOnly: !canEdit || getReadOnly('issue'),
       columnSorting: { headerAction: false },
     },
-    { 
-      data: 3, 
-      title: 'Notes', 
-      type: 'text' as const, 
+    {
+      data: 3,
+      title: 'Notes',
+      type: 'text' as const,
       width: 200,
+      wordWrap: true,
       readOnly: !canEdit || getReadOnly('notes'),
       columnSorting: { headerAction: false },
     },
-    { 
-      data: 4, 
-      title: 'F/u notes', 
-      type: 'text' as const, 
+    {
+      data: 4,
+      title: 'F/u notes',
+      type: 'text' as const,
       width: 200,
+      wordWrap: true,
       readOnly: !canEdit || getReadOnly('followup_notes'),
       columnSorting: { headerAction: false },
     },
@@ -1047,17 +1052,34 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     )
   }, [saveTodos])
 
-  // ResizeObserver for split screen: fill table height (must run before any early return)
+  // Drive the table height from the viewport so the grid grows with the window in both modes.
+  // Split-screen mode uses the container's clientHeight (its flex parent constrains it). Full-page
+  // mode uses the viewport less a fixed offset for tab header + page padding — without this the grid
+  // was pinned to 600px and a grey backplate showed below it on taller monitors.
   useEffect(() => {
-    if (!isInSplitScreen) return
-    const el = tableContainerRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      setTableHeight(el.clientHeight)
-    })
-    ro.observe(el)
-    setTableHeight(el.clientHeight)
-    return () => ro.disconnect()
+    const PAGE_CHROME_OFFSET = 220  // header + tab bar + page padding
+    const FULL_PAGE_MIN_HEIGHT = 480
+    const computeHeight = (): number => {
+      if (isInSplitScreen) {
+        return tableContainerRef.current?.clientHeight ?? 600
+      }
+      return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - PAGE_CHROME_OFFSET)
+    }
+    setTableHeight(computeHeight())
+    const onResize = () => setTableHeight(computeHeight())
+    window.addEventListener('resize', onResize)
+    let ro: ResizeObserver | null = null
+    if (isInSplitScreen) {
+      const el = tableContainerRef.current
+      if (el) {
+        ro = new ResizeObserver(() => setTableHeight(el.clientHeight))
+        ro.observe(el)
+      }
+    }
+    return () => {
+      window.removeEventListener('resize', onResize)
+      ro?.disconnect()
+    }
   }, [isInSplitScreen])
 
   if (loading) {
@@ -1074,15 +1096,16 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         ref={tableContainerRef}
         className={`table-container dark-theme ${isInSplitScreen ? 'min-w-0 flex-1' : ''}`}
         style={{
-          maxHeight: isInSplitScreen ? undefined : '600px',
-          flex: isInSplitScreen ? 1 : undefined,
-          minHeight: isInSplitScreen ? 0 : undefined,
-          overflow: isInSplitScreen ? undefined : 'hidden' as const,
+          // Container fills its parent in both modes. The grey backplate that used to sit under
+          // the rows came from a hardcoded 600px maxHeight + non-transparent `#d2dbe5` bg; both
+          // are removed so the table itself defines visible bounds and the dark theme shows through.
+          flex: 1,
+          minHeight: 0,
           border: '1px solid rgba(255, 255, 255, 0.1)',
           width: '100%',
           maxWidth: '100%',
           borderRadius: '8px',
-          backgroundColor: '#d2dbe5'
+          backgroundColor: 'transparent',
         }}
       >
         <HandsontableWrapper
@@ -1094,7 +1117,9 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
           colHeaders={columnTitles}
           rowHeaders={true}
           width="100%"
-          height={isInSplitScreen ? tableHeight : 600}
+          height={tableHeight}
+          // Auto-size rows so wordWrap on Issue / Notes / F-u notes actually shows wrapped text.
+          autoRowSize={{ syncLimit: 200 }}
           stretchH={isInSplitScreen ? "none" : "all"}
           afterChange={handleTodosHandsontableChange}
           afterSelection={handleAfterSelection}
