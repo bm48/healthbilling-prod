@@ -1724,32 +1724,39 @@ export default function AccountsReceivableTab({
     applySheetPeriodToRow,
   ])
 
-  // Viewport-based height — matches BillingTodoTab's approach. Container's own clientHeight is
-  // circular with the HOT's `height` prop (last attempt converged at ~320px / 12 rows). Measuring
-  // from the container's top to the bottom of the viewport and subtracting the AR sum bar +
-  // bottom padding gives a stable height that extends the table all the way down to the sum bar
-  // with no grey strip in between. The sum-bar height is measured dynamically off the
-  // container's last sibling so style tweaks to the bar don't drift the offset out of sync.
+  // Split mode: measure the `.split-pane-tab` parent's clientHeight and subtract every sibling of
+  // the table-container (MonthYearTabs above, sum bar below). The remainder is exactly the gap
+  // between them, so the table grows to fill it — sum bar stays put, no grey gap above it, no
+  // overshoot pushing the sum bar off-screen. This avoids both failure modes from earlier
+  // iterations: clientHeight on the container chickens-and-eggs with the HOT's `height` prop and
+  // converges at ~320px; viewport math overshoots and hides the sum bar. Parent-minus-siblings is
+  // directly the flex slot's intended size without any circular dependency.
+  // Non-split mode: viewport-based with a generous offset.
   useEffect(() => {
     const FULL_BOTTOM_OFFSET = 24
     const FULL_TOP_FALLBACK = 300
     const FULL_MIN_HEIGHT = 480
-    const measureSumBarHeight = (): number => {
+    const measureSplitHeight = (): number | null => {
       const el = tableContainerRef.current
       const parent = el?.parentElement
-      if (!el || !parent) return 70  // sensible fallback for AR's "Sums:" bar in split mode
-      const sumBar = parent.lastElementChild as HTMLElement | null
-      if (!sumBar || sumBar === el) return 70
-      // offsetHeight includes border+padding; add 12 for the `mt-3` margin separating it from the
-      // table and 16 for breathing room (page padding-bottom and visual buffer).
-      return sumBar.offsetHeight + 28
+      if (!el || !parent) return null
+      let siblingsHeight = 0
+      for (let i = 0; i < parent.children.length; i++) {
+        const child = parent.children[i] as HTMLElement
+        if (child === el) continue
+        siblingsHeight += child.offsetHeight
+      }
+      const available = parent.clientHeight - siblingsHeight
+      return available > 100 ? available : null
     }
     const computeHeight = (): number => {
+      if (isInSplitScreen) {
+        return measureSplitHeight() ?? tableContainerRef.current?.clientHeight ?? 400
+      }
       const el = tableContainerRef.current
       if (el) {
         const topPx = el.getBoundingClientRect().top
-        const bottomOffset = isInSplitScreen ? measureSumBarHeight() : FULL_BOTTOM_OFFSET
-        const available = window.innerHeight - topPx - bottomOffset
+        const available = window.innerHeight - topPx - FULL_BOTTOM_OFFSET
         if (available > 100) return available
       }
       return Math.max(FULL_MIN_HEIGHT, window.innerHeight - FULL_TOP_FALLBACK)
