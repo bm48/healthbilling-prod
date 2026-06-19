@@ -336,6 +336,11 @@ export default function AccountsReceivableTab({
   const saveAccountsReceivableRef = useRef<(rows: AccountsReceivable[]) => Promise<void>>(null as any)
   const tableContainerRef = useRef<HTMLDivElement>(null)
   const [tableHeight, setTableHeight] = useState(600)
+  // Numeric width matching the container. Passing the literal string "100%" to Handsontable's
+  // `width` setting was leaving the wtHolder undersized vs the inner table on this layout chain
+  // (the column overflow never produced a horizontal scrollbar). A measured numeric width forces
+  // a hard upper bound, so columns that sum past it overflow into a scrollable wtHolder.
+  const [tableWidth, setTableWidth] = useState<number | undefined>(undefined)
   const [structureVersion, setStructureVersion] = useState(0)
   const scrollToRowAfterUpdateRef = useRef<number | null>(null)
   const hotRef = useRef<Handsontable | null>(null)
@@ -1738,7 +1743,13 @@ export default function AccountsReceivableTab({
       }
       return Math.max(FULL_MIN_HEIGHT, window.innerHeight - FULL_TOP_FALLBACK)
     }
-    const apply = () => setTableHeight(computeHeight())
+    const apply = () => {
+      setTableHeight(computeHeight())
+      const w = tableContainerRef.current?.clientWidth
+      // Subtract 2px for the 1px borders on each side so the HOT doesn't overshoot and force the
+      // outer panel into its own horizontal scrollbar.
+      if (w && w > 100) setTableWidth(w - 2)
+    }
     requestAnimationFrame(apply)
     const onResize = () => apply()
     window.addEventListener('resize', onResize)
@@ -1814,14 +1825,16 @@ export default function AccountsReceivableTab({
         ref={tableContainerRef}
         className="table-container dark-theme"
         style={{
-          // Match ProvidersTab exactly. The previous `min-w-0 flex-1` Tailwind classes set
-          // `flex-basis: 0%`, which conflicted with `width: 100%` inline and let the container grow
-          // beyond its flex slot. With the container wider than the visible panel, the HOT's wtHolder
-          // saw no overflow to scroll — so the AR column set on the right side of the table was
-          // permanently cut off with no horizontal scrollbar. Removing the redundant flex classes
-          // lets the explicit width + maxWidth cap pin the container at the pane width.
+          // `minWidth: 0` is the critical bit. A flex item's default `min-width: auto` refuses to
+          // shrink below the intrinsic width of its content. AR's 7 columns sum to ~800px; without
+          // `minWidth: 0` the container insists on being at least 800px wide, the HOT's wtHolder is
+          // sized to the same 800px (so it sees no overflow), and `overflow-x: auto` never engages.
+          // Other tabs (ProvidersTab on the left of the screenshot) avoid this by being inside flex
+          // chains whose auto `min-width` happens to resolve to 0, but AR sits in a different parent
+          // path — only `min-width: 0` reliably caps it at the visible pane width.
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
+          minWidth: 0,
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: '8px',
           backgroundColor: 'transparent',
@@ -1839,7 +1852,9 @@ export default function AccountsReceivableTab({
           colHeaderRefreshKey={arLocksHeaderKey}
           afterGetColHeader={afterGetARColHeader}
           rowHeaders={true}
-          width="100%"
+          // Numeric width in split mode so the wtHolder has a definite upper bound and the column
+          // overflow scrolls instead of getting clipped silently.
+          width={isInSplitScreen ? (tableWidth ?? '100%') : '100%'}
           height={tableHeight}
           stretchH={isInSplitScreen ? "none" : "all"}
           afterChange={handleARHandsontableChange}

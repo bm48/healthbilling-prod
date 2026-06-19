@@ -625,6 +625,26 @@ export default function HandsontableWrapper({
     })
   }, [stretchH])
 
+  // Apply width/height changes via updateSettings + refreshDimensions. React-handsontable doesn't
+  // reliably re-init when only these change, so callers that pass a measured numeric width (e.g. AR
+  // in split-screen) would otherwise stay locked at whatever value was used on first render — and
+  // the column overflow that should produce a horizontal scrollbar never appears.
+  useEffect(() => {
+    const hot = hotTableRef.current?.hotInstance
+    if (!hot) return
+    const widthSetting = width
+    const heightSetting = height === 'auto' ? undefined : height
+    hot.updateSettings({ width: widthSetting, height: heightSetting })
+    requestAnimationFrame(() => {
+      try {
+        hot.refreshDimensions()
+        hot.render()
+      } catch {
+        // ignore if instance is tearing down
+      }
+    })
+  }, [width, height])
+
   // Update columns when they change (e.g., when readOnly state changes)
   useEffect(() => {
     if (hotTableRef.current?.hotInstance && processedColumns.length > 0) {
