@@ -1812,13 +1812,14 @@ export default function AccountsReceivableTab({
       />
       <div
         ref={tableContainerRef}
-        className={`table-container dark-theme ${isInSplitScreen ? 'min-w-0 flex-1' : ''}`}
+        className="table-container dark-theme"
         style={{
-          // Removed `maxHeight: calc(100vh - 300px)` and the opaque `#d2dbe5` backplate — the JS
-          // calculation above owns the table height now. `maxWidth: 100%` is enforced in BOTH modes
-          // (was omitted in split mode), so the container can't grow past its flex slot and the HOT's
-          // wtHolder reliably gets `overflow-x: auto` instead of pushing the columns off-screen with
-          // no scrollbar.
+          // Match ProvidersTab exactly. The previous `min-w-0 flex-1` Tailwind classes set
+          // `flex-basis: 0%`, which conflicted with `width: 100%` inline and let the container grow
+          // beyond its flex slot. With the container wider than the visible panel, the HOT's wtHolder
+          // saw no overflow to scroll — so the AR column set on the right side of the table was
+          // permanently cut off with no horizontal scrollbar. Removing the redundant flex classes
+          // lets the explicit width + maxWidth cap pin the container at the pane width.
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
           border: '1px solid rgba(255, 255, 255, 0.1)',
