@@ -1724,31 +1724,37 @@ export default function AccountsReceivableTab({
     applySheetPeriodToRow,
   ])
 
-  // Viewport-based table height for both modes. Reading container.clientHeight in split mode is
-  // circular (the HOT's `height` prop drives the container's measured height), which left the table
-  // ~470px tall and pushed its horizontal scrollbar below the visible viewport. Measuring from the
-  // container's top to the bottom of the window is layout-independent and the h-scrollbar lands on-
-  // screen so the user can scroll the wide AR column set.
+  // Split-screen mode: rely on the container's clientHeight — its `flex: 1` slot in the flex-column
+  // pane naturally leaves room for the sum bar beneath, so the table height matches "panel minus
+  // sum bar minus month picker" without us having to estimate offsets. The previous viewport-based
+  // calc made the table taller than its flex slot, pushing the AR sum bar below the panel bottom
+  // and producing the "overlaps the box, no visible bottom line" symptom.
+  // Non-split mode: viewport-based with a generous offset so the table grows with the window.
+  // We also measure the container's clientWidth and pass it as a numeric `width` to the HOT in
+  // split mode — passing the literal `"100%"` was leaving the wtHolder undersized vs the inner
+  // table, so the column overflow never produced a horizontal scrollbar.
   useEffect(() => {
-    const SPLIT_BOTTOM_OFFSET = 56   // panel padding + button row breathing room
-    const FULL_BOTTOM_OFFSET = 24    // p-6 page padding
-    const FULL_TOP_FALLBACK = 300    // header + tab bar + month picker + buttons when ref isn't mounted
+    const FULL_BOTTOM_OFFSET = 24
+    const FULL_TOP_FALLBACK = 300
     const FULL_MIN_HEIGHT = 480
     const computeHeight = (): number => {
+      if (isInSplitScreen) return tableContainerRef.current?.clientHeight ?? 400
       const el = tableContainerRef.current
       if (el) {
         const topPx = el.getBoundingClientRect().top
-        const available = window.innerHeight - topPx - (isInSplitScreen ? SPLIT_BOTTOM_OFFSET : FULL_BOTTOM_OFFSET)
+        const available = window.innerHeight - topPx - FULL_BOTTOM_OFFSET
         if (available > 100) return available
       }
       return Math.max(FULL_MIN_HEIGHT, window.innerHeight - FULL_TOP_FALLBACK)
     }
     const apply = () => {
       setTableHeight(computeHeight())
-      const w = tableContainerRef.current?.clientWidth
-      // Subtract 2px for the 1px borders on each side so the HOT doesn't overshoot and force the
-      // outer panel into its own horizontal scrollbar.
-      if (w && w > 100) setTableWidth(w - 2)
+      if (isInSplitScreen) {
+        const w = tableContainerRef.current?.clientWidth
+        if (w && w > 100) setTableWidth(w - 2)
+      } else {
+        setTableWidth(undefined)
+      }
     }
     requestAnimationFrame(apply)
     const onResize = () => apply()
