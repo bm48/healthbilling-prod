@@ -546,18 +546,30 @@ export default function ClinicDetail() {
   useEffect(() => {
     if (!clinicId) return
     if (providerId) {
-      // Provider sheet data for current month is fetched by the selectedMonth effect below
-      if (activeTab === 'providers') {
+      // In split-screen the visible panes can include `providers` or `provider_pay` even when the
+      // primary `activeTab` is something else (e.g. `todo` on the right). Treat those panes as needing
+      // the same data so MonthYearTabs (in the providers pane) gets `statusColors` populated —
+      // otherwise the month buttons fall back to the slate-grey default and lose their colors.
+      const panes = new Set<TabType>([activeTab])
+      if (splitScreen) {
+        panes.add(splitScreen.left)
+        panes.add(splitScreen.right)
+      }
+      const needsProvidersData = panes.has('providers')
+      const needsProviderPayData = panes.has('provider_pay')
+      if (needsProvidersData) {
         void fetchPatients()
         void fetchBillingCodes()
         void fetchStatusColors()
         void fetchColumnLocks()
         // fetchProviders() is intentionally omitted on the single-provider route: fetchProviderSheetData
         // (triggered by the month effect) loads the one provider we need and syncs it into providers state.
-      } else if (activeTab === 'provider_pay') {
+      }
+      if (needsProviderPayData) {
         void fetchStatusColors()
         void fetchProviders()
-      } else if (activeTab === 'accounts_receivable' && selectedMonthKey) {
+      }
+      if (panes.has('accounts_receivable') && selectedMonthKey) {
         void fetchIsLockAccountsReceivable(selectedMonthKey)
       }
     } else {
@@ -771,8 +783,11 @@ export default function ClinicDetail() {
       } else {
         setStatusColors(getDefaultStatusColors())
       }
-    } catch {
-      console.error('Error fetching status colors')
+    } catch (error) {
+      // Fall back to the built-in defaults so MonthYearTabs (and all type='month' / 'appointment' /
+      // 'claim' consumers) still render with colors instead of slate-grey when the API is down.
+      console.error('Error fetching status colors; using defaults', error)
+      setStatusColors(getDefaultStatusColors())
     }
   }
 
