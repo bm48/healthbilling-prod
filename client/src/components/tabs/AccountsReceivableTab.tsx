@@ -1719,17 +1719,40 @@ export default function AccountsReceivableTab({
     applySheetPeriodToRow,
   ])
 
-  // ResizeObserver for split screen: fill table height (must run before any early return)
+  // Viewport-based table height for both modes. Reading container.clientHeight in split mode is
+  // circular (the HOT's `height` prop drives the container's measured height), which left the table
+  // ~470px tall and pushed its horizontal scrollbar below the visible viewport. Measuring from the
+  // container's top to the bottom of the window is layout-independent and the h-scrollbar lands on-
+  // screen so the user can scroll the wide AR column set.
   useEffect(() => {
-    if (!isInSplitScreen) return
+    const SPLIT_BOTTOM_OFFSET = 56   // panel padding + button row breathing room
+    const FULL_BOTTOM_OFFSET = 24    // p-6 page padding
+    const FULL_TOP_FALLBACK = 300    // header + tab bar + month picker + buttons when ref isn't mounted
+    const FULL_MIN_HEIGHT = 480
+    const computeHeight = (): number => {
+      const el = tableContainerRef.current
+      if (el) {
+        const topPx = el.getBoundingClientRect().top
+        const available = window.innerHeight - topPx - (isInSplitScreen ? SPLIT_BOTTOM_OFFSET : FULL_BOTTOM_OFFSET)
+        if (available > 100) return available
+      }
+      return Math.max(FULL_MIN_HEIGHT, window.innerHeight - FULL_TOP_FALLBACK)
+    }
+    const apply = () => setTableHeight(computeHeight())
+    requestAnimationFrame(apply)
+    const onResize = () => apply()
+    window.addEventListener('resize', onResize)
+    let ro: ResizeObserver | null = null
     const el = tableContainerRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      setTableHeight(el.clientHeight)
-    })
-    ro.observe(el)
-    setTableHeight(el.clientHeight)
-    return () => ro.disconnect()
+    if (el) {
+      ro = new ResizeObserver(apply)
+      ro.observe(el)
+      if (el.parentElement) ro.observe(el.parentElement)
+    }
+    return () => {
+      window.removeEventListener('resize', onResize)
+      ro?.disconnect()
+    }
   }, [isInSplitScreen])
 
   if (loading) {
@@ -1787,19 +1810,22 @@ export default function AccountsReceivableTab({
           </div>
         )}
       />
-      <div 
+      <div
         ref={tableContainerRef}
         className={`table-container dark-theme ${isInSplitScreen ? 'min-w-0 flex-1' : ''}`}
         style={{
-          maxHeight: isInSplitScreen ? undefined : 'calc(100vh - 300px)',
+          // Removed `maxHeight: calc(100vh - 300px)` and the opaque `#d2dbe5` backplate — the JS
+          // calculation above owns the table height now. `maxWidth: 100%` is enforced in BOTH modes
+          // (was omitted in split mode), so the container can't grow past its flex slot and the HOT's
+          // wtHolder reliably gets `overflow-x: auto` instead of pushing the columns off-screen with
+          // no scrollbar.
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
-          overflow: isInSplitScreen ? undefined : 'hidden' as const,
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: '8px',
-          backgroundColor: '#d2dbe5',
+          backgroundColor: 'transparent',
           width: '100%',
-          ...(isInSplitScreen ? {} : { maxWidth: '100%' }),
+          maxWidth: '100%',
         }}
       >
         <HandsontableWrapper
@@ -1813,7 +1839,7 @@ export default function AccountsReceivableTab({
           afterGetColHeader={afterGetARColHeader}
           rowHeaders={true}
           width="100%"
-          height={isInSplitScreen ? tableHeight : 600}
+          height={tableHeight}
           stretchH={isInSplitScreen ? "none" : "all"}
           afterChange={handleARHandsontableChange}
           afterSelection={handleARAfterSelection}
