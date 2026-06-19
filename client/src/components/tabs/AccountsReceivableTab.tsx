@@ -1724,25 +1724,32 @@ export default function AccountsReceivableTab({
     applySheetPeriodToRow,
   ])
 
-  // Split-screen mode: rely on the container's clientHeight — its `flex: 1` slot in the flex-column
-  // pane naturally leaves room for the sum bar beneath, so the table height matches "panel minus
-  // sum bar minus month picker" without us having to estimate offsets. The previous viewport-based
-  // calc made the table taller than its flex slot, pushing the AR sum bar below the panel bottom
-  // and producing the "overlaps the box, no visible bottom line" symptom.
-  // Non-split mode: viewport-based with a generous offset so the table grows with the window.
-  // We also measure the container's clientWidth and pass it as a numeric `width` to the HOT in
-  // split mode — passing the literal `"100%"` was leaving the wtHolder undersized vs the inner
-  // table, so the column overflow never produced a horizontal scrollbar.
+  // Viewport-based height — matches BillingTodoTab's approach. Container's own clientHeight is
+  // circular with the HOT's `height` prop (last attempt converged at ~320px / 12 rows). Measuring
+  // from the container's top to the bottom of the viewport and subtracting the AR sum bar +
+  // bottom padding gives a stable height that extends the table all the way down to the sum bar
+  // with no grey strip in between. The sum-bar height is measured dynamically off the
+  // container's last sibling so style tweaks to the bar don't drift the offset out of sync.
   useEffect(() => {
     const FULL_BOTTOM_OFFSET = 24
     const FULL_TOP_FALLBACK = 300
     const FULL_MIN_HEIGHT = 480
+    const measureSumBarHeight = (): number => {
+      const el = tableContainerRef.current
+      const parent = el?.parentElement
+      if (!el || !parent) return 70  // sensible fallback for AR's "Sums:" bar in split mode
+      const sumBar = parent.lastElementChild as HTMLElement | null
+      if (!sumBar || sumBar === el) return 70
+      // offsetHeight includes border+padding; add 12 for the `mt-3` margin separating it from the
+      // table and 16 for breathing room (page padding-bottom and visual buffer).
+      return sumBar.offsetHeight + 28
+    }
     const computeHeight = (): number => {
-      if (isInSplitScreen) return tableContainerRef.current?.clientHeight ?? 400
       const el = tableContainerRef.current
       if (el) {
         const topPx = el.getBoundingClientRect().top
-        const available = window.innerHeight - topPx - FULL_BOTTOM_OFFSET
+        const bottomOffset = isInSplitScreen ? measureSumBarHeight() : FULL_BOTTOM_OFFSET
+        const available = window.innerHeight - topPx - bottomOffset
         if (available > 100) return available
       }
       return Math.max(FULL_MIN_HEIGHT, window.innerHeight - FULL_TOP_FALLBACK)
