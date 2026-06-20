@@ -1740,24 +1740,19 @@ export default function AccountsReceivableTab({
       const el = tableContainerRef.current
       const parent = el?.parentElement
       if (!el || !parent) return null
-      // `parent.clientHeight` includes the parent's padding (p-6 = 48px combined). Subtract padding
-      // and each sibling's offsetHeight AND its vertical margins. The previous calc skipped both,
-      // overestimating by ~60px — so the HOT was set taller than its flex slot, the .split-pane-tab
-      // clipped the overflow, and the visible table ended ~80px above the sum bar with a dark gap.
-      const parentStyle = window.getComputedStyle(parent)
-      const padTop = parseFloat(parentStyle.paddingTop) || 0
-      const padBottom = parseFloat(parentStyle.paddingBottom) || 0
-      const contentArea = parent.clientHeight - padTop - padBottom
-      let siblingsBlock = 0
-      for (let i = 0; i < parent.children.length; i++) {
-        const child = parent.children[i] as HTMLElement
-        if (child === el) continue
-        const cs = window.getComputedStyle(child)
-        siblingsBlock += child.offsetHeight
-        siblingsBlock += parseFloat(cs.marginTop) || 0
-        siblingsBlock += parseFloat(cs.marginBottom) || 0
-      }
-      const available = contentArea - siblingsBlock
+      const sumBar = parent.lastElementChild as HTMLElement | null
+      if (!sumBar || sumBar === el) return null
+      // Measure the live rendered geometry directly. `el.getBoundingClientRect().top` is the
+      // container's current top, `sumBar.getBoundingClientRect().top` is the sum bar's current top
+      // (which already reflects the flex slot's actual size — the sum bar sits exactly where flex
+      // placed it). The space between them, minus the sum bar's mt-3 margin (12px), is the precise
+      // HOT height that makes the table extend down to touch the sum bar's margin.
+      // Previous offset-based math kept underestimating by ~60-80px because parent.clientHeight
+      // wasn't a reliable proxy for the flex slot's actual size — direct measurement is.
+      const containerRect = el.getBoundingClientRect()
+      const sumBarRect = sumBar.getBoundingClientRect()
+      const SUM_BAR_MARGIN_TOP = 12  // mt-3
+      const available = sumBarRect.top - containerRect.top - SUM_BAR_MARGIN_TOP
       return available > 100 ? available : null
     }
     const computeHeight = (): number => {
