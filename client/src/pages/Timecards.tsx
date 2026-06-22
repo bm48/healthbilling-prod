@@ -17,7 +17,12 @@ export default function Timecards() {
     clock_out: '',
     notes: '',
   })
-  const isSuperAdmin = userProfile?.role === 'super_admin'
+  // Both super_admin and admin can view + add + edit + delete staff timecards. Previously this
+  // was gated on `super_admin` only, which removed admins' ability to correct hours when staff
+  // submitted them incorrectly. Admins still don't clock in themselves on this page (same as
+  // super_admin) — their role is to manage the staff timecards.
+  const canManageTimecards =
+    userProfile?.role === 'super_admin' || userProfile?.role === 'admin'
   const [staffTimecards, setStaffTimecards] = useState<Timecard[]>([])
   const [staffUsers, setStaffUsers] = useState<User[]>([])
   const [clinicsMap, setClinicsMap] = useState<Record<string, string>>({})
@@ -27,15 +32,15 @@ export default function Timecards() {
   useEffect(() => {
     if (user && userProfile) {
       loadClinics()
-      if (!isSuperAdmin) {
+      if (!canManageTimecards) {
         loadCurrentClockIn()
       }
       loadTimecards()
-      if (isSuperAdmin) {
+      if (canManageTimecards) {
         loadStaffTimecards()
       }
     }
-  }, [user, userProfile, isSuperAdmin])
+  }, [user, userProfile, canManageTimecards])
 
   async function loadClinics() {
     if (!userProfile?.clinic_ids.length) return
@@ -402,14 +407,14 @@ export default function Timecards() {
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-white mb-2">Timecards</h1>
         {
-          !isSuperAdmin && (
+          !canManageTimecards && (
             <p className="text-white/70">Track your work hours</p>
           )
         }
       </div>
 
-      <div className={`grid gap-6 mb-6 ${isSuperAdmin ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
-        {!isSuperAdmin && (
+      <div className={`grid gap-6 mb-6 ${canManageTimecards ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
+        {!canManageTimecards && (
           <div className="bg-white/10 backdrop-blur-md rounded-lg shadow-xl p-6 border border-white/20">
             <h2 className="text-xl font-semibold text-white mb-4">Clock In/Out</h2>
             {currentClockIn ? (
@@ -448,7 +453,7 @@ export default function Timecards() {
         <div className="bg-white/10 backdrop-blur-md rounded-lg shadow-xl p-6 border border-white/20">
           <h2 className="text-xl font-semibold text-white mb-4">Summary</h2>
           <div className="space-y-3">
-            {isSuperAdmin ? (
+            {canManageTimecards ? (
               <>
                 <div>
                   <h3 className="text-lg font-semibold text-white/90 mb-2 italic">Billing staff</h3>
@@ -507,25 +512,25 @@ export default function Timecards() {
 
       <div className="bg-white/10 backdrop-blur-md rounded-lg shadow-xl overflow-hidden border border-white/20">
         <div className="p-4 border-b border-white/20">
-          <h2 className="font-semibold text-white">Recent Timecards{isSuperAdmin ? ' (last week)' : ''}</h2>
+          <h2 className="font-semibold text-white">Recent Timecards{canManageTimecards ? ' (last week)' : ''}</h2>
         </div>
         <div className="table-container dark-theme">
           <table className="table-spreadsheet dark-theme">
             <thead>
               <tr>
-                {isSuperAdmin && <th>Staff</th>}
+                {canManageTimecards && <th>Staff</th>}
                 <th>Date</th>
                 <th>Clock In</th>
                 <th>Clock Out</th>
                 <th>Hours</th>
                 <th>Notes</th>
-                {isSuperAdmin && <th className="w-24">Actions</th>}
+                {canManageTimecards && <th className="w-24">Actions</th>}
               </tr>
             </thead>
             <tbody>
-              {(isSuperAdmin ? recentStaffTimecards : timecards).map((timecard) => (
+              {(canManageTimecards ? recentStaffTimecards : timecards).map((timecard) => (
                 <tr key={timecard.id}>
-                  {isSuperAdmin && (
+                  {canManageTimecards && (
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {staffUserById[timecard.user_id] ? userName(staffUserById[timecard.user_id]) : timecard.user_id}
                     </td>
@@ -543,7 +548,7 @@ export default function Timecards() {
                     {asHours(timecard.hours).toFixed(2)}
                   </td>
                   <td>{timecard.notes || ''}</td>
-                  {isSuperAdmin && (
+                  {canManageTimecards && (
                     <td className="whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         <button
@@ -590,7 +595,7 @@ export default function Timecards() {
           <table className="table-spreadsheet dark-theme">
             <thead>
               <tr>
-                {isSuperAdmin ? (
+                {canManageTimecards ? (
                   <>
                     <th>Name</th>
                     <th>Week</th>
@@ -607,7 +612,7 @@ export default function Timecards() {
               </tr>
             </thead>
             <tbody>
-              {isSuperAdmin ? (
+              {canManageTimecards ? (
                 staffWeekRows.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="text-white/60 text-center py-6">
