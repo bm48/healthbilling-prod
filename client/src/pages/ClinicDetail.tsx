@@ -3816,7 +3816,11 @@ export default function ClinicDetail() {
     !isBillingStaff && !isOfficeStaff && !hideFinanceTabsForTopLevel
   const showProviderPayTab =
     !isBillingStaff && !isOfficeStaff && !hideFinanceTabsForTopLevel
-  const showProvidersTab = !hideFinanceTabsForTopLevel
+  // Billing staff need the "Billing" (Providers) tab visible from every clinic view so they can
+  // jump into a provider's billing sheet without going through the sidebar — they may land on
+  // `/todo` by default but still need one-click access to provider sheets. For other roles, keep
+  // the existing behavior of hiding the tab while on the top-level Patients / Billing To-Do views.
+  const showProvidersTab = !hideFinanceTabsForTopLevel || isBillingStaff
   /** Official staff and office staff can edit only patient_id through date_of_service on the provider sheet; other columns read-only */
   const restrictProviderSheetEditToScheduling = isOfficialStaff || isOfficeStaff
 
@@ -3882,15 +3886,22 @@ export default function ClinicDetail() {
             ? 'Provider Pay'
             : 'Accounts Receivable'
 
-  /** Tabs available in split-screen pane dropdowns (finance tabs always listed in split view). */
+  /** Tabs available in split-screen pane dropdowns (finance tabs always listed in split view).
+   *  Billing staff get `providers` (read/edit billing sheets) but still don't get AR or
+   *  Provider Pay — those remain admin/super-admin scope. Office staff stay capped at
+   *  patients + todo as before. */
   const getSplitScreenSelectableTabs = (): TabType[] => [
     ...(showPatientTab ? (['patients'] as const) : []),
     ...(showBillingTodoTab ? (['todo'] as const) : []),
-    ...(!isBillingStaff && !isOfficeStaff
+    ...(!isOfficeStaff
       ? ([
           'providers',
-          ...(showAccountsReceivableTab || splitScreen != null ? (['accounts_receivable'] as const) : []),
-          ...(showProviderPayTab || splitScreen != null ? (['provider_pay'] as const) : []),
+          ...(!isBillingStaff
+            ? ([
+                ...(showAccountsReceivableTab || splitScreen != null ? (['accounts_receivable'] as const) : []),
+                ...(showProviderPayTab || splitScreen != null ? (['provider_pay'] as const) : []),
+              ] as const)
+            : []),
         ] as const)
       : []),
   ]
