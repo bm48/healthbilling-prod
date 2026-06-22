@@ -70,6 +70,20 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
   const [tableHeight, setTableHeight] = useState(600)
   const [structureVersion, setStructureVersion] = useState(0) // Bump on add/delete row so grid refreshes immediately
   const [highlightedCells, setHighlightedCells] = useState<Set<string>>(new Set())
+  // Archive feature: split the to-do list into "Current" (anything not Complete) and "Archive"
+  // (Complete only). Persisted per-clinic in sessionStorage so the tab choice survives tab
+  // switches inside this clinic but doesn't bleed across clinics.
+  const viewModeStorageKey = `billing-todo-view-mode-${clinicId}`
+  const [viewMode, setViewMode] = useState<'current' | 'archive'>(() => {
+    try {
+      const raw = sessionStorage.getItem(viewModeStorageKey)
+      if (raw === 'archive' || raw === 'current') return raw
+    } catch { /* sessionStorage unavailable */ }
+    return 'current'
+  })
+  useEffect(() => {
+    try { sessionStorage.setItem(viewModeStorageKey, viewMode) } catch { /* sessionStorage unavailable */ }
+  }, [viewMode, viewModeStorageKey])
 
   // Use isLockBillingTodo from props directly - it will update when parent refreshes
   const lockData = isLockBillingTodo || null
@@ -498,13 +512,22 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     if (!canEdit) return
     try {
       const grid = hot.getData() as (string | number | null | undefined)[][]
+      // HOT's grid rows correspond to the visible slice (current or archive). Merge those rows
+      // back onto the items they came from (looked up by id), and leave items in the *other*
+      // slice untouched. Iterating `prev` by raw index here would smear archive data onto
+      // current items (or vice versa).
       const prev = todosRef.current
-      const next: TodoItem[] = []
-      for (let i = 0; i < grid.length; i++) {
+      const visible = prev.filter((t) =>
+        viewMode === 'archive' ? t.status === 'Complete' : t.status !== 'Complete'
+      )
+      const merged = new Map<string, TodoItem>()
+      for (let i = 0; i < grid.length && i < visible.length; i++) {
         const row = grid[i]
-        const p = prev[i] ?? createEmptyTodo(nextEmptyNumericIdSuffix(next))
-        next.push(mergeBillingTodoFromGridRow(p, row))
+        const source = visible[i]
+        if (!source) continue
+        merged.set(source.id, mergeBillingTodoFromGridRow(source, row))
       }
+      const next = prev.map((t) => merged.get(t.id) ?? t)
       const padded = padBillingTodosTo200(next)
       todosRef.current = padded
       setTodos(padded)
@@ -512,7 +535,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     } catch (e) {
       console.error('syncTodosFromHotAfterUndoRedo', e)
     }
-  }, [canEdit, createEmptyTodo, padBillingTodosTo200, saveTodos])
+  }, [canEdit, padBillingTodosTo200, saveTodos, viewMode])
 
   const handleAfterCreateRow = useCallback(
     (index: number, amount: number, source?: string) => {
@@ -542,15 +565,26 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       if (!canEdit) return
       if (source === 'loadData' || source === 'updateData') return
       if (isHandsontableUndoRedoSource(source)) return
+      // `physicalRows` from HOT are indices into the *visible* slice (current or archive), not
+      // into the underlying `todos` array. Translate to ids first so we delete the right items
+      // regardless of which view the user is in.
       const snap = [...todosRef.current]
-      const removed = physicalRows.map((i) => snap[i]).filter(Boolean)
+      const visibleSnap = snap.filter((t) =>
+        viewMode === 'archive' ? t.status === 'Complete' : t.status !== 'Complete'
+      )
+      const removedIds = physicalRows
+        .map((vi) => visibleSnap[vi]?.id)
+        .filter((id): id is string => Boolean(id))
+      const removed = removedIds
+        .map((id) => snap.find((t) => t.id === id))
+        .filter((t): t is TodoItem => Boolean(t))
       removed.forEach((t) => {
         if (t.id.startsWith('empty-')) return
         void handleDeleteTodo(t.id)
       })
       setTodos((prev) => {
-        const rm = new Set(physicalRows)
-        const next = prev.filter((_, i) => !rm.has(i))
+        const rmIds = new Set(removedIds)
+        const next = prev.filter((t) => !rmIds.has(t.id))
         const sorted = sortBillingTodosCompleteAtBottom(next)
         const padded = padBillingTodosTo200(sorted)
         todosRef.current = padded
@@ -561,7 +595,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         saveTodos(todosRef.current).catch((err) => console.error('saveTodos after HOT remove row', err))
       })
     },
-    [canEdit, handleDeleteTodo, padBillingTodosTo200, saveTodos, sortBillingTodosCompleteAtBottom]
+    [canEdit, handleDeleteTodo, padBillingTodosTo200, saveTodos, sortBillingTodosCompleteAtBottom, viewMode]
   )
 
   // Export todos to CSV (only rows with at least one value)
@@ -626,15 +660,36 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     }
   }, [])
 
-  // Reorder todos when user drags a row by the row header; persist order via created_at so reload preserves it
+  // Reorder todos when user drags a row by the row header; persist order via created_at so reload preserves it.
+  // The `movedRows` / `finalIndex` HOT hands us are indices into the currently *visible* slice
+  // (current or archive view), not into the full `todos` array. We translate them by ID before
+  // splicing — otherwise dragging row 3 in archive mode would move whatever happens to be
+  // todos[3] (likely an incomplete item from current view).
   const handleTodosRowMove = useCallback((movedRows: number[], finalIndex: number) => {
     setTodos((prev) => {
-      const arr = [...prev]
-      const toMove = movedRows.map((i) => arr[i])
-      movedRows.sort((a, b) => b - a).forEach((i) => arr.splice(i, 1))
-      const insertAt = Math.min(finalIndex, arr.length)
-      toMove.forEach((item, i) => arr.splice(insertAt + i, 0, item))
-      const next = sortBillingTodosCompleteAtBottom(arr)
+      // Snapshot the visible slice exactly as HOT sees it.
+      const visible = prev.filter((t) =>
+        viewMode === 'archive' ? t.status === 'Complete' : t.status !== 'Complete'
+      )
+      const movedIds = movedRows
+        .map((vi) => visible[vi]?.id)
+        .filter((id): id is string => Boolean(id))
+      if (movedIds.length === 0) return prev
+      // Drop-target id is whatever currently sits at finalIndex in the visible list (or end-of-list).
+      const targetId = visible[finalIndex]?.id ?? null
+
+      const movedIdSet = new Set(movedIds)
+      const remaining = prev.filter((t) => !movedIdSet.has(t.id))
+      const movedItems = movedIds
+        .map((id) => prev.find((t) => t.id === id))
+        .filter((t): t is TodoItem => Boolean(t))
+
+      // Insert before the target item in the full list, or at the end if no target.
+      let insertAt = targetId ? remaining.findIndex((t) => t.id === targetId) : remaining.length
+      if (insertAt < 0) insertAt = remaining.length
+      remaining.splice(insertAt, 0, ...movedItems)
+      const next = sortBillingTodosCompleteAtBottom(remaining)
+
       const realTodos = next.filter((t) => !t.id.startsWith('empty-') && !t.id.startsWith('new-'))
       if (realTodos.length > 0) {
         const baseTime = Date.now()
@@ -650,11 +705,27 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       return next
     })
     setStructureVersion((v) => v + 1)
-  }, [sortBillingTodosCompleteAtBottom])
+  }, [sortBillingTodosCompleteAtBottom, viewMode])
 
-  // Convert todos to Handsontable data format
+  // Archive feature: the table only ever renders one slice of `todos` at a time. Current view
+  // shows non-Complete rows plus the empty placeholders that let users type new entries. Archive
+  // view shows only the Complete rows (no placeholders — there's nothing to add to history).
+  // `todos` itself stays the full source of truth, so saves, undo/redo, lock data, etc. all keep
+  // working unchanged. We only need to map HOT's visual row indices back to the physical index
+  // in `todos` whenever a callback wants to mutate a specific row.
+  const displayedTodos = useMemo(() => {
+    if (viewMode === 'archive') {
+      return todos.filter((t) => t.status === 'Complete')
+    }
+    // Current: anything that isn't Complete is visible, including empty placeholders so the
+    // grid still has its 200-row scratch space for new entries.
+    return todos.filter((t) => t.status !== 'Complete')
+  }, [todos, viewMode])
+
+  // Convert todos to Handsontable data format. Uses `displayedTodos` so the grid shows only
+  // Current rows or only Archive rows depending on the active tab.
   const getTodosHandsontableData = useCallback(() => {
-    return todos.map(todo => [
+    return displayedTodos.map(todo => [
       // User-entered identifier (display_id); independent of the row UUID. Empty until filled in.
       (todo.display_id && todo.display_id !== 'null') ? todo.display_id : '',
       // No "Open" status; when no value or legacy "Open", show empty cell
@@ -663,7 +734,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       (todo.notes && todo.notes !== 'null') ? todo.notes : '',
       (todo.followup_notes && todo.followup_notes !== 'null') ? todo.followup_notes : '',
     ])
-  }, [todos])
+  }, [displayedTodos])
 
   // Column field names mapping to is_lock_billing_todo table columns
   const columnFields: Array<keyof IsLockBillingTodo> = ['id_column', 'status', 'issue', 'notes', 'followup_notes']
@@ -671,28 +742,28 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
 
   const todosCellsCallback = useCallback(
     (row: number, col: number) => {
-      const todo = todos[row]
+      const todo = displayedTodos[row]
       const colKey = columnFields[col]
       if (!colKey) return {}
       const key = `${todo?.id ?? `row-${row}`}:${colKey}`
       return highlightedCells.has(key) ? { className: 'cell-highlight-yellow' } : {}
     },
-    [todos, columnFields, highlightedCells]
+    [displayedTodos, columnFields, highlightedCells]
   )
 
   const getCellIsHighlighted = useCallback(
     (row: number, col: number) => {
-      const todo = todos[row]
+      const todo = displayedTodos[row]
       const colKey = columnFields[col]
       if (!colKey) return false
       const key = `${todo?.id ?? `row-${row}`}:${colKey}`
       return highlightedCells.has(key)
     },
-    [todos, columnFields, highlightedCells]
+    [displayedTodos, columnFields, highlightedCells]
   )
 
   const handleCellHighlight = useCallback((row: number, col: number) => {
-    const todo = todos[row]
+    const todo = displayedTodos[row]
     const colKey = columnFields[col]
     if (!colKey) return
     const key = `${todo?.id ?? `row-${row}`}:${colKey}`
@@ -702,7 +773,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       else next.add(key)
       return next
     })
-  }, [todos, columnFields])
+  }, [displayedTodos, columnFields])
 
   // Right-click on column headers to lock/unlock (no lock icon in header)
   useEffect(() => {
@@ -873,52 +944,74 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         'followup_notes',
       ]
 
+      // HOT's row index references the *displayed* slice (current vs. archive), not `todos`. Build
+      // a snapshot of the current visible list so we can translate each change's row → todo id →
+      // physical index in `updatedTodos`. Without this, edits in archive view would write to the
+      // wrong items (e.g. row 0 visible = first Complete todo, but updatedTodos[0] is a different
+      // item in the full list).
+      const visibleSnapshot = updatedTodos.filter((t) =>
+        viewMode === 'archive' ? t.status === 'Complete' : t.status !== 'Complete'
+      )
+      const resolvePhysical = (visualRow: number): number => {
+        const visible = visibleSnapshot[visualRow]
+        if (visible) {
+          const idx = updatedTodos.findIndex((t) => t.id === visible.id)
+          if (idx >= 0) return idx
+        }
+        // Fall back to extending the array for empty-row creation (only meaningful in current view
+        // where placeholders are allowed). Archive view shouldn't be appending rows.
+        if (viewMode === 'current') {
+          while (updatedTodos.length <= visualRow) {
+            const existingEmptyCount = updatedTodos.filter((t) => t.id.startsWith('empty-')).length
+            updatedTodos.push(createEmptyTodo(existingEmptyCount))
+          }
+          return visualRow
+        }
+        return -1
+      }
+
       const rowsInChange = [...new Set(changes.map(([r]) => r))]
       const primaryRow = rowsInChange[0] ?? null
       const prevRow = lastEditedRowRef.current
       const didLeaveRow = prevRow !== null && primaryRow !== null && !rowsInChange.includes(prevRow)
 
-      changes.forEach(([row, col, , newValue]) => {
-        while (updatedTodos.length <= row) {
-          const existingEmptyCount = updatedTodos.filter((t) => t.id.startsWith('empty-')).length
-          updatedTodos.push(createEmptyTodo(existingEmptyCount))
-        }
-        const todo = updatedTodos[row]
-        if (todo) {
-          const field = fields[col as number]
-          if (field === 'display_id') {
-            const displayIdVal = newValue === '' || newValue == null || newValue === 'null' ? null : String(newValue)
-            updatedTodos[row] = { ...todo, display_id: displayIdVal, updated_at: new Date().toISOString() }
-          } else if (field === 'status') {
-            updatedTodos[row] = { ...todo, status: String(newValue || ''), updated_at: new Date().toISOString() }
-          } else if (field === 'issue') {
-            const issueVal = newValue === '' || newValue === 'null' ? null : String(newValue)
-            updatedTodos[row] = { ...todo, issue: issueVal, updated_at: new Date().toISOString() }
-          } else if (field === 'notes') {
-            const notesVal = newValue === '' || newValue === 'null' ? null : String(newValue)
-            updatedTodos[row] = { ...todo, notes: notesVal, updated_at: new Date().toISOString() }
-          } else if (field === 'followup_notes') {
-            const followupVal = newValue === '' || newValue === 'null' ? null : String(newValue)
-            updatedTodos[row] = { ...todo, followup_notes: followupVal, updated_at: new Date().toISOString() }
-          }
+      // Track which physical indices had a status change for the post-edit sort step.
+      const statusChangePhysical: Array<{ phys: number; oldVal: unknown; newVal: unknown }> = []
+
+      changes.forEach(([row, col, oldValue, newValue]) => {
+        const phys = resolvePhysical(row)
+        if (phys < 0) return
+        const todo = updatedTodos[phys]
+        if (!todo) return
+        const field = fields[col as number]
+        if (field === 'display_id') {
+          const displayIdVal = newValue === '' || newValue == null || newValue === 'null' ? null : String(newValue)
+          updatedTodos[phys] = { ...todo, display_id: displayIdVal, updated_at: new Date().toISOString() }
+        } else if (field === 'status') {
+          updatedTodos[phys] = { ...todo, status: String(newValue || ''), updated_at: new Date().toISOString() }
+          statusChangePhysical.push({ phys, oldVal: oldValue, newVal: newValue })
+        } else if (field === 'issue') {
+          const issueVal = newValue === '' || newValue === 'null' ? null : String(newValue)
+          updatedTodos[phys] = { ...todo, issue: issueVal, updated_at: new Date().toISOString() }
+        } else if (field === 'notes') {
+          const notesVal = newValue === '' || newValue === 'null' ? null : String(newValue)
+          updatedTodos[phys] = { ...todo, notes: notesVal, updated_at: new Date().toISOString() }
+        } else if (field === 'followup_notes') {
+          const followupVal = newValue === '' || newValue === 'null' ? null : String(newValue)
+          updatedTodos[phys] = { ...todo, followup_notes: followupVal, updated_at: new Date().toISOString() }
         }
       })
 
-      const statusChanged = changes.some(([, col]) => col === 1)
+      const statusChanged = statusChangePhysical.length > 0
       if (statusChanged) {
         const dataRows = updatedTodos.filter((t) => !isBillingTodoEmptyPlaceholder(t))
         let incomplete = dataRows.filter((t) => t.status !== 'Complete')
         const complete = dataRows.filter((t) => t.status === 'Complete')
         const emptyRows = updatedTodos.filter((t) => isBillingTodoEmptyPlaceholder(t))
         const movedToTopIds = new Set<string>()
-        changes.forEach(([row, col, oldVal, newVal]) => {
-          if (
-            col === 1 &&
-            row < updatedTodos.length &&
-            oldVal === 'Complete' &&
-            newVal !== 'Complete'
-          ) {
-            movedToTopIds.add(updatedTodos[row].id)
+        statusChangePhysical.forEach(({ phys, oldVal, newVal }) => {
+          if (oldVal === 'Complete' && newVal !== 'Complete' && phys < updatedTodos.length) {
+            movedToTopIds.add(updatedTodos[phys].id)
           }
         })
         if (movedToTopIds.size > 0) {
@@ -1005,7 +1098,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         })
       }, 500)
     },
-    [saveTodos, createEmptyTodo, todos, isBillingTodoEmptyPlaceholder]
+    [saveTodos, createEmptyTodo, todos, isBillingTodoEmptyPlaceholder, viewMode]
   )
 
   const handleAfterSelection = useCallback(
@@ -1124,8 +1217,42 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     )
   }
 
+  // Archive count for the tab badge — shows how many items are sitting in the archive view.
+  const archiveCount = useMemo(
+    () => todos.filter((t) => t.status === 'Complete').length,
+    [todos]
+  )
+
   return (
     <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
+      {/* Current / Archive tabs. Items marked Complete move from Current to Archive automatically
+          since both views are derived from the same `todos` list via status filter. */}
+      <div className="mb-3 flex items-center gap-2 shrink-0">
+        {(['current', 'archive'] as const).map((mode) => {
+          const active = viewMode === mode
+          const label = mode === 'current' ? 'Current' : 'Archive'
+          return (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setViewMode(mode)}
+              aria-pressed={active}
+              className={`px-3 py-1.5 rounded-md text-sm font-semibold transition-colors border ${
+                active
+                  ? 'bg-primary-600 text-white border-primary-500 shadow-sm'
+                  : 'bg-white/5 text-white/80 border-white/20 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              {label}
+              {mode === 'archive' && archiveCount > 0 && (
+                <span className={`ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full text-xs font-semibold ${active ? 'bg-white/20 text-white' : 'bg-white/15 text-white/80'}`}>
+                  {archiveCount}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
       <div
         ref={tableContainerRef}
         className={`table-container dark-theme ${isInSplitScreen ? 'min-w-0 flex-1' : ''}`}
@@ -1143,7 +1270,10 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         }}
       >
         <HandsontableWrapper
-          key={`todos-${clinicId}-${isInSplitScreen ? 'split' : 'full'}`}
+          // Include viewMode in the key so HOT fully re-initializes when the user switches tabs.
+          // Without this the visible data updates but HOT's internal row metadata (selection,
+          // column sort state) holds onto indices from the previous view and renders oddly.
+          key={`todos-${clinicId}-${isInSplitScreen ? 'split' : 'full'}-${viewMode}`}
           hotInstanceRef={hotRef}
           data={getTodosHandsontableData()}
           dataVersion={structureVersion}
@@ -1177,7 +1307,10 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
           className="handsontable-custom billing-todo-sortable"
         />
       </div>
-      {canEdit && (
+      {canEdit && viewMode === 'current' && (
+        // Only render in Current view — Archive is read-history; adding empty placeholder rows
+        // there would be pointless (they aren't Complete and wouldn't show up in the archive
+        // filter anyway).
         // `shrink-0` keeps this row at its natural height inside the flex column so the
         // table-container (flex: 1) shrinks to make room rather than the button getting squeezed
         // out. `relative` + z-index sits above Handsontable's `ht_clone_top` (z: 10) and clone
