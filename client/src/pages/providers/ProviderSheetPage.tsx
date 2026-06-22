@@ -19,6 +19,7 @@ import {
 import ProvidersTab from '@/components/tabs/ProvidersTab'
 import AccountsReceivableTab from '@/components/tabs/AccountsReceivableTab'
 import ProviderPayTab from '@/components/tabs/ProviderPayTab'
+import { getDefaultStatusColors } from '@/lib/defaultStatusColors'
 
 export default function ProviderSheetPage() {
   const { user, userProfile, loading: authLoading } = useAuth()
@@ -245,13 +246,21 @@ export default function ProviderSheetPage() {
     }
 
     const fetchStatusColors = async () => {
-      const { data } = await apiClient.from('status_colors').select('*')
-      if (data?.length) setStatusColors(data)
-      else
-        setStatusColors([
-          { id: '1', status: 'Complete', color: '#5d9f5d', text_color: '#000', type: 'appointment', created_at: '', updated_at: '' },
-          { id: '2', status: 'Note Not Complete', color: '#e06666', text_color: '#000', type: 'appointment', created_at: '', updated_at: '' },
-        ])
+      try {
+        const { data } = await apiClient.from('status_colors').select('*')
+        // Merge fetched rows with defaults so months (and any other type missing from the DB)
+        // still render in color. Previously the fallback used only when `data.length === 0` had
+        // just two appointment rows, so a partially-seeded `status_colors` table left
+        // MonthYearTabs rendering all months in default slate-grey.
+        const defaults = getDefaultStatusColors()
+        const fetched = data ?? []
+        const fetchedKeys = new Set(fetched.map((s) => `${s.type}:${s.status}`))
+        const missing = defaults.filter((d) => !fetchedKeys.has(`${d.type}:${d.status}`))
+        setStatusColors(fetched.length ? [...fetched, ...missing] : defaults)
+      } catch (error) {
+        console.error('Error fetching status colors; using defaults', error)
+        setStatusColors(getDefaultStatusColors())
+      }
     }
 
     fetchClinic()
