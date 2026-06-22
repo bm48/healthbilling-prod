@@ -1209,6 +1209,15 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     }
   }, [isInSplitScreen])
 
+  // Archive count for the tab badge — shows how many items are sitting in the archive view.
+  // Must be declared before the `if (loading) return` early-exit below, otherwise the hook order
+  // changes between the loading and loaded renders and React throws error #310 ("Rendered more
+  // hooks than during the previous render").
+  const archiveCount = useMemo(
+    () => todos.filter((t) => t.status === 'Complete').length,
+    [todos]
+  )
+
   if (loading) {
     return (
       <div className="p-6">
@@ -1216,12 +1225,6 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       </div>
     )
   }
-
-  // Archive count for the tab badge — shows how many items are sitting in the archive view.
-  const archiveCount = useMemo(
-    () => todos.filter((t) => t.status === 'Complete').length,
-    [todos]
-  )
 
   return (
     <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
