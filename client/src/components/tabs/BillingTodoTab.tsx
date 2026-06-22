@@ -1174,7 +1174,14 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         />
       </div>
       {canEdit && (
-        <div className="mt-3 flex items-center justify-end gap-3">
+        // `shrink-0` keeps this row at its natural height inside the flex column so the
+        // table-container (flex: 1) shrinks to make room rather than the button getting squeezed
+        // out. `relative` + z-index sits above Handsontable's `ht_clone_top` (z: 10) and clone
+        // wrappers, so even if the table visually overflows in split mode, the button still wins.
+        <div
+          className="mt-3 flex items-center justify-end gap-3 shrink-0 relative"
+          style={{ zIndex: 20 }}
+        >
           <button
             type="button"
             onClick={() => setExtraEmptyRows((n) => n + BILLING_TODOS_ROWS_STEP)}
