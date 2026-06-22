@@ -1861,7 +1861,12 @@ export default function AccountsReceivableTab({
           // overflow scrolls instead of getting clipped silently.
           width={isInSplitScreen ? (tableWidth ?? '100%') : '100%'}
           height={tableHeight}
-          stretchH={isInSplitScreen ? "none" : "all"}
+          // `stretchH="last"` lets the Notes column absorb any leftover width when the pane is
+          // wider than the columns' natural widths — without this the wtHolder's #d2dbe5 fill
+          // shows as a blank vertical band to the right of the last column. Handsontable still
+          // allows horizontal overflow + a scrollbar when the column sum exceeds the table width,
+          // so this doesn't reintroduce the silent-clipping problem the old `width` math fixed.
+          stretchH={isInSplitScreen ? "last" : "all"}
           afterChange={handleARHandsontableChange}
           afterSelection={handleARAfterSelection}
           afterDeselect={handleARAfterDeselect}
