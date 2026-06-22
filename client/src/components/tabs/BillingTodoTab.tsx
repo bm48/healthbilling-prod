@@ -1052,11 +1052,12 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     )
   }, [saveTodos])
 
-  // Drive the table height from the viewport in both modes. clientHeight of the table-container in
-  // split mode reads as the HOT's own height (chicken-and-egg with the `height` prop), so the grid
-  // stayed ~470px and never filled the flex slot. Measuring from the container's top to the bottom
-  // of the viewport (and subtracting the "+ Add 50 rows" row beneath it) gives a stable height that
-  // grows with the panel — no grey gap above the button.
+  // Drive the table height from the viewport in full-screen mode and from the pane's own bottom
+  // in split mode. Using `window.innerHeight` in split mode (the prior single-formula approach)
+  // overshoots: the right pane sits inside an `overflow: hidden` parent whose bottom is well
+  // above the window's, so the table rendered taller than its slot, overflowed downward, and
+  // visually covered the "+ Add 50 rows" button. Reading the `.split-pane-tab` parent's bottom
+  // gives the actual ceiling.
   useEffect(() => {
     const BUTTON_ROW_HEIGHT = 56  // mt-3 (12) + button padding/height (~36) + small breathing room
     const FULL_PAGE_BOTTOM_OFFSET = 24  // p-6 page padding
@@ -1064,11 +1065,18 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     const FULL_PAGE_MIN_HEIGHT = 480
     const computeHeight = (): number => {
       const el = tableContainerRef.current
-      if (el) {
-        const topPx = el.getBoundingClientRect().top
-        const available = window.innerHeight - topPx - BUTTON_ROW_HEIGHT - FULL_PAGE_BOTTOM_OFFSET
-        if (available > 100) return available
-      }
+      if (!el) return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
+      const topPx = el.getBoundingClientRect().top
+      // In split mode the pane has its own bottom (parent `.split-pane-tab` is `overflow: hidden`
+      // inside a flex-1 box). Measuring against window.innerHeight there gives an upper bound that
+      // doesn't exist visually, so HOT grows past the slot and pushes the button row off-pane.
+      // `.split-pane-tab` is the immediate parent — use its rect bottom for the split ceiling.
+      const ceilingPx = isInSplitScreen
+        ? (el.parentElement?.getBoundingClientRect().bottom ?? window.innerHeight)
+        : window.innerHeight
+      const bottomPadding = isInSplitScreen ? 24 : FULL_PAGE_BOTTOM_OFFSET  // p-6 either way
+      const available = ceilingPx - topPx - BUTTON_ROW_HEIGHT - bottomPadding
+      if (available > 100) return available
       return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
     }
     // requestAnimationFrame so the first read happens after the initial layout pass (so the container
