@@ -1052,29 +1052,40 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     )
   }, [saveTodos])
 
-  // Split mode: read the container's own clientHeight directly — flex layout already constrained
-  // it to (pane height - button row - paddings), so this is the exact slot HOT should fill. No
-  // viewport math, no parent-bottom math, no overshoot. Mirrors ProvidersTab's working approach.
+  // Split mode: compute HOT height from the pane's own clientHeight minus all known siblings,
+  // padding, and a hard safety buffer. The flex-based approach (reading container.clientHeight)
+  // proved unreliable because the container's flex slot includes the button row's space whenever
+  // the row is `shrink-0` but the table is being passed a height that's bigger than the slot —
+  // HOT then visually overflows the container, and even though the button is positioned correctly
+  // by flex, the visual table sits on top of it. Subtracting from the pane height directly
+  // guarantees there's room reserved for the button + margin + bottom padding regardless of
+  // anything HOT does internally.
   // Full mode: viewport-based with a generous offset (unchanged).
   useEffect(() => {
-    const BUTTON_ROW_HEIGHT = 56  // mt-3 (12) + button padding/height (~36) + small breathing room
-    const FULL_PAGE_BOTTOM_OFFSET = 24  // p-6 page padding
-    const FULL_PAGE_TOP_FALLBACK = 220  // header + tab bar + page padding when ref isn't mounted yet
+    const BUTTON_ROW_TOTAL = 56  // mt-4 (16) + button height (~36) + 4px safety buffer
+    const SPLIT_PANE_PADDING = 48  // p-6 top + bottom on .split-pane-tab
+    const SPLIT_SAFETY = 8  // extra buffer to keep HOT's horizontal scrollbar from kissing the button
+    const FULL_PAGE_BOTTOM_OFFSET = 24
+    const FULL_PAGE_TOP_FALLBACK = 220
     const FULL_PAGE_MIN_HEIGHT = 480
     const computeHeight = (): number => {
       const el = tableContainerRef.current
       if (!el) return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
       if (isInSplitScreen) {
-        // clientHeight is already constrained by the parent's flex layout (`flex: 1` against the
-        // shrink-0 button row), so it equals the slot HOT should fill. Shave 8px so HOT's
-        // horizontal scrollbar at the bottom of its wtHolder doesn't visually crowd the button
-        // row immediately beneath the container.
+        // Pane = `.split-pane-tab` (the parent of the container). Its clientHeight reflects the
+        // actual vertical space available for content, regardless of how flex eventually allocates.
+        const pane = el.parentElement
+        if (pane) {
+          const available = pane.clientHeight - SPLIT_PANE_PADDING - BUTTON_ROW_TOTAL - SPLIT_SAFETY
+          if (available > 100) return available
+        }
+        // Fallback: container's own clientHeight minus the safety. Only used if the parent ref
+        // isn't ready yet (very first paint).
         const ch = el.clientHeight
-        if (ch && ch > 100) return ch - 8
-        return 400
+        return ch && ch > 100 ? ch - SPLIT_SAFETY : 400
       }
       const topPx = el.getBoundingClientRect().top
-      const available = window.innerHeight - topPx - BUTTON_ROW_HEIGHT - FULL_PAGE_BOTTOM_OFFSET
+      const available = window.innerHeight - topPx - BUTTON_ROW_TOTAL - FULL_PAGE_BOTTOM_OFFSET
       if (available > 100) return available
       return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
     }
