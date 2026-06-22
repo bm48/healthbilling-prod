@@ -1052,12 +1052,10 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     )
   }, [saveTodos])
 
-  // Drive the table height from the viewport in full-screen mode and from the pane's own bottom
-  // in split mode. Using `window.innerHeight` in split mode (the prior single-formula approach)
-  // overshoots: the right pane sits inside an `overflow: hidden` parent whose bottom is well
-  // above the window's, so the table rendered taller than its slot, overflowed downward, and
-  // visually covered the "+ Add 50 rows" button. Reading the `.split-pane-tab` parent's bottom
-  // gives the actual ceiling.
+  // Split mode: read the container's own clientHeight directly — flex layout already constrained
+  // it to (pane height - button row - paddings), so this is the exact slot HOT should fill. No
+  // viewport math, no parent-bottom math, no overshoot. Mirrors ProvidersTab's working approach.
+  // Full mode: viewport-based with a generous offset (unchanged).
   useEffect(() => {
     const BUTTON_ROW_HEIGHT = 56  // mt-3 (12) + button padding/height (~36) + small breathing room
     const FULL_PAGE_BOTTOM_OFFSET = 24  // p-6 page padding
@@ -1066,31 +1064,15 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     const computeHeight = (): number => {
       const el = tableContainerRef.current
       if (!el) return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
-      const topPx = el.getBoundingClientRect().top
-      // In split mode the pane has its own bottom (parent `.split-pane-tab` is `overflow: hidden`
-      // inside a flex-1 box). Measuring against window.innerHeight there gives an upper bound that
-      // doesn't exist visually, so HOT grows past the slot and pushes the button row off-pane.
-      // `.split-pane-tab` is the immediate parent — use its rect bottom for the split ceiling.
-      const ceilingPx = isInSplitScreen
-        ? (el.parentElement?.getBoundingClientRect().bottom ?? window.innerHeight)
-        : window.innerHeight
-      const bottomPadding = isInSplitScreen ? 24 : FULL_PAGE_BOTTOM_OFFSET  // p-6 either way
-      let available = ceilingPx - topPx - BUTTON_ROW_HEIGHT - bottomPadding
-      // Hard clamp to the parent's content height in split mode — even if our offset math is off,
-      // HOT must never exceed the pane's visible area or it will paint over the button row via its
-      // own internal z-indexed clones (ht_clone_top, etc.).
-      if (isInSplitScreen && el.parentElement) {
-        const parentInside = el.parentElement.clientHeight - 48  // p-6 top + bottom
-        const maxHot = parentInside - BUTTON_ROW_HEIGHT
-        if (maxHot > 100 && available > maxHot) available = maxHot
+      if (isInSplitScreen) {
+        const ch = el.clientHeight
+        return ch && ch > 100 ? ch : 400
       }
+      const topPx = el.getBoundingClientRect().top
+      const available = window.innerHeight - topPx - BUTTON_ROW_HEIGHT - FULL_PAGE_BOTTOM_OFFSET
       if (available > 100) return available
       return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
     }
-    // requestAnimationFrame so the first read happens after the initial layout pass (so the container
-    // has a real top position, not 0). A second delayed apply catches the case where the parent's
-    // flex slot isn't fully settled in the first frame — RAF fires synchronously after style/layout
-    // but the pane's flex distribution can be off if siblings (tab header) are still being measured.
     const apply = () => setTableHeight(computeHeight())
     requestAnimationFrame(apply)
     const settleTimer = setTimeout(apply, 100)
