@@ -19,10 +19,13 @@ export default function Timecards() {
   })
   // Both super_admin and admin can view + add + edit + delete staff timecards. Previously this
   // was gated on `super_admin` only, which removed admins' ability to correct hours when staff
-  // submitted them incorrectly. Admins still don't clock in themselves on this page (same as
-  // super_admin) — their role is to manage the staff timecards.
+  // submitted them incorrectly.
   const canManageTimecards =
     userProfile?.role === 'super_admin' || userProfile?.role === 'admin'
+  // Personal Clock In/Out is shown to everyone *except* super_admin — admins still log their own
+  // hours alongside the staff-management view. (Super admins historically have not been clocked
+  // in here; leave that behavior alone.)
+  const canSelfClock = userProfile?.role !== 'super_admin'
   const [staffTimecards, setStaffTimecards] = useState<Timecard[]>([])
   const [staffUsers, setStaffUsers] = useState<User[]>([])
   const [clinicsMap, setClinicsMap] = useState<Record<string, string>>({})
@@ -32,7 +35,7 @@ export default function Timecards() {
   useEffect(() => {
     if (user && userProfile) {
       loadClinics()
-      if (!canManageTimecards) {
+      if (canSelfClock) {
         loadCurrentClockIn()
       }
       loadTimecards()
@@ -40,7 +43,7 @@ export default function Timecards() {
         loadStaffTimecards()
       }
     }
-  }, [user, userProfile, canManageTimecards])
+  }, [user, userProfile, canManageTimecards, canSelfClock])
 
   async function loadClinics() {
     if (!userProfile?.clinic_ids.length) return
@@ -413,8 +416,8 @@ export default function Timecards() {
         }
       </div>
 
-      <div className={`grid gap-6 mb-6 ${canManageTimecards ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
-        {!canManageTimecards && (
+      <div className={`grid gap-6 mb-6 ${canSelfClock ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`}>
+        {canSelfClock && (
           <div className="bg-white/10 backdrop-blur-md rounded-lg shadow-xl p-6 border border-white/20">
             <h2 className="text-xl font-semibold text-white mb-4">Clock In/Out</h2>
             {currentClockIn ? (
