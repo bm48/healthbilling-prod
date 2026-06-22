@@ -390,7 +390,10 @@ export default function Layout({ children }: LayoutProps) {
 
   const isSuperAdmin = userProfile?.role === 'super_admin'
   const settingsPath = isSuperAdmin ? '/super-admin-settings' : '/admin-settings'
-  const showBillingTodoInClinic = isSuperAdmin
+  // Billing To-Do link under each clinic node in the sidebar. Previously only super_admin saw
+  // this; admins now also need direct access from the sidebar so they can jump into the to-do
+  // list without going through the tab bar.
+  const showBillingTodoInClinic = isSuperAdmin || userProfile?.role === 'admin'
   const isBillingStaff = userProfile?.role === 'billing_staff'
   const isOfficialStaff = userProfile?.role === 'official_staff'
   const isOfficeStaff = userProfile?.role === 'office_staff'

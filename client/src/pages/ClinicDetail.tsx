@@ -459,17 +459,20 @@ export default function ClinicDetail() {
     if (tab && ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay'].includes(tab)) {
       if (isOfficialStaff && tab !== 'todo' && tab !== 'providers') {
         navigate(`/clinic/${clinicId}/todo`, { replace: true })
-      } else if (tab === 'todo' && userProfile?.role === 'admin') {
-        navigate(`/clinic/${clinicId}/providers`, { replace: true })
       } else if (isBillingStaff && (tab === 'accounts_receivable' || tab === 'provider_pay')) {
         navigate(`/clinic/${clinicId}/todo`, { replace: true })
       } else {
+        // Admin used to be force-redirected away from `/todo` to `/providers`; that redirect was
+        // removed so admins can now view and edit the Billing To-Do list directly.
         setActiveTab(tab as TabType)
       }
     } else if (!tab && clinicId && !isProvidersRoute) {
       if (isBillingStaff || isOfficialStaff) {
         navigate(`/clinic/${clinicId}/todo`, { replace: true })
       } else if (userProfile?.role === 'admin') {
+        // Admin still defaults to the providers (billing sheet) view on no-tab clinic URLs —
+        // that's their primary workspace. The Billing To-Do tab is now selectable from the tab
+        // bar; we just don't auto-land them there.
         navigate(`/clinic/${clinicId}/providers`, { replace: true })
       } else {
         navigate(`/clinic/${clinicId}/todo`, { replace: true })
@@ -3804,7 +3807,10 @@ export default function ClinicDetail() {
 
   const canEdit = userProfile?.role === 'super_admin' || userProfile?.role === 'admin' || userProfile?.role === 'billing_staff' || userProfile?.role === 'official_staff' || userProfile?.role === 'office_staff'
   const canUnlock = userProfile?.role === 'super_admin'
-  const showBillingTodoTab = userProfile?.role !== 'admin'
+  // Billing To-Do tab is visible to every role that lands here. Admins were previously excluded
+  // from the tab (and from the per-clinic Billing To-Do link in the sidebar), but Jenali needs
+  // it in the admin view so she can read/edit the list alongside the billing staff.
+  const showBillingTodoTab = true
   const canLockColumns = userProfile?.role === 'super_admin' || userProfile?.role === 'admin'
   const showPatientTab = true
   // const showProvidersTab = userProfile?.role !== 'billing_staff' && userProfile?.role !== 'office_staff'
