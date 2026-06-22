@@ -1065,8 +1065,13 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       const el = tableContainerRef.current
       if (!el) return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
       if (isInSplitScreen) {
+        // clientHeight is already constrained by the parent's flex layout (`flex: 1` against the
+        // shrink-0 button row), so it equals the slot HOT should fill. Shave 8px so HOT's
+        // horizontal scrollbar at the bottom of its wtHolder doesn't visually crowd the button
+        // row immediately beneath the container.
         const ch = el.clientHeight
-        return ch && ch > 100 ? ch : 400
+        if (ch && ch > 100) return ch - 8
+        return 400
       }
       const topPx = el.getBoundingClientRect().top
       const available = window.innerHeight - topPx - BUTTON_ROW_HEIGHT - FULL_PAGE_BOTTOM_OFFSET
@@ -1160,8 +1165,10 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         // table-container (flex: 1) shrinks to make room rather than the button getting squeezed
         // out. `relative` + z-index sits above Handsontable's `ht_clone_top` (z: 10) and clone
         // wrappers, so even if the table visually overflows in split mode, the button still wins.
+        // `mt-4` (instead of `mt-3`) gives the button enough visual breathing room from the
+        // table's bottom edge in split mode where it sits directly under the wtHolder scrollbar.
         <div
-          className="mt-3 flex items-center justify-end gap-3 shrink-0 relative"
+          className="mt-4 flex items-center justify-end gap-3 shrink-0 relative"
           style={{ zIndex: 20 }}
         >
           <button
