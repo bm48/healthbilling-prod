@@ -60,7 +60,12 @@
   white-space: normal;
 }
 
-.table-spreadsheet td:focus-within {
+/* Highlight a cell only while an *editable* control inside it has focus — input / select /
+   textarea. The previous selector (`td:focus-within`) also fired for buttons (lock, edit, delete
+   in the Timecards Actions column), so clicking the lock icon painted the whole cell white
+   until the user clicked elsewhere. Scoping with `:has()` keeps the row-editing visual cue while
+   leaving action-button cells alone. */
+.table-spreadsheet td:has(input, select, textarea):focus-within {
   outline: 2px solid #3b82f6;
   outline-offset: -2px;
   background-color: #ffffff;
