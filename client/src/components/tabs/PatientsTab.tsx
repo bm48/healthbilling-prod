@@ -1275,7 +1275,11 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
           rowHeaders={true}
           width="100%"
           height={isInSplitScreen ? tableHeight : 600}
-          stretchH={isInSplitScreen ? "none" : "all"}
+          // Stretch the last column to absorb leftover width when the pane is wider than the
+          // columns' natural widths — without this the wtHolder's #d2dbe5 fill shows as a blank
+          // vertical band to the right of Coinsurance. Handsontable still produces a horizontal
+          // scrollbar when columns overflow the pane width, so this is safe in narrow panes too.
+          stretchH={isInSplitScreen ? "last" : "all"}
           afterChange={handlePatientsHandsontableChange}
           afterSelection={handleAfterSelection}
           afterDeselect={handleAfterDeselect}
