@@ -778,11 +778,16 @@ export default function ClinicDetail() {
       const { data } = await apiClient
         .from('status_colors')
         .select('*')
-      if (data && data.length > 0) {
-        setStatusColors(data)
-      } else {
-        setStatusColors(getDefaultStatusColors())
-      }
+      // Merge fetched rows with the built-in defaults so every type/status pair we look up
+      // (`claim:Paid`, `month:June`, `patient_pay:Refunded`, …) is guaranteed to have a color.
+      // Previously when the DB had only a partial seed (e.g. appointment rows but no claim or
+      // month rows), the dropdown bubbles for the missing types rendered in default grey — the
+      // user perceived this as "selected a value but the dropdown bubble still looks blank".
+      const defaults = getDefaultStatusColors()
+      const fetched = data ?? []
+      const fetchedKeys = new Set(fetched.map((s) => `${s.type}:${s.status}`))
+      const missing = defaults.filter((d) => !fetchedKeys.has(`${d.type}:${d.status}`))
+      setStatusColors(fetched.length ? [...fetched, ...missing] : defaults)
     } catch (error) {
       // Fall back to the built-in defaults so MonthYearTabs (and all type='month' / 'appointment' /
       // 'claim' consumers) still render with colors instead of slate-grey when the API is down.
