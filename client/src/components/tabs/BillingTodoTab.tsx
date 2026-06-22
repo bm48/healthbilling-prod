@@ -1130,7 +1130,11 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
           height={tableHeight}
           // Auto-size rows so wordWrap on Issue / Notes / F-u notes actually shows wrapped text.
           autoRowSize={{ syncLimit: 200 }}
-          stretchH={isInSplitScreen ? "none" : "all"}
+          // Stretch the last column to absorb leftover width when the pane is wider than the
+          // columns' natural widths — without this the wtHolder's #d2dbe5 fill shows as a blank
+          // vertical band to the right of F/u notes. Handsontable still produces a horizontal
+          // scrollbar when columns overflow the pane width, so this is safe in narrow panes too.
+          stretchH={isInSplitScreen ? "last" : "all"}
           afterChange={handleTodosHandsontableChange}
           afterSelection={handleAfterSelection}
           afterDeselect={handleAfterDeselect}
