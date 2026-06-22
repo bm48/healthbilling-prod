@@ -1724,14 +1724,11 @@ export default function AccountsReceivableTab({
     applySheetPeriodToRow,
   ])
 
-  // Split mode: HOT is given `height='100%'` against a wrapper (flex: 1) inside a flex-column
-  // container — Handsontable computes its own dimensions from the parent's rendered size on each
-  // refreshDimensions, so there's no JS-measured number that can under-shoot the slot and leave
-  // a #d2dbe5 band below the last row. We still call apply() on resize to (a) keep the numeric
-  // `tableWidth` in sync for the wtHolder's column-overflow scrollbar, and (b) poke HOT to
-  // re-measure its height (the React wrapper only refreshes on prop changes, and '100%' is
-  // constant, so it would otherwise stay at its mount-time pixel value).
-  // Non-split mode: viewport-based number, viewport-resize listener handles updates.
+  // Split mode: feed HOT the container's clientHeight so the table fills its flex slot exactly,
+  // matching ProvidersTab on the other pane. The ResizeObserver keeps it in sync as the pane is
+  // resized; the wtHolder column-overflow scrollbar also needs a numeric `tableWidth`, so we
+  // resync that here too.
+  // Non-split mode: viewport-based with a generous offset.
   useEffect(() => {
     const FULL_BOTTOM_OFFSET = 24
     const FULL_TOP_FALLBACK = 300
@@ -1754,29 +1751,11 @@ export default function AccountsReceivableTab({
       if (isInSplitScreen) {
         const w = tableContainerRef.current?.clientWidth
         if (w && w > 100) setTableWidth(w - 2)
-        // In split mode HOT's height prop is the CSS string '100%', so the wrapper's useEffect
-        // (which only fires on prop changes) never reaches refreshDimensions on its own when the
-        // pane is resized. Poke HOT directly so it picks up the new flex slot size and the
-        // wtHolder grows/shrinks to match — otherwise the table stays at its mount-time height
-        // and leaves a visible band of the wrapper's #d2dbe5 background below the last row.
-        const hot = hotRef.current as { refreshDimensions?: () => void; render?: () => void } | null
-        if (hot?.refreshDimensions) {
-          try {
-            hot.refreshDimensions()
-            hot.render?.()
-          } catch {
-            // HOT instance may be tearing down during a mount/unmount — safe to ignore
-          }
-        }
       } else {
         setTableWidth(undefined)
       }
     }
-    requestAnimationFrame(apply)
-    // Second RAF after the first one resolves layout — first apply() runs before HOT has finished
-    // its own initial mount work, so the refreshDimensions call is a no-op against a not-yet-laid-
-    // out parent. The follow-up apply() catches the now-settled flex slot.
-    requestAnimationFrame(() => requestAnimationFrame(apply))
+    apply()
     const onResize = () => apply()
     window.addEventListener('resize', onResize)
     let ro: ResizeObserver | null = null
@@ -1860,13 +1839,6 @@ export default function AccountsReceivableTab({
           // path — only `min-width: 0` reliably caps it at the visible pane width.
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
-          // Make the container its own flex column in split mode so the HandsontableWrapper inside
-          // (with flex: 1 below) stretches to fill the container's entire vertical slot. Previously
-          // the wrapper sized to HOT's `height` prop and any under-shoot left a visible #d2dbe5 gap
-          // between HOT's bottom and the sum bar — now there's no separate "wrapper height" axis,
-          // and HOT's height prop is set to the same value the wrapper actually renders at.
-          display: isInSplitScreen ? 'flex' : undefined,
-          flexDirection: isInSplitScreen ? 'column' : undefined,
           minWidth: 0,
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: '8px',
@@ -1888,11 +1860,7 @@ export default function AccountsReceivableTab({
           // Numeric width in split mode so the wtHolder has a definite upper bound and the column
           // overflow scrolls instead of getting clipped silently.
           width={isInSplitScreen ? (tableWidth ?? '100%') : '100%'}
-          // Split mode: hand HOT a CSS height so it sizes to its (flex: 1) parent every layout
-          // pass. JS measurement gave a one-shot number that could under-shoot the slot and leave
-          // a visible #d2dbe5 band below the last row; `'100%'` is recomputed by HOT on every
-          // refreshDimensions, so the table always exactly fills its wrapper.
-          height={isInSplitScreen ? '100%' : tableHeight}
+          height={tableHeight}
           stretchH={isInSplitScreen ? "none" : "all"}
           afterChange={handleARHandsontableChange}
           afterSelection={handleARAfterSelection}
@@ -1908,14 +1876,7 @@ export default function AccountsReceivableTab({
           cells={arCellsCallback}
           enableFormula={true}
           readOnly={!effectiveCanEdit}
-          style={{
-            backgroundColor: '#d2dbe5',
-            // In split mode, fill the flex-column container so the wrapper's outer div extends to
-            // exactly the slot height the HOT's `height` prop is measured against. Without this,
-            // the wrapper would shrink to HOT's content and any under-measurement would surface as
-            // a visible gap below the table.
-            ...(isInSplitScreen ? { flex: 1, minHeight: 0, width: '100%' } : {}),
-          }}
+          style={{ backgroundColor: '#d2dbe5' }}
           className="handsontable-custom ar-handsontable"
         />
       </div>
