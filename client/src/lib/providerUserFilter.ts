@@ -35,10 +35,18 @@ export function dedupeProvidersByUser(
   providers: Provider[],
   userEmails: Set<string>
 ): ProviderUserDedupResult {
-  const matched = providers.filter(p => {
-    const email = normalizeEmail(p.email)
-    return email !== '' && userEmails.has(email)
-  })
+  // When `userEmails` is empty (e.g. the caller's role can't read other users' email because of
+  // RLS on the `users` table — billing_staff, office_staff, etc.), the original behavior dropped
+  // *every* provider because no email could match the empty set, and the sidebar showed "No
+  // providers" in every clinic. Treat an empty set as "skip the user-account filter": we still
+  // dedupe by email so duplicate provider rows collapse, we just don't require a matching active
+  // user login. Admins continue to use the strict filter since the users query returns data for them.
+  const matched = userEmails.size === 0
+    ? providers.filter(p => normalizeEmail(p.email) !== '')
+    : providers.filter(p => {
+        const email = normalizeEmail(p.email)
+        return email !== '' && userEmails.has(email)
+      })
 
   const canonicalByEmail = new Map<string, Provider>()
   for (const p of matched) {

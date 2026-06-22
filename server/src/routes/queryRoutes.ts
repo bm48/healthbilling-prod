@@ -161,7 +161,25 @@ queryRoutes.post('/query', async (req, res) => {
   }
 
   if (input.table === 'users' && !['super_admin', 'admin'].includes(authUser.role)) {
-    input.filters.push({ op: 'eq', column: 'id', value: authUser.id })
+    // Non-admin staff usually only see themselves. Carve out one narrow exception: the provider
+    // sidebar / billing-sheet flow needs the list of active *provider* user emails to dedupe
+    // provider rows by their login. Allow that specific shape (selecting only email, filtered by
+    // role='provider' AND active=true) without expanding it to the user's own row. Without this,
+    // billing_staff queries return an empty user list and the client-side dedupe then filters out
+    // every provider, so the sidebar shows "No providers" in every clinic.
+    const hasProviderRoleFilter = input.filters.some(
+      (f) => f.op === 'eq' && f.column === 'role' && f.value === 'provider',
+    )
+    const hasActiveFilter = input.filters.some(
+      (f) => f.op === 'eq' && f.column === 'active' && f.value === true,
+    )
+    const onlyEmailSelected =
+      typeof input.select === 'string' && input.select.trim().toLowerCase() === 'email'
+    const isProviderEmailLookup =
+      input.action === 'select' && hasProviderRoleFilter && hasActiveFilter && onlyEmailSelected
+    if (!isProviderEmailLookup) {
+      input.filters.push({ op: 'eq', column: 'id', value: authUser.id })
+    }
   }
 
   const table = mapTable(input.table)
