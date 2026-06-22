@@ -1724,40 +1724,23 @@ export default function AccountsReceivableTab({
     applySheetPeriodToRow,
   ])
 
-  // Split mode: measure the `.split-pane-tab` parent's clientHeight and subtract every sibling of
-  // the table-container (MonthYearTabs above, sum bar below). The remainder is exactly the gap
-  // between them, so the table grows to fill it — sum bar stays put, no grey gap above it, no
-  // overshoot pushing the sum bar off-screen. This avoids both failure modes from earlier
-  // iterations: clientHeight on the container chickens-and-eggs with the HOT's `height` prop and
-  // converges at ~320px; viewport math overshoots and hides the sum bar. Parent-minus-siblings is
-  // directly the flex slot's intended size without any circular dependency.
+  // Split mode: the table-container is a flex column whose only flex-grow child is the
+  // HandsontableWrapper (style={{ flex: 1 }}). That wrapper therefore renders at exactly the
+  // container's content height (clientHeight), so feeding HOT `height = container.clientHeight`
+  // makes HOT fill its wrapper exactly — no slack between the last row and the sum bar.
+  // Earlier iterations used `sumBarRect.top - containerRect.top - 12` to back out the flex slot's
+  // size without trusting clientHeight (which had chickens-and-eggs feedback when the wrapper
+  // sized to HOT's prop); with the wrapper now anchored by flex: 1 instead of by content, that
+  // feedback loop is gone and a direct clientHeight read is both simpler and accurate.
   // Non-split mode: viewport-based with a generous offset.
   useEffect(() => {
     const FULL_BOTTOM_OFFSET = 24
     const FULL_TOP_FALLBACK = 300
     const FULL_MIN_HEIGHT = 480
-    const measureSplitHeight = (): number | null => {
-      const el = tableContainerRef.current
-      const parent = el?.parentElement
-      if (!el || !parent) return null
-      const sumBar = parent.lastElementChild as HTMLElement | null
-      if (!sumBar || sumBar === el) return null
-      // Measure the live rendered geometry directly. `el.getBoundingClientRect().top` is the
-      // container's current top, `sumBar.getBoundingClientRect().top` is the sum bar's current top
-      // (which already reflects the flex slot's actual size — the sum bar sits exactly where flex
-      // placed it). The space between them, minus the sum bar's mt-3 margin (12px), is the precise
-      // HOT height that makes the table extend down to touch the sum bar's margin.
-      // Previous offset-based math kept underestimating by ~60-80px because parent.clientHeight
-      // wasn't a reliable proxy for the flex slot's actual size — direct measurement is.
-      const containerRect = el.getBoundingClientRect()
-      const sumBarRect = sumBar.getBoundingClientRect()
-      const SUM_BAR_MARGIN_TOP = 12  // mt-3
-      const available = sumBarRect.top - containerRect.top - SUM_BAR_MARGIN_TOP
-      return available > 100 ? available : null
-    }
     const computeHeight = (): number => {
       if (isInSplitScreen) {
-        return measureSplitHeight() ?? tableContainerRef.current?.clientHeight ?? 400
+        const ch = tableContainerRef.current?.clientHeight
+        return ch && ch > 100 ? ch : 400
       }
       const el = tableContainerRef.current
       if (el) {
@@ -1860,13 +1843,17 @@ export default function AccountsReceivableTab({
           // path — only `min-width: 0` reliably caps it at the visible pane width.
           flex: isInSplitScreen ? 1 : undefined,
           minHeight: isInSplitScreen ? 0 : undefined,
+          // Make the container its own flex column in split mode so the HandsontableWrapper inside
+          // (with flex: 1 below) stretches to fill the container's entire vertical slot. Previously
+          // the wrapper sized to HOT's `height` prop and any under-shoot left a visible #d2dbe5 gap
+          // between HOT's bottom and the sum bar — now there's no separate "wrapper height" axis,
+          // and HOT's height prop is set to the same value the wrapper actually renders at.
+          display: isInSplitScreen ? 'flex' : undefined,
+          flexDirection: isInSplitScreen ? 'column' : undefined,
           minWidth: 0,
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: '8px',
-          // Match the HandsontableWrapper's inner background so any gap between the wtHolder's
-          // bottom and the container's bottom (when HOT's measured height under-shoots the flex
-          // slot in split mode) blends with the table area instead of showing the dark page bg.
-          backgroundColor: '#d2dbe5',
+          backgroundColor: 'transparent',
           width: '100%',
           maxWidth: '100%',
         }}
@@ -1900,7 +1887,14 @@ export default function AccountsReceivableTab({
           cells={arCellsCallback}
           enableFormula={true}
           readOnly={!effectiveCanEdit}
-          style={{ backgroundColor: '#d2dbe5' }}
+          style={{
+            backgroundColor: '#d2dbe5',
+            // In split mode, fill the flex-column container so the wrapper's outer div extends to
+            // exactly the slot height the HOT's `height` prop is measured against. Without this,
+            // the wrapper would shrink to HOT's content and any under-measurement would surface as
+            // a visible gap below the table.
+            ...(isInSplitScreen ? { flex: 1, minHeight: 0, width: '100%' } : {}),
+          }}
           className="handsontable-custom ar-handsontable"
         />
       </div>
