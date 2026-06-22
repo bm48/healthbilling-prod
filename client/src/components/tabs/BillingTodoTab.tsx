@@ -1073,14 +1073,20 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       if (!el) return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
       if (isInSplitScreen) {
         // Pane = `.split-pane-tab` (the parent of the container). Its clientHeight reflects the
-        // actual vertical space available for content, regardless of how flex eventually allocates.
+        // pane's *intrinsic* size — but on larger viewports the parent split container can have
+        // `minHeight: 650px` which makes the pane taller than the viewport. So we also derive a
+        // viewport-relative ceiling from the container's top to the window's bottom, and take the
+        // smaller of the two. That way the button stays inside the visible area even when the
+        // pane technically extends below the fold.
         const pane = el.parentElement
+        const topPx = el.getBoundingClientRect().top
+        let paneAvailable = Number.POSITIVE_INFINITY
         if (pane) {
-          const available = pane.clientHeight - SPLIT_PANE_PADDING - BUTTON_ROW_TOTAL - SPLIT_SAFETY
-          if (available > 100) return available
+          paneAvailable = pane.clientHeight - SPLIT_PANE_PADDING - BUTTON_ROW_TOTAL - SPLIT_SAFETY
         }
-        // Fallback: container's own clientHeight minus the safety. Only used if the parent ref
-        // isn't ready yet (very first paint).
+        const viewportAvailable = window.innerHeight - topPx - BUTTON_ROW_TOTAL - SPLIT_SAFETY
+        const available = Math.min(paneAvailable, viewportAvailable)
+        if (available > 100) return available
         const ch = el.clientHeight
         return ch && ch > 100 ? ch - SPLIT_SAFETY : 400
       }

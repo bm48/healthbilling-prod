@@ -4210,10 +4210,14 @@ export default function ClinicDetail() {
         // }
       >
         {splitScreen ? (
-          <div 
+          <div
             ref={splitScreenContainerRef}
-            className="flex" 
-            style={{ height: 'calc(100vh - 110px)', minHeight: '650px', width: '100%', overflow: 'hidden', position: 'relative' }}
+            className="flex"
+            // No `minHeight` — when the viewport is shorter than 650+110px, the prior `minHeight: '650px'`
+            // forced the split container taller than the available area, pushing the bottom of each pane
+            // (and any in-pane buttons like BillingTodoTab's "+ Add 50 rows") below the visible fold.
+            // With pure `calc(100vh - 110px)` the container always fits, panes scroll their own contents.
+            style={{ height: 'calc(100vh - 110px)', width: '100%', overflow: 'hidden', position: 'relative' }}
           >
             {/* Left side */}
             <div 
