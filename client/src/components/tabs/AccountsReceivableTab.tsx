@@ -1863,7 +1863,10 @@ export default function AccountsReceivableTab({
           minWidth: 0,
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: '8px',
-          backgroundColor: 'transparent',
+          // Match the HandsontableWrapper's inner background so any gap between the wtHolder's
+          // bottom and the container's bottom (when HOT's measured height under-shoots the flex
+          // slot in split mode) blends with the table area instead of showing the dark page bg.
+          backgroundColor: '#d2dbe5',
           width: '100%',
           maxWidth: '100%',
         }}
