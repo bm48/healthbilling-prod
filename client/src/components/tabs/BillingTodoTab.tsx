@@ -1075,14 +1075,25 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         ? (el.parentElement?.getBoundingClientRect().bottom ?? window.innerHeight)
         : window.innerHeight
       const bottomPadding = isInSplitScreen ? 24 : FULL_PAGE_BOTTOM_OFFSET  // p-6 either way
-      const available = ceilingPx - topPx - BUTTON_ROW_HEIGHT - bottomPadding
+      let available = ceilingPx - topPx - BUTTON_ROW_HEIGHT - bottomPadding
+      // Hard clamp to the parent's content height in split mode — even if our offset math is off,
+      // HOT must never exceed the pane's visible area or it will paint over the button row via its
+      // own internal z-indexed clones (ht_clone_top, etc.).
+      if (isInSplitScreen && el.parentElement) {
+        const parentInside = el.parentElement.clientHeight - 48  // p-6 top + bottom
+        const maxHot = parentInside - BUTTON_ROW_HEIGHT
+        if (maxHot > 100 && available > maxHot) available = maxHot
+      }
       if (available > 100) return available
       return Math.max(FULL_PAGE_MIN_HEIGHT, window.innerHeight - FULL_PAGE_TOP_FALLBACK)
     }
     // requestAnimationFrame so the first read happens after the initial layout pass (so the container
-    // has a real top position, not 0).
+    // has a real top position, not 0). A second delayed apply catches the case where the parent's
+    // flex slot isn't fully settled in the first frame — RAF fires synchronously after style/layout
+    // but the pane's flex distribution can be off if siblings (tab header) are still being measured.
     const apply = () => setTableHeight(computeHeight())
     requestAnimationFrame(apply)
+    const settleTimer = setTimeout(apply, 100)
     const onResize = () => apply()
     window.addEventListener('resize', onResize)
     // Reapply on container size changes too (e.g. split-screen divider drag changes panel width which
@@ -1095,6 +1106,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       if (el.parentElement) ro.observe(el.parentElement)
     }
     return () => {
+      clearTimeout(settleTimer)
       window.removeEventListener('resize', onResize)
       ro?.disconnect()
     }
