@@ -194,9 +194,15 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         const emptyOnes = updated.filter(p => p.id.startsWith('empty-'))
         let result = [...nonEmpty, ...emptyOnes]
 
-        // When fewer than 200 rows, add empty rows to reach 200
+        // Always reserve at least 50 empty rows past the last real patient so users (including
+        // billing staff with no per-clinic `extraEmptyRows`) can immediately add new entries
+        // without first clicking "Add 50 rows". For small clinics this still resolves to a
+        // 200-row grid.
+        const MIN_EMPTY_BUFFER = 50
+        const realCount = result.filter(p => !p.id.startsWith('empty-')).length
+        const targetTotal = Math.max(200, realCount + MIN_EMPTY_BUFFER)
         const totalRows = result.length
-        const emptyRowsNeeded = Math.max(0, 200 - totalRows)
+        const emptyRowsNeeded = Math.max(0, targetTotal - totalRows)
         const existingEmptyCount = result.filter(p => p.id.startsWith('empty-')).length
         const newEmptyRows = Array.from({ length: emptyRowsNeeded }, (_, i) =>
           createEmptyPatient(existingEmptyCount + i)
@@ -779,7 +785,15 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
 
   const padPatientsTo200 = useCallback(
     (list: Patient[]) => {
-      const target = PATIENTS_BASE_ROWS + extraEmptyRows
+      // Always reserve at least `MIN_EMPTY_BUFFER` blank rows at the end of the grid so any user
+      // (billing staff included) can type a new patient without first having to click "Add 50
+      // rows". Previously `target = PATIENTS_BASE_ROWS + extraEmptyRows` gave clinics with more
+      // than 200 real patients zero blank rows by default — billing staff with no per-clinic
+      // `extraEmptyRows` (a localStorage value) saw only the real rows, while admins who'd
+      // clicked the button before had plenty.
+      const MIN_EMPTY_BUFFER = 50
+      const realCount = list.filter((p) => !p.id.startsWith('empty-')).length
+      const target = Math.max(PATIENTS_BASE_ROWS, realCount + MIN_EMPTY_BUFFER) + extraEmptyRows
       const result = [...list]
       while (result.length > target) {
         const last = result[result.length - 1]

@@ -26,6 +26,9 @@ export default function Timecards() {
   // hours alongside the staff-management view. (Super admins historically have not been clocked
   // in here; leave that behavior alone.)
   const canSelfClock = userProfile?.role !== 'super_admin'
+  // Super admins additionally see + manage admin users' timecards. Admins manage billing/office
+  // staff only (they shouldn't be able to edit each other's hours).
+  const isSuperAdmin = userProfile?.role === 'super_admin'
   const [staffTimecards, setStaffTimecards] = useState<Timecard[]>([])
   const [staffUsers, setStaffUsers] = useState<User[]>([])
   const [clinicsMap, setClinicsMap] = useState<Record<string, string>>({})
@@ -43,7 +46,7 @@ export default function Timecards() {
         loadStaffTimecards()
       }
     }
-  }, [user, userProfile, canManageTimecards, canSelfClock])
+  }, [user, userProfile, canManageTimecards, canSelfClock, isSuperAdmin])
 
   async function loadClinics() {
     if (!userProfile?.clinic_ids.length) return
@@ -94,10 +97,15 @@ export default function Timecards() {
   }
 
   async function loadStaffTimecards() {
+    // Super admin manages admins too (so they can correct admin hours). Admins only see
+    // billing/office staff — they shouldn't be able to read/edit each other's timecards.
+    const rolesToManage = isSuperAdmin
+      ? ['billing_staff', 'office_staff', 'admin']
+      : ['billing_staff', 'office_staff']
     const { data: usersData } = await apiClient
       .from('users')
       .select('*')
-      .in('role', ['billing_staff', 'office_staff'])
+      .in('role', rolesToManage)
     if (!usersData?.length) {
       setStaffUsers([])
       setStaffTimecards([])
@@ -350,6 +358,7 @@ export default function Timecards() {
     }, {})
   const billingStaffUsers = staffUsers.filter((u) => u.role === 'billing_staff')
   const officeStaffUsers = staffUsers.filter((u) => u.role === 'office_staff')
+  const adminUsers = staffUsers.filter((u) => u.role === 'admin')
   const userName = (u: User) => u.full_name?.trim() || u.email || '—'
   const userClinicNames = (u: User) => {
     const ids = u.clinic_ids || []
@@ -490,6 +499,26 @@ export default function Timecards() {
                     )}
                   </div>
                 </div>
+                {/* Admins section — only super_admin sees admin hours, since admins shouldn't
+                    be able to see/edit each other's timecards. */}
+                {isSuperAdmin && (
+                  <div className="pt-3 border-t border-white/20">
+                    <h3 className="text-lg font-semibold text-white/90 mb-2 italic">Admins</h3>
+                    <div className="space-y-1.5">
+                      {adminUsers.length === 0 ? (
+                        <p className="text-white/50 text-sm pl-4">No admins</p>
+                      ) : (
+                        adminUsers.map((u) => (
+                          <div key={u.id} className="flex justify-between items-center gap-4 text-sm flex-wrap">
+                            <span className="text-white/80 pl-4 shrink-0">{userName(u)}</span>
+                            <span className="text-white/60 flex-1 min-w-0">{userClinicNames(u)}</span>
+                            <span className="font-medium text-white shrink-0">{asHours(hoursByUserId[u.id]).toFixed(2)} hrs</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <>
