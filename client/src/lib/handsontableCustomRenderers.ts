@@ -336,6 +336,47 @@ export function createMultiBubbleDropdownRenderer(colorMap: (value: string) => {
 const _BaseDropdown =
   (Handsontable as any).editors?.DropdownEditor ?? (Handsontable as any).editors?.AutocompleteEditor
 
+/** Install a capture-phase mousedown listener on the popup wrapper that deterministically commits
+ *  the clicked option and closes the editor. Returns a cleanup fn.
+ *
+ *  Why this exists: Handsontable's own click→finishEditing path races with super.close(). When the
+ *  race goes the wrong way, super.close() tears down htEditor *before* our force-hide reads
+ *  htEditor.rootElement, the force-hide skips, and the popup stays visible with a stale TEXTAREA
+ *  reference. A subsequent option click on the stale popup then appends to the prior value instead
+ *  of replacing it — that's the "January, February," symptom Jenali reported.
+ *
+ *  Running in the capture phase means our handler fires before Handsontable's bubbled click
+ *  handler, so we commit the value and tear down the popup before the racy internal flow starts. */
+function installPopupClickCommit(editor: any): () => void {
+  const htEditor = editor.htEditor
+  const rootEl = htEditor?.rootElement as HTMLElement | null
+  if (!rootEl) return () => { /* noop */ }
+  const wrappers = findDropdownPopupRoots(rootEl)
+  // Attach to the outermost wrapper so the listener survives the listbox's internal re-renders.
+  const wrapper = wrappers[wrappers.length - 1] ?? rootEl
+  const handler = (e: MouseEvent) => {
+    const target = e.target as Element | null
+    if (!target) return
+    const td = target.closest('tbody tr td') as HTMLTableCellElement | null
+    if (!td || !wrapper.contains(td)) return
+    const chosen = (td.textContent ?? '').trim()
+    if (!chosen) return
+    // Stop the click from reaching Handsontable's bubble-phase listbox handler — we own the commit.
+    e.preventDefault()
+    e.stopPropagation()
+    const textarea = editor.TEXTAREA as HTMLTextAreaElement | undefined
+    if (textarea) textarea.value = chosen
+    try { editor.setValue?.(chosen) } catch { /* ignore */ }
+    try { editor.finishEditing?.(false) } catch { /* ignore */ }
+    // Belt-and-braces: sweep any popup still visible anywhere in the document.
+    hideAllDropdownPopups()
+  }
+  wrapper.addEventListener('mousedown', handler, true)
+  return () => {
+    try { wrapper.removeEventListener('mousedown', handler, true) } catch { /* ignore */ }
+  }
+}
+
 /** Walks up from a `.handsontable.listbox` popup element to whatever wrapping DOM node controls its
  *  visibility, so the caller can hide both the inner listbox table and its parent container. The
  *  parent is typically `div.handsontableEditor` or `div.htAutocompleteEditor`, but builds vary. */
@@ -401,16 +442,23 @@ export const DropdownEditorOpenList: typeof _BaseDropdown | null = _BaseDropdown
        *  un-dismissable until the page is refreshed. */
       private __openListTimerId: ReturnType<typeof setTimeout> | null = null
       private __isOpen = false
+      private __popupCleanup: (() => void) | null = null
 
       open(event?: Event) {
         ensureDropdownGlobalCleanup()
         super.open(event)
         this.__isOpen = true
+        // Install the popup click handler SYNCHRONOUSLY before queueing queryChoices so it's live
+        // for the user's first click. Installing inside the timer left a race window where fast
+        // clicks went through Handsontable's racy commit path instead of ours.
+        this.__popupCleanup = installPopupClickCommit(this)
         if (typeof (this as any).queryChoices === 'function') {
           const val = (this as any).TEXTAREA?.value ?? ''
           if (this.__openListTimerId != null) clearTimeout(this.__openListTimerId)
           this.__openListTimerId = setTimeout(() => {
             this.__openListTimerId = null
+            // Bail if close() already ran. Queued queryChoices on a closed editor can disturb
+            // internal state and leave the popup half-attached.
             if (!this.__isOpen) return
             try {
               if (typeof (this as any).queryChoices === 'function') (this as any).queryChoices(val)
@@ -421,24 +469,46 @@ export const DropdownEditorOpenList: typeof _BaseDropdown | null = _BaseDropdown
         }
       }
 
+      /** Reject commits whose value isn't in `source`. Mirrors the guard on ColoredAutocompleteDropdown
+       *  so any column using DropdownEditorOpenList (the wrapper's default fallback editor) gets the
+       *  same data-integrity backstop. Empty / null is allowed so the user can clear the cell. */
+      finishEditing(restoreOriginalValue?: boolean, ctrlDown?: boolean, callback?: () => void) {
+        if (!restoreOriginalValue) {
+          const source = (this as any).cellProperties?.source
+          const value = (this as any).TEXTAREA?.value
+          const isEmpty = value == null || value === ''
+          if (!isEmpty && Array.isArray(source) && !source.includes(value)) {
+            restoreOriginalValue = true
+          }
+        }
+        return super.finishEditing(restoreOriginalValue, ctrlDown, callback)
+      }
+
       close() {
         this.__isOpen = false
         if (this.__openListTimerId != null) {
           clearTimeout(this.__openListTimerId)
           this.__openListTimerId = null
         }
-        try { super.close() } catch { /* ignore */ }
-        // Force-hide the popup DOM. The base AutocompleteEditor's close() does this internally,
-        // but races (Escape during open, very fast cell switching) can leave a popup on screen
-        // with no event listeners attached. Setting display:none here guarantees the popup is
-        // gone before our close() returns, so the user never has to refresh.
+        if (this.__popupCleanup) {
+          try { this.__popupCleanup() } catch { /* ignore */ }
+          this.__popupCleanup = null
+        }
+        // Capture rootElement *before* super.close() — Handsontable's close path nulls htEditor in
+        // some flows, after which we can't find the popup DOM and the force-hide silently no-ops.
+        // That no-op was the intermittent "stuck popup" bug: previous-attempt close() failed to
+        // hide the listbox, leaving stale click handlers wired to a torn-down TEXTAREA.
         const htEditor = (this as any).htEditor
         const rootEl = htEditor?.rootElement as HTMLElement | undefined
+        try { super.close() } catch { /* ignore */ }
         if (rootEl) {
           findDropdownPopupRoots(rootEl).forEach((node) => {
             try { node.style.display = 'none' } catch { /* ignore */ }
           })
         }
+        // Final document-wide sweep so any popup orphaned by a prior race can't hijack the next
+        // selection. Idempotent — safe to run even when our own popup already closed cleanly.
+        hideAllDropdownPopups()
       }
     }
   : null
@@ -468,11 +538,20 @@ export function createColoredAutocompleteDropdown(
      *  until I refresh" symptom Jenali reported. */
     private __openListTimerId: ReturnType<typeof setTimeout> | null = null
     private __isOpen = false
+    private __popupCleanup: (() => void) | null = null
 
     open(event?: Event) {
       ensureDropdownGlobalCleanup()
       super.open(event)
       this.__isOpen = true
+      // Install the popup click handler SYNCHRONOUSLY here, before the queryChoices timer below.
+      // super.open() has already created htEditor and rendered the popup into htContainer, so the
+      // wrapper exists; the click handler must be live before the user's first click. Previously
+      // we installed inside the setTimeout(0), which left a window where a fast click ran through
+      // Handsontable's racy commit path instead of ours — that's part of the intermittent
+      // "dropdown doesn't close" bug Jenali keeps reporting.
+      this.__installColorPainter()
+      this.__popupCleanup = installPopupClickCommit(this)
       // Mirror DropdownEditorOpenList: force the option list to render right away so the colors
       // appear on the first paint even when the editor was opened via a single click.
       if (typeof (this as any).queryChoices === 'function') {
@@ -480,18 +559,20 @@ export function createColoredAutocompleteDropdown(
         if (this.__openListTimerId != null) clearTimeout(this.__openListTimerId)
         this.__openListTimerId = setTimeout(() => {
           this.__openListTimerId = null
+          // Bail if close() already ran. Without this, a queued queryChoices could fire after the
+          // user committed an option, re-render the listbox, and leave a half-attached popup.
           if (!this.__isOpen) return
           try {
             if (typeof (this as any).queryChoices === 'function') {
               ;(this as any).queryChoices(val)
             }
+            // Re-run painter; loadData inside queryChoices replaces the option TDs so the colors
+            // need to be re-painted. The click handler is wrapper-level and survives loadData.
             this.__installColorPainter()
           } catch {
             // ignore — editor may have closed before the timer fired
           }
         }, 0)
-      } else {
-        this.__installColorPainter()
       }
     }
 
@@ -509,16 +590,40 @@ export function createColoredAutocompleteDropdown(
         try { hooked.removeHook('afterRender', this.__paint) } catch { /* ignore */ }
       }
       this.__hookedHtEditor = null
-      try { super.close() } catch { /* ignore */ }
-      // Force-hide the popup DOM so a racing queryChoices that fires after super.close() can't
-      // leave the popup visible without event listeners (the "stuck dropdown, must refresh" bug).
+      if (this.__popupCleanup) {
+        try { this.__popupCleanup() } catch { /* ignore */ }
+        this.__popupCleanup = null
+      }
+      // Capture rootElement *before* super.close() so the force-hide below always has something
+      // to operate on, regardless of whether the super-close path tears down htEditor first.
       const htEditor = (this as any).htEditor
       const rootEl = htEditor?.rootElement as HTMLElement | undefined
+      try { super.close() } catch { /* ignore */ }
       if (rootEl) {
         findDropdownPopupRoots(rootEl).forEach((node) => {
           try { node.style.display = 'none' } catch { /* ignore */ }
         })
       }
+      // Final document-wide sweep so any popup orphaned by a prior race can't hijack the next
+      // selection. Idempotent — safe to run even when our own popup already closed cleanly.
+      hideAllDropdownPopups()
+    }
+
+    /** Reject any commit whose value isn't in `source`. This is the last line of defense against
+     *  the "January, February," symptom: even if a UI race somehow lets a bogus string reach the
+     *  textarea (rapid typing + auto-complete, paste-into-editor, future race we haven't seen yet),
+     *  we silently restore the original value rather than save garbage. Empty / null are allowed
+     *  so the user can clear the cell. */
+    finishEditing(restoreOriginalValue?: boolean, ctrlDown?: boolean, callback?: () => void) {
+      if (!restoreOriginalValue) {
+        const source = (this as any).cellProperties?.source
+        const value = (this as any).TEXTAREA?.value
+        const isEmpty = value == null || value === ''
+        if (!isEmpty && Array.isArray(source) && !source.includes(value)) {
+          restoreOriginalValue = true
+        }
+      }
+      return super.finishEditing(restoreOriginalValue, ctrlDown, callback)
     }
 
     private __paint = () => {

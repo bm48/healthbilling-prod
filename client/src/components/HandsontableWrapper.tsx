@@ -343,6 +343,12 @@ export default function HandsontableWrapper({
   }, [])
   /** Ref to editor input and listener so we can remove on afterFinishEditing and update highlight while typing */
   const formulaEditorInputRef = useRef<{ el: HTMLInputElement | HTMLTextAreaElement; listener: () => void } | null>(null)
+  /** Pending queryChoices retrigger timers scheduled in afterBeginEditing — must be cancelled when
+   *  editing finishes, otherwise they fire on a just-closed editor and call queryChoices() against
+   *  an editor whose `_opened` is false. That call drives the inner Handsontable's loadData / display
+   *  toggle on a torn-down state and is one of the paths that leaves the popup stuck after the user
+   *  selects an option. Tracked across all open editors and cleared per afterFinishEditing. */
+  const dropdownQueryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const dataRef = useRef(data)
   dataRef.current = data
   const prevDataLengthRef = useRef(data.length)
@@ -983,35 +989,54 @@ export default function HandsontableWrapper({
             if (hot.isDestroyed) return
             const ed = editorManager?.activeEditor
             if (!ed || typeof ed.queryChoices !== 'function') return
+            // Bail if the editor is no longer open. Without this guard, a delayed runQuery fires
+            // after the user committed an option and reaches `queryChoices()` on a closed editor,
+            // which drives the inner Handsontable's loadData + display='' on torn-down state and
+            // is one of the paths that leaves a stuck popup on screen. The 20ms/80ms delays are
+            // there to handle slow opens; once the editor has actually closed (much faster than
+            // 80ms), there is no useful work for these to do.
+            if (typeof ed.isOpened === 'function' && !ed.isOpened()) return
             const val = ed.TEXTAREA != null ? (ed.TEXTAREA as HTMLInputElement).value : ''
             ed.queryChoices(val ?? '')
           } catch {
             // ignore
           }
         }
-        setTimeout(runQuery, 20)
-        setTimeout(runQuery, 80)
+        // Track timers so afterFinishEditing can cancel them if the user commits before they fire.
+        // Leaving them uncancelled was the source of the racing "popup reshows after close" bug.
+        const t1 = setTimeout(runQuery, 20)
+        const t2 = setTimeout(runQuery, 80)
+        dropdownQueryTimersRef.current.push(t1, t2)
       }
     },
-    ...(enableFormula
-      ? {
-          afterFinishEditing() {
-            const ref = formulaEditorInputRef.current
-            if (ref) {
-              ref.el.removeEventListener('input', ref.listener)
-              formulaEditorInputRef.current = null
-            }
-            setFormulaRefRanges([])
-            // Remove dotted highlight from DOM immediately (grid may not re-apply cells callback right away)
-            const hot = hotTableRef.current?.hotInstance as Handsontable | undefined
-            if (hot?.rootElement) {
-              hot.rootElement.querySelectorAll('.formula-ref-highlight').forEach((el) => {
-                el.classList.remove('formula-ref-highlight')
-              })
-            }
-          },
+    // afterFinishEditing isn't in the static GridSettings type; spread it in so TS lets us register
+    // the hook (matches the pattern the formula branch already used). The hook always runs; the
+    // formula-cleanup body is gated on `enableFormula` internally.
+    ...{
+      afterFinishEditing() {
+        // Cancel any pending dropdown queryChoices retriggers scheduled in afterBeginEditing —
+        // unconditionally, regardless of enableFormula. Leaving them live let them fire on a
+        // just-closed editor and re-open the popup behind close()'s back.
+        if (dropdownQueryTimersRef.current.length > 0) {
+          for (const t of dropdownQueryTimersRef.current) clearTimeout(t)
+          dropdownQueryTimersRef.current = []
         }
-      : {}),
+        if (!enableFormula) return
+        const ref = formulaEditorInputRef.current
+        if (ref) {
+          ref.el.removeEventListener('input', ref.listener)
+          formulaEditorInputRef.current = null
+        }
+        setFormulaRefRanges([])
+        // Remove dotted highlight from DOM immediately (grid may not re-apply cells callback right away)
+        const hot = hotTableRef.current?.hotInstance as Handsontable | undefined
+        if (hot?.rootElement) {
+          hot.rootElement.querySelectorAll('.formula-ref-highlight').forEach((el) => {
+            el.classList.remove('formula-ref-highlight')
+          })
+        }
+      },
+    },
 
     // Custom cell renderer (merge formula-ref highlight when enableFormula)
     cells:
