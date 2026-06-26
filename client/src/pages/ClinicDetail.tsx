@@ -390,12 +390,13 @@ export default function ClinicDetail() {
    *  accidental-double-click case (Billing → Patients → Billing → Patients in 2 seconds) from
    *  creating four backups when one is plenty. */
   const lastAutoBackupAtRef = useRef<Map<string, number>>(new Map())
-  /** Toast surfaced after a restore so the user knows Ctrl+Z (or the dismiss button) can revert.
-   *  Auto-hides after the window expires. */
+  /** Toast surfaced after a restore so the user knows the explicit Undo button can revert the
+   *  restore. Auto-hides after the window expires. (We intentionally do NOT bind Ctrl+Z to restore-
+   *  undo — Ctrl+Z must keep its standard cell-edit meaning so muscle memory stays intact.) */
   const [restoreToast, setRestoreToast] = useState<{ message: string; expiresAt: number } | null>(null)
   /** Pre-restore snapshot held only as long as the undo window is open. Cleared once consumed by
-   *  Ctrl+Z, by an explicit undo click, or by window expiry. Stored per (providerId, monthKey) so
-   *  navigating around within the window doesn't lose the snapshot for the sheet that was restored. */
+   *  an Undo click or by window expiry. Stored per (providerId, monthKey) so navigating around within
+   *  the window doesn't lose the snapshot for the sheet that was restored. */
   type RestoreSnapshot = { providerId: string; monthKey: string; rows: SheetRow[]; restoredAt: number; expiresAt: number }
   const restoreSnapshotRef = useRef<RestoreSnapshot | null>(null)
   /** When viewing a backup version, override rows for the current provider (super_admin only). */
@@ -2854,7 +2855,7 @@ export default function ClinicDetail() {
     // the grid keeps showing the pre-restore data even though state changed.
     setProviderRowsVersion((v) => v + 1)
     setRestoreToast({
-      message: `Restored from ${new Date(backup.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}. Press Ctrl+Z to undo (30s).`,
+      message: `Restored from ${new Date(backup.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}. Click Undo within 30 seconds if this was a mistake.`,
       expiresAt,
     })
     setAutoBackupsRefreshKey((k) => k + 1)
@@ -2885,21 +2886,10 @@ export default function ClinicDetail() {
   /** Bumped when auto-backups list needs to refresh (e.g. after a manual trigger, after restore). */
   const [autoBackupsRefreshKey, setAutoBackupsRefreshKey] = useState(0)
 
-  // Capture-phase Ctrl+Z handler that ONLY consumes the keypress if a restore snapshot is currently
-  // open (within the 30s window). For any other state — including normal cell editing — the handler
-  // is a no-op and HOT's existing undo handler runs as usual.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!restoreSnapshotRef.current) return
-      const isCtrlZ = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')
-      if (!isCtrlZ) return
-      e.preventDefault()
-      e.stopPropagation()
-      void handleUndoLastRestore()
-    }
-    document.addEventListener('keydown', onKeyDown, true)
-    return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [handleUndoLastRestore])
+  // Note: we intentionally do NOT install a global Ctrl+Z handler for "undo the last restore".
+  // Per Jenali, Ctrl+Z must keep its standard meaning — undo the last cell edit, routed through
+  // Handsontable's own undo stack. Mistaken restores are recoverable via the explicit "Undo" button
+  // on the restore toast banner; that's the only undo path for restore actions.
 
   /** Fire-and-forget snapshot of the active Billing sheet's rows to the auto-backups table.
    *
@@ -4455,14 +4445,14 @@ export default function ClinicDetail() {
             <button
               type="button"
               onClick={() => { void handleUndoLastRestore() }}
-              className="px-2 py-0.5 text-xs rounded bg-amber-500/40 hover:bg-amber-500/60 text-white"
+              className="px-4 py-1.5 text-sm font-semibold rounded bg-amber-500 hover:bg-amber-600 text-white"
             >
-              Undo
+              Undo restore
             </button>
             <button
               type="button"
               onClick={() => { restoreSnapshotRef.current = null; setRestoreToast(null) }}
-              className="px-2 py-0.5 text-xs rounded bg-white/10 hover:bg-white/20 text-white"
+              className="px-3 py-1.5 text-xs rounded bg-white/10 hover:bg-white/20 text-white"
               aria-label="Dismiss"
             >
               Dismiss
