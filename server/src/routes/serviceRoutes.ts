@@ -365,9 +365,24 @@ async function saveProviderSheetRowsCore(
     const values = cols.map((c) => payload[c])
 
     if (isUuid(id)) {
+      // Write guard for the three columns Jenali has repeatedly lost data on (appointment_date /
+      // claim_status / submit_date). Without this guard, ANY save that arrives with `null` for these
+      // columns — including a stale-snapshot save from a silent client-side failure path — clobbers
+      // a previously-typed value. With COALESCE($N, "col"), a null payload keeps whatever the DB
+      // already has and only a non-null payload overwrites. The trade-off is that the client cannot
+      // CLEAR these three columns via this endpoint anymore; clearing must be done by deleting the
+      // row (which is rare for these three fields — they hold workflow state that monotonically
+      // gains data through a claim's life). If a user ever needs to clear, we can add an explicit
+      // `clearColumns: ['appointment_date', ...]` opt-out in a follow-up. Defending the data is more
+      // important than supporting that 1% case for now.
+      const PROTECTED_FROM_NULL = new Set(['appointment_date', 'claim_status', 'submit_date'])
       const setParts = cols
         .filter((c) => c !== 'sheet_id')
-        .map((c, idx) => `"${c}" = $${idx + 1}`)
+        .map((c, idx) =>
+          PROTECTED_FROM_NULL.has(c)
+            ? `"${c}" = COALESCE($${idx + 1}, "${c}")`
+            : `"${c}" = $${idx + 1}`,
+        )
       const setParams = cols.filter((c) => c !== 'sheet_id').map((c) => payload[c])
       const uq = await pool.query<Record<string, unknown>>(
         `UPDATE public.provider_sheet_rows SET ${setParts.join(', ')}, "updated_at" = now()
@@ -463,6 +478,145 @@ async function handleSaveProviderSheetRows(req: import('express').Request, res: 
 serviceRoutes.post('/save-provider-sheet-rows', handleSaveProviderSheetRows)
 /** @deprecated Use /save-provider-sheet-rows — kept for page-unload keepalive callers */
 serviceRoutes.post('/save-pending-provider-sheet', handleSaveProviderSheetRows)
+
+// ---------------------------------------------------------------------------
+// Auto-backups: tab-leave snapshots of a provider sheet.
+// Distinct from /save-provider-sheet-rows (which writes the live row state) and from the
+// cron-based /api/cron/backup-provider-sheets (which exports CSV files to storage). These
+// endpoints write/read raw JSON snapshots in `provider_sheet_tab_leave_backups`, retained
+// for 7 days and lazy-pruned on insert.
+// ---------------------------------------------------------------------------
+
+/** Shared access check: user must have access to the clinic that owns this sheet. */
+async function assertSheetAccess(callerId: string, sheetId: string): Promise<void> {
+  const access = await pool.query(
+    `SELECT 1
+     FROM public.provider_sheets ps
+     JOIN public.users u ON u.id = $1::uuid
+     WHERE ps.id = $2::uuid
+       AND (
+         u.role = 'super_admin'
+         OR ps.clinic_id = ANY (COALESCE(u.clinic_ids, '{}'::uuid[]))
+       )
+     LIMIT 1`,
+    [callerId, sheetId],
+  )
+  if (!access.rowCount) throw new Error('Sheet not found or access denied')
+}
+
+const TAB_LEAVE_BACKUP_RETENTION_DAYS = 7
+
+/** POST /api/auto-backup-provider-sheet — body: { sheetId, rows } */
+serviceRoutes.post('/auto-backup-provider-sheet', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const sheetId = typeof req.body?.sheetId === 'string' ? req.body.sheetId.trim() : ''
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : null
+  if (!sheetId || rows == null) {
+    res.status(400).json({ error: 'Missing sheetId or rows' })
+    return
+  }
+  if (!isUuid(sheetId)) {
+    res.status(400).json({ error: 'Invalid sheetId' })
+    return
+  }
+  try {
+    await assertSheetAccess(callerId, sheetId)
+    const insert = await pool.query<{ id: string; created_at: string }>(
+      `INSERT INTO public.provider_sheet_tab_leave_backups (sheet_id, user_id, rows)
+       VALUES ($1::uuid, $2::uuid, $3::jsonb)
+       RETURNING id, created_at`,
+      [sheetId, callerId, JSON.stringify(rows)],
+    )
+    // Lazy retention: prune entries older than the retention window for THIS sheet only. Keeping
+    // the prune scoped means a sheet that hasn't been touched in a year doesn't get its backups
+    // wiped just because some other sheet got a fresh write.
+    await pool.query(
+      `DELETE FROM public.provider_sheet_tab_leave_backups
+       WHERE sheet_id = $1::uuid
+         AND created_at < now() - ($2 || ' days')::interval`,
+      [sheetId, String(TAB_LEAVE_BACKUP_RETENTION_DAYS)],
+    )
+    const row = insert.rows[0]
+    res.json({ id: row.id, created_at: row.created_at })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Backup failed'
+    const status = msg.includes('denied') || msg.includes('not found') ? 404 : 500
+    if (status === 500) {
+      // eslint-disable-next-line no-console
+      console.error('[auto-backup] insert failed:', err)
+    }
+    res.status(status).json({ error: msg })
+  }
+})
+
+/** GET /api/auto-backup-provider-sheet?sheetId=X — list backups (metadata only, newest first) */
+serviceRoutes.get('/auto-backup-provider-sheet', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const sheetId = typeof req.query?.sheetId === 'string' ? req.query.sheetId.trim() : ''
+  if (!sheetId || !isUuid(sheetId)) {
+    res.status(400).json({ error: 'Missing or invalid sheetId' })
+    return
+  }
+  try {
+    await assertSheetAccess(callerId, sheetId)
+    const list = await pool.query<{ id: string; created_at: string; user_id: string | null; user_email: string | null }>(
+      `SELECT b.id, b.created_at, b.user_id, u.email AS user_email
+       FROM public.provider_sheet_tab_leave_backups b
+       LEFT JOIN public.users u ON u.id = b.user_id
+       WHERE b.sheet_id = $1::uuid
+       ORDER BY b.created_at DESC
+       LIMIT 200`,
+      [sheetId],
+    )
+    res.json({ versions: list.rows })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'List failed'
+    const status = msg.includes('denied') || msg.includes('not found') ? 404 : 500
+    res.status(status).json({ error: msg })
+  }
+})
+
+/** GET /api/auto-backup-provider-sheet/:id — fetch full backup (with rows) for restore. */
+serviceRoutes.get('/auto-backup-provider-sheet/:id', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const backupId = typeof req.params?.id === 'string' ? req.params.id.trim() : ''
+  if (!backupId || !isUuid(backupId)) {
+    res.status(400).json({ error: 'Invalid backup id' })
+    return
+  }
+  try {
+    const found = await pool.query<{ id: string; sheet_id: string; created_at: string; rows: unknown }>(
+      `SELECT id, sheet_id, created_at, rows
+       FROM public.provider_sheet_tab_leave_backups
+       WHERE id = $1::uuid
+       LIMIT 1`,
+      [backupId],
+    )
+    const row = found.rows[0]
+    if (!row) {
+      res.status(404).json({ error: 'Backup not found' })
+      return
+    }
+    await assertSheetAccess(callerId, row.sheet_id)
+    res.json({ id: row.id, sheet_id: row.sheet_id, created_at: row.created_at, rows: row.rows })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Fetch failed'
+    const status = msg.includes('denied') || msg.includes('not found') ? 404 : 500
+    res.status(status).json({ error: msg })
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Invoice recompute helpers

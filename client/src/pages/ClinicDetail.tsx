@@ -7,6 +7,8 @@ import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '
 import { fetchBackupCsvAsSheetRows, padSheetRowsTo200 } from '@/lib/providerSheetBackups'
 import { sheetRowsToUiCsv, type ProviderSheetUiExportLayout } from '@/lib/providerSheetBackupUiExport'
 import BackupVersionsBar, { type BackupVersionMeta } from '@/components/BackupVersionsBar'
+import AutoBackupsBar from '@/components/AutoBackupsBar'
+import { createAutoBackup, getAutoBackup } from '@/lib/autoBackupsApi'
 import {
   fetchBackupCsvAsAR,
   fetchBackupCsvAsPatients,
@@ -348,8 +350,54 @@ export default function ClinicDetail() {
     rows: SheetRow[]
     deletedDbIds: string[]
     resolvers: Array<{ resolve: (persisted: boolean) => void; reject: (err: unknown) => void }>
+    /** monthKey of the latest queued call, so the replay in the in-progress save's finally block targets
+     *  the right sheet even if the user has since navigated to a different month. */
+    monthKey: string
   }
   const pendingProviderSheetSaveRef = useRef<Record<string, PendingProviderSheetSave>>({})
+  /** Saves that hit a transient guard (sheet not yet in `providerSheetsByMonth`, or hydration not yet
+   *  recorded in `hydratedSheetKeysRef`) get queued here instead of being silently dropped. The drain
+   *  effect below retries each entry once the guards line up. Keyed by `providerId|monthKey` so a
+   *  later edit on the same row overwrites the queued snapshot rather than queuing twice (the older
+   *  snapshot is by definition a subset of the newer one, since `latestProviderRowsRef` accumulates).
+   *  Reason this exists: the hydration guard used to `return false` silently when the user typed
+   *  before the initial fetch completed. Their typing was never retried — that's the "I filled it in
+   *  and it disappeared" report Jenali kept seeing on the current-month sheet (the only month where
+   *  default mount + immediate typing puts edits inside the hydration window). */
+  type DeferredProviderSheetSave = {
+    providerId: string
+    rowsToSave: SheetRow[]
+    knownDeletedIds?: string[]
+    monthKey: string
+    queuedAt: number
+  }
+  const deferredSavesRef = useRef<Map<string, DeferredProviderSheetSave>>(new Map())
+  /** Per-(provider, monthKey) timestamp of the last save that actually persisted (didPersist === true).
+   *  The drain consults this to skip any queued entry whose `queuedAt` predates a more recent successful
+   *  save for the same target. Without this, a deferred snapshot taken at T0 could replay AFTER a
+   *  successful save at T2 and overwrite T2's data with T0's older (sparser) rows. */
+  const lastSuccessfulSaveAtRef = useRef<Map<string, number>>(new Map())
+  /** Most recent save-failure message surfaced to the user as a top-of-page banner. Mirrors the same
+   *  state in ProviderSheetPage. Critical for the labeled "Billing" tab route — without this, save
+   *  failures from `saveProviderSheetRows` were swallowed into `console.error` only. That's how
+   *  Jenali's "data was there, then gone hours later" pattern happens: the optimistic state update
+   *  paints the row as saved, the actual network save throws (token expired, transient 5xx, etc.),
+   *  she sees nothing wrong, and later a normal re-fetch overwrites her optimistic state with the
+   *  still-stale DB row. By the time she notices, the in-memory copy is gone too. */
+  const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null)
+  /** Per-sheet timestamp of the most recent auto-backup. The trigger helper skips a backup if the
+   *  same sheet was already snapshotted within `AUTO_BACKUP_MIN_INTERVAL_MS`. Prevents the
+   *  accidental-double-click case (Billing → Patients → Billing → Patients in 2 seconds) from
+   *  creating four backups when one is plenty. */
+  const lastAutoBackupAtRef = useRef<Map<string, number>>(new Map())
+  /** Toast surfaced after a restore so the user knows Ctrl+Z (or the dismiss button) can revert.
+   *  Auto-hides after the window expires. */
+  const [restoreToast, setRestoreToast] = useState<{ message: string; expiresAt: number } | null>(null)
+  /** Pre-restore snapshot held only as long as the undo window is open. Cleared once consumed by
+   *  Ctrl+Z, by an explicit undo click, or by window expiry. Stored per (providerId, monthKey) so
+   *  navigating around within the window doesn't lose the snapshot for the sheet that was restored. */
+  type RestoreSnapshot = { providerId: string; monthKey: string; rows: SheetRow[]; restoredAt: number; expiresAt: number }
+  const restoreSnapshotRef = useRef<RestoreSnapshot | null>(null)
   /** When viewing a backup version, override rows for the current provider (super_admin only). */
   const [backupOverrideRows, setBackupOverrideRows] = useState<SheetRow[] | null>(null)
   const [selectedBackupVersion, setSelectedBackupVersion] = useState<BackupVersionMeta | null>(null)
@@ -2470,15 +2518,26 @@ export default function ClinicDetail() {
 
 
 
-  const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[]): Promise<boolean> => {
+  const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[], monthKeyOverride?: string): Promise<boolean> => {
     if (!clinicId || !userProfile) {
       console.warn('[saveProviderSheetRows] dropped — missing clinicId or userProfile', { providerId, hasClinicId: !!clinicId, hasUserProfile: !!userProfile })
       return false
     }
 
-    const sheet = providerSheets[providerId]
+    // monthKey is captured once at call entry. The drain effect passes the ORIGINAL monthKey from when
+    // the save was queued — without that, a deferred save that fires after the user navigated to a
+    // different month would persist the old month's rows under the new month's sheet (the "her June
+    // data is in May" symptom we already eliminated for the synchronous path via the flush callback).
+    const monthKey = monthKeyOverride ?? selectedMonthKey
+    const sheetsForMonth = providerSheetsByMonth[monthKey] ?? {}
+    const sheet = sheetsForMonth[providerId]
     if (!sheet) {
-      console.warn('[saveProviderSheetRows] dropped — providerSheets has no entry for this providerId', { providerId, monthKey: selectedMonthKey, knownProviderIds: Object.keys(providerSheets) })
+      // Queue rather than drop. The sheet entry may be loading right now (single-provider URL hits
+      // `fetchProviderSheetData` which populates `providerSheetsByMonth[monthKey][providerId]` only
+      // after the network round-trip). Dropping here is what made early-session typing vanish.
+      const queueKey = `${providerId}|${monthKey}`
+      deferredSavesRef.current.set(queueKey, { providerId, rowsToSave, knownDeletedIds, monthKey, queuedAt: Date.now() })
+      console.warn('[saveProviderSheetRows] DEFERRED — providerSheets has no entry for this providerId (will retry when sheet loads)', { providerId, monthKey, knownProviderIds: Object.keys(sheetsForMonth) })
       return false
     }
 
@@ -2486,9 +2545,15 @@ export default function ClinicDetail() {
     // been loaded yet. Without this, a save triggered during initial mount (debounced edit, mount-restore,
     // patient-fill effect) would persist an empty/partial state. With the orphan sweep removed this is
     // belt-and-suspenders, but it also avoids overwriting freshly-saved rows with stale local state.
-    const hydrationKey = `${clinicId}|${providerId}|${selectedMonthKey}`
+    const hydrationKey = `${clinicId}|${providerId}|${monthKey}`
     if (!hydratedSheetKeysRef.current.has(hydrationKey)) {
-      console.warn('[saveProviderSheetRows] dropped — sheet not yet hydrated', { providerId, monthKey: selectedMonthKey, hydrationKey })
+      // Queue rather than drop. This is the path Jenali kept hitting on Morgan's June sheet: the page
+      // defaulted to current month, the user typed before the initial fetch completed, the hydration
+      // guard returned false silently, and her edits were never retried. The drain effect below re-fires
+      // this entry once `fetchProviderSheetData` marks the tuple hydrated.
+      const queueKey = `${providerId}|${monthKey}`
+      deferredSavesRef.current.set(queueKey, { providerId, rowsToSave, knownDeletedIds, monthKey, queuedAt: Date.now() })
+      console.warn('[saveProviderSheetRows] DEFERRED — sheet not yet hydrated (will retry when hydration completes)', { providerId, monthKey, hydrationKey })
       return false
     }
 
@@ -2515,6 +2580,7 @@ export default function ClinicDetail() {
         const existing = pendingProviderSheetSaveRef.current[providerId]
         if (existing) {
           existing.rows = rowsToSave
+          existing.monthKey = monthKey
           if (incomingDeletes.length > 0) {
             const seen = new Set(existing.deletedDbIds)
             for (const id of incomingDeletes) {
@@ -2530,6 +2596,7 @@ export default function ClinicDetail() {
             rows: rowsToSave,
             deletedDbIds: incomingDeletes,
             resolvers: [{ resolve, reject }],
+            monthKey,
           }
         }
       })
@@ -2542,8 +2609,10 @@ export default function ClinicDetail() {
     // instead of INSERT again (which creates duplicate provider_sheet_rows).
     let savedTempIdToUuidMap: Map<string, string> | null = null
 
-    // Optimistic update: apply full rows to state immediately so the row (e.g. patient fill) appears right away
-    setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: rowsToSave } }))
+    // Optimistic update: apply full rows to state immediately so the row (e.g. patient fill) appears right away.
+    // Use the captured `monthKey` so a deferred save replayed for the original month writes to that month's
+    // slot in state — never to whatever month the user happens to be viewing right now.
+    setProviderSheetRowsByMonth(prev => ({ ...prev, [monthKey]: { ...(prev[monthKey] ?? {}), [providerId]: rowsToSave } }))
 
     // Tracks whether saveSheetRows actually persisted to the DB. Returned to the caller so the
     // localStorage restore effect can tell the difference between a real save and a swallowed error;
@@ -2555,16 +2624,22 @@ export default function ClinicDetail() {
       const savedRows = await saveSheetRows(apiClient, sheet.id, rowsToProcess, knownDeletedIds, {
         clinicId,
         providerId,
-        selectedMonthKey,
+        selectedMonthKey: monthKey,
       })
       didPersist = true
+      // Record the successful-save timestamp BEFORE any post-save state work so the drain effect's
+      // "skip subsumed entries" check (see below) can rely on it the moment React commits the next batch.
+      lastSuccessfulSaveAtRef.current.set(`${providerId}|${monthKey}`, Date.now())
+      // Clear the error banner since a save just succeeded. Stale failures from minutes ago shouldn't
+      // keep haunting the screen once writes are flowing again.
+      setSaveErrorMessage(null)
       // Patient demographics are owned by `patients` (Patients tab / API), not pushed from provider sheets.
       const freshPatients =
         patientsRef.current.length > 0
           ? patientsRef.current
           : (await fetchPatients()) ?? []
       try {
-        const pendingKey = `provider_sheet_pending_${clinicId}_${providerId}_${selectedMonthKey}`
+        const pendingKey = `provider_sheet_pending_${clinicId}_${providerId}_${monthKey}`
         localStorage.removeItem(pendingKey)
       } catch (_) {}
       // Populate the synchronous id map right after the network response — before any React state update.
@@ -2585,7 +2660,7 @@ export default function ClinicDetail() {
 
       // Merge saved row ids, then apply co-patient demographics to all providers for this month (last-write-wins from DB).
       setProviderSheetRowsByMonth((prev) => {
-        const current = prev[selectedMonthKey] ?? {}
+        const current = prev[monthKey] ?? {}
         const currentRows = current[providerId] || []
         const updatedRows = currentRows.map((row) => {
           const savedRow = savedRowsByOldId.get(row.id) ?? savedRowsByAnyId.get(row.id)
@@ -2664,13 +2739,21 @@ export default function ClinicDetail() {
           }
           nextMonthRows = merged
         }
-        return { ...prev, [selectedMonthKey]: nextMonthRows } as Record<string, Record<string, SheetRow[]>>
+        return { ...prev, [monthKey]: nextMonthRows } as Record<string, Record<string, SheetRow[]>>
       })
       if (freshPatients.length > 0) {
         setProviderRowsVersion((v) => v + 1)
       }
     } catch (error) {
       console.error('[ClinicDetail] saveProviderSheetRows failed: providerId=', providerId, error)
+      // Surface the failure as a top-of-page banner so the user knows their typing didn't persist.
+      // Without this, the optimistic state update at line ~2581 makes the row LOOK saved on screen,
+      // and the data only disappears later when something (her next refresh, a navigation that triggers
+      // a fetch) overwrites the optimistic state with the still-stale DB. That gap between
+      // "looks-saved-but-isn't" and "noticed-it's-gone" is what causes the hours-later data loss
+      // report Jenali keeps making.
+      const detail = error instanceof Error ? error.message : 'Unknown error'
+      setSaveErrorMessage(`Save failed: ${detail}. Your changes are backed up locally; refresh after the issue is fixed to retry.`)
     } finally {
       saveProviderSheetInProgressRef.current.delete(providerId)
       const pending = pendingProviderSheetSaveRef.current[providerId]
@@ -2693,13 +2776,240 @@ export default function ClinicDetail() {
         // Forward queued knownDeletedIds + settle the promises that every queued caller awaits.
         // Propagate the eventual `persisted` boolean so the localStorage restore path can tell whether
         // its replay actually reached the DB (silent guard hits would otherwise look like success).
-        saveProviderSheetRows(providerId, toSave, pendingDeletes)
+        // Pass `pending.monthKey` so the replay targets the queuer's intended month, not whatever month
+        // the user has navigated to since.
+        saveProviderSheetRows(providerId, toSave, pendingDeletes, pending.monthKey)
           .then((persisted) => pending.resolvers.forEach((r) => r.resolve(persisted)))
           .catch((err) => pending.resolvers.forEach((r) => r.reject(err)))
       }
     }
     return didPersist
-  }, [clinicId, userProfile, providerSheets, selectedMonthKey, fetchPatients])
+  }, [clinicId, userProfile, providerSheetsByMonth, selectedMonthKey, fetchPatients])
+
+  /** Drain queued saves whose guard preconditions are now satisfied. Replaces the silent `return false`
+   *  behavior that used to drop early-mount typing on the floor. Runs whenever the dataset that controls
+   *  the guards changes — `providerSheetsByMonth` (sheet entry appearing), `clinicId` / `userProfile`
+   *  (auth becoming ready). Both fetch sites perform `hydratedSheetKeysRef.current.add(...)` and
+   *  `setProviderSheetsByMonth(...)` in the same synchronous task, so by the time React commits the
+   *  state update and this effect fires, the hydration ref is already populated.
+   *
+   *  Critical correctness: we pass the ORIGINAL `monthKey` from the queued entry as the 4th arg, so the
+   *  drained save persists to the month the user was actually typing in — not whatever month is currently
+   *  selected. Without that, navigating away after a deferred queue would re-create the "her June data
+   *  in May" symptom. */
+  useEffect(() => {
+    if (deferredSavesRef.current.size === 0) return
+    if (!clinicId || !userProfile) return
+    const toRetry: DeferredProviderSheetSave[] = []
+    for (const [queueKey, entry] of deferredSavesRef.current) {
+      const sheetsForMonth = providerSheetsByMonth[entry.monthKey] ?? {}
+      const sheet = sheetsForMonth[entry.providerId]
+      if (!sheet) continue
+      const hydrationKey = `${clinicId}|${entry.providerId}|${entry.monthKey}`
+      if (!hydratedSheetKeysRef.current.has(hydrationKey)) continue
+      // Skip if a successful save for the same target has already landed AFTER this entry was queued.
+      // Replaying the older (sparser) snapshot would clobber the newer DB state. The newer save's
+      // payload was a strict superset (built from latestProviderRowsRef which had accumulated the
+      // earlier edits too), so the queued entry is subsumed and safe to drop.
+      const lastSaveAt = lastSuccessfulSaveAtRef.current.get(queueKey) ?? 0
+      if (lastSaveAt > entry.queuedAt) {
+        console.log('[ClinicDetail] dropping subsumed deferred save', { providerId: entry.providerId, monthKey: entry.monthKey, queuedAt: entry.queuedAt, lastSaveAt })
+        deferredSavesRef.current.delete(queueKey)
+        continue
+      }
+      toRetry.push(entry)
+      deferredSavesRef.current.delete(queueKey)
+    }
+    for (const entry of toRetry) {
+      console.log('[ClinicDetail] draining deferred save', { providerId: entry.providerId, monthKey: entry.monthKey, rows: entry.rowsToSave.length, queuedMsAgo: Date.now() - entry.queuedAt })
+      saveProviderSheetRows(entry.providerId, entry.rowsToSave, entry.knownDeletedIds, entry.monthKey)
+        .catch((err) => console.error('[ClinicDetail] deferred save replay failed:', err))
+    }
+  }, [providerSheetsByMonth, clinicId, userProfile, saveProviderSheetRows])
+
+  /** Restore the live sheet to the snapshot identified by `backupId`. Captures the current rows so
+   *  Ctrl+Z (or the dismiss button on the restore toast) can revert. Window is 30 seconds; after
+   *  that the snapshot is dropped — the restore is then permanent. */
+  const handleAutoBackupRestore = useCallback(async (backupId: string) => {
+    if (!providerId) throw new Error('No active provider')
+    const targetMonthKey = selectedMonthKey
+    const backup = await getAutoBackup(backupId)
+    // Snapshot CURRENT rows before applying restore so Ctrl+Z has something to revert to.
+    const currentRowsForProvider =
+      (providerSheetRowsByMonthRef.current[targetMonthKey] ?? {})[providerId] ?? []
+    const expiresAt = Date.now() + 30_000
+    restoreSnapshotRef.current = {
+      providerId,
+      monthKey: targetMonthKey,
+      rows: currentRowsForProvider,
+      restoredAt: Date.now(),
+      expiresAt,
+    }
+    const restoredRows = padSheetRowsTo200(backup.rows as SheetRow[])
+    // Apply restored rows to React state, then save through the existing save path so the DB writes
+    // through all the usual guards (auth, hydration, COALESCE protection). saveProviderSheetRows
+    // does its own optimistic state update, so we don't need to set state ourselves first.
+    await saveProviderSheetRows(providerId, restoredRows, undefined, targetMonthKey)
+    // Bump providerRowsVersion so HOT updateSettings runs with the merged row IDs — without this,
+    // the grid keeps showing the pre-restore data even though state changed.
+    setProviderRowsVersion((v) => v + 1)
+    setRestoreToast({
+      message: `Restored from ${new Date(backup.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}. Press Ctrl+Z to undo (30s).`,
+      expiresAt,
+    })
+    setAutoBackupsRefreshKey((k) => k + 1)
+    // Expire the snapshot + toast after the window passes. Compare against the exact snapshot we
+    // just set so a newer restore (overlapping windows) doesn't get its timer prematurely cleared.
+    setTimeout(() => {
+      const snap = restoreSnapshotRef.current
+      if (snap && snap.expiresAt === expiresAt) restoreSnapshotRef.current = null
+      setRestoreToast((t) => (t && t.expiresAt === expiresAt ? null : t))
+    }, 30_000)
+  }, [providerId, selectedMonthKey, saveProviderSheetRows])
+
+  /** Revert the most recent restore (Ctrl+Z or toast dismiss) by re-applying the snapshot we kept. */
+  const handleUndoLastRestore = useCallback(async () => {
+    const snap = restoreSnapshotRef.current
+    if (!snap) return
+    restoreSnapshotRef.current = null
+    setRestoreToast(null)
+    if (!snap.rows.length) return
+    try {
+      await saveProviderSheetRows(snap.providerId, snap.rows, undefined, snap.monthKey)
+      setProviderRowsVersion((v) => v + 1)
+    } catch (e) {
+      console.error('[auto-backup] undo restore failed:', e)
+    }
+  }, [saveProviderSheetRows])
+
+  /** Bumped when auto-backups list needs to refresh (e.g. after a manual trigger, after restore). */
+  const [autoBackupsRefreshKey, setAutoBackupsRefreshKey] = useState(0)
+
+  // Capture-phase Ctrl+Z handler that ONLY consumes the keypress if a restore snapshot is currently
+  // open (within the 30s window). For any other state — including normal cell editing — the handler
+  // is a no-op and HOT's existing undo handler runs as usual.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!restoreSnapshotRef.current) return
+      const isCtrlZ = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')
+      if (!isCtrlZ) return
+      e.preventDefault()
+      e.stopPropagation()
+      void handleUndoLastRestore()
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
+  }, [handleUndoLastRestore])
+
+  /** Fire-and-forget snapshot of the active Billing sheet's rows to the auto-backups table.
+   *
+   *  Called from the four tab-leave-shaped triggers: tab change, provider switch, month switch, and
+   *  the unmount cleanup that fires when the user navigates away from the route entirely. The
+   *  60-second cooldown per sheet keeps a rapid sequence (Billing → Patients → Billing → Patients
+   *  → Billing) from creating four near-identical snapshots.
+   *
+   *  Errors are swallowed: this is a safety net, not a primary write path. If the auto-backup POST
+   *  fails, the user's actual save is still going through the live `saveProviderSheetRows` path
+   *  (and now surfaces failures via the saveErrorMessage banner). We log to console only.
+   *
+   *  Only fires when the labeled "Billing" tab (activeTab === 'providers') is the source. Other tabs
+   *  do not auto-backup yet — see the design doc / chat history; we shipped Billing-only by choice. */
+  const triggerAutoBackup = useCallback(async () => {
+    if (activeTab !== 'providers') return
+    if (!currentSheet?.id) return
+    const sheetId = currentSheet.id
+    // 60-second cooldown.
+    const lastAt = lastAutoBackupAtRef.current.get(sheetId) ?? 0
+    if (Date.now() - lastAt < 60_000) return
+    // Use the latest rows in state for the active provider + monthKey. If state is empty (sheet
+    // hasn't hydrated yet), there's nothing meaningful to back up — skip.
+    const targetProviderId = providerId
+    if (!targetProviderId) return
+    const rows = providerSheetRowsByMonthRef.current[selectedMonthKey]?.[targetProviderId]
+    if (!rows || rows.length === 0) return
+    // Drop empty-* placeholder rows — they're padding, not data. The server's `rowHasData` filter
+    // would do this anyway; we strip on the client to keep the payload small.
+    const meaningfulRows = rows.filter((r) =>
+      !r.id.startsWith('empty-') ||
+      !!(r.patient_id || r.appointment_date || r.cpt_code || r.appointment_status || r.claim_status ||
+         r.submit_date || r.insurance_payment || r.payment_date || r.insurance_adjustment ||
+         r.collected_from_patient || r.patient_pay_status || r.ar_date || r.total !== null || r.notes),
+    )
+    if (meaningfulRows.length === 0) return
+    lastAutoBackupAtRef.current.set(sheetId, Date.now())
+    try {
+      await createAutoBackup(sheetId, meaningfulRows)
+    } catch (e) {
+      // Swallow — the banner from the primary save is the user-facing failure signal.
+      console.warn('[auto-backup] tab-leave snapshot failed:', e)
+    }
+  }, [activeTab, currentSheet, providerId, selectedMonthKey])
+
+  /** Stable ref to the latest triggerAutoBackup so callers from places without it in scope (like the
+   *  unmount cleanup useEffect that has no dependency on `triggerAutoBackup`) still fire the most
+   *  recent version of the function. */
+  const triggerAutoBackupRef = useRef(triggerAutoBackup)
+  useEffect(() => { triggerAutoBackupRef.current = triggerAutoBackup }, [triggerAutoBackup])
+
+  // Fire an auto-backup when the user navigates away from the Billing route entirely (sidebar click,
+  // browser back, URL change to a non-clinic page). The cleanup runs on unmount of ClinicDetail; by
+  // that point, the saved-rows state is still in memory (refs survive long enough to read), so the
+  // snapshot is the user's intent at the moment of leaving.
+  useEffect(() => {
+    return () => {
+      void triggerAutoBackupRef.current()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: unmount-only fire-and-forget
+  }, [])
+
+  // Fire an auto-backup when the active provider changes within the same ClinicDetail instance.
+  // (Different from the unmount path: this fires on URL `/providers/:providerId` changes while the
+  // component stays mounted via React Router. Captures the OLD providerId via a ref-tracked prev.)
+  const prevProviderIdForBackupRef = useRef<string | null | undefined>(providerId)
+  useEffect(() => {
+    if (prevProviderIdForBackupRef.current && prevProviderIdForBackupRef.current !== providerId) {
+      void triggerAutoBackupRef.current()
+    }
+    prevProviderIdForBackupRef.current = providerId
+  }, [providerId])
+
+  // Fire an auto-backup when the selected month changes. The flush-before-month-change callback at
+  // the JSX site already guarantees pending saves are committed first, so by the time React commits
+  // the new selectedMonth the rows in state reflect everything the user typed.
+  const prevMonthKeyForBackupRef = useRef<string>(selectedMonthKey)
+  useEffect(() => {
+    if (prevMonthKeyForBackupRef.current && prevMonthKeyForBackupRef.current !== selectedMonthKey) {
+      // We need to back up the OLD month's rows. Read them directly from the ref keyed by the prev
+      // monthKey so the trigger doesn't accidentally snapshot the new month (which is what the
+      // triggerAutoBackup closure would do since it reads selectedMonthKey).
+      const prevMonthKey = prevMonthKeyForBackupRef.current
+      ;(async () => {
+        if (activeTab !== 'providers') return
+        if (!providerId) return
+        const cacheForPrev = providerSheetRowsByMonthRef.current[prevMonthKey]?.[providerId]
+        if (!cacheForPrev || cacheForPrev.length === 0) return
+        // Use the sheet id for the OLD month, not the current sheet.
+        const sheetForPrev = providerSheetsByMonth[prevMonthKey]?.[providerId]
+        if (!sheetForPrev?.id) return
+        const lastAt = lastAutoBackupAtRef.current.get(sheetForPrev.id) ?? 0
+        if (Date.now() - lastAt < 60_000) return
+        const meaningfulRows = cacheForPrev.filter((r) =>
+          !r.id.startsWith('empty-') ||
+          !!(r.patient_id || r.appointment_date || r.cpt_code || r.appointment_status || r.claim_status ||
+             r.submit_date || r.insurance_payment || r.payment_date || r.insurance_adjustment ||
+             r.collected_from_patient || r.patient_pay_status || r.ar_date || r.total !== null || r.notes),
+        )
+        if (meaningfulRows.length === 0) return
+        lastAutoBackupAtRef.current.set(sheetForPrev.id, Date.now())
+        try {
+          await createAutoBackup(sheetForPrev.id, meaningfulRows)
+        } catch (e) {
+          console.warn('[auto-backup] month-change snapshot failed:', e)
+        }
+      })()
+    }
+    prevMonthKeyForBackupRef.current = selectedMonthKey
+  }, [selectedMonthKey, activeTab, providerId, providerSheetsByMonth])
 
   // Restore provider sheet rows from localStorage after refresh (browser aborts in-flight save; data
   // was backed up on unload). Two staleness guards prevent clobbering valid DB data:
@@ -3316,6 +3626,9 @@ export default function ClinicDetail() {
         // Do not setLoading(true) here: pageReady is !loading, so a full-page spinner would unmount the
         // tab being flushed and destroy Handsontable before finishEditing + save (especially AR).
         flushBeforeTabLeave().then(() => {
+          // After the pending save commits, snapshot the Billing sheet so it's recoverable later.
+          // No-op if activeTab isn't Billing or if we backed up within the last 60s.
+          void triggerAutoBackupRef.current()
           setActiveTab(tab)
           const scopePid = providerId ?? getLastSelectedProviderId()
           const path =
@@ -3655,7 +3968,21 @@ export default function ClinicDetail() {
             : providerSheetRows
         const canEditProviders = canEdit && !backupOverrideRows
         const currentSheetForBackup = providerId ? providerSheets[providerId] : null
-        const providersBackupBar = userProfile?.role === 'super_admin' && currentSheetForBackup?.id ? (
+        // Auto-backups bar visible to anyone with edit access on this sheet (super admin + office
+        // staff). Hidden when actively viewing a cron backup version, since restoring an auto-backup
+        // while viewing a different historical version would be confusing — exit backup view first.
+        const showAutoBackupsBar =
+          !backupOverrideRows &&
+          !!currentSheetForBackup?.id &&
+          (userProfile?.role === 'super_admin' || userProfile?.role === 'office_staff')
+        const autoBackupsBarEl = showAutoBackupsBar ? (
+          <AutoBackupsBar
+            sheetId={currentSheetForBackup?.id ?? null}
+            onRestore={handleAutoBackupRestore}
+            refreshKey={autoBackupsRefreshKey}
+          />
+        ) : null
+        const cronBackupsBarEl = userProfile?.role === 'super_admin' && currentSheetForBackup?.id ? (
           <BackupVersionsBar
             backupType="providers"
             display="button-only"
@@ -3727,10 +4054,17 @@ export default function ClinicDetail() {
             </button>
           </div>
         ) : null
+        // Combine the two bars into one slot so they sit side-by-side to the right of the title pill.
+        const combinedBackupBars = (autoBackupsBarEl || cronBackupsBarEl) ? (
+          <div className="inline-flex items-center gap-2">
+            {autoBackupsBarEl}
+            {cronBackupsBarEl}
+          </div>
+        ) : null
         return (
           <>
             <ProvidersTab
-              labelRightSlot={providersBackupBar}
+              labelRightSlot={combinedBackupBars}
               belowTitleSlot={providersBackupViewingIndicator}
               key={selectedMonthKey}
               clinicId={clinicId}
@@ -4094,6 +4428,48 @@ export default function ClinicDetail() {
 
   return (
     <div>
+      {saveErrorMessage && (
+        <div
+          role="alert"
+          className="mb-4 rounded-lg border border-red-400 bg-red-500/15 px-4 py-3 text-red-100 text-sm flex items-start justify-between gap-3"
+        >
+          <span className="flex-1">{saveErrorMessage}</span>
+          <button
+            type="button"
+            onClick={() => setSaveErrorMessage(null)}
+            className="px-2 py-0.5 text-xs rounded bg-red-500/40 hover:bg-red-500/60 text-white"
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {restoreToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="mb-4 rounded-lg border border-amber-400 bg-amber-500/15 px-4 py-3 text-amber-100 text-sm flex items-start justify-between gap-3"
+        >
+          <span className="flex-1">{restoreToast.message}</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => { void handleUndoLastRestore() }}
+              className="px-2 py-0.5 text-xs rounded bg-amber-500/40 hover:bg-amber-500/60 text-white"
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              onClick={() => { restoreSnapshotRef.current = null; setRestoreToast(null) }}
+              className="px-2 py-0.5 text-xs rounded bg-white/10 hover:bg-white/20 text-white"
+              aria-label="Dismiss"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-white mb-2">{clinicPageTitle}</h1>

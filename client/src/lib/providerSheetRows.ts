@@ -348,11 +348,15 @@ export async function saveSheetRows(
 ): Promise<SheetRow[]> {
   const context = await resolveSaveContext(db, sheetId, saveContext)
   if (context && getAuthToken()) {
-    try {
-      return await saveSheetRowsViaApi(rows, context, knownDeletedIds)
-    } catch (err) {
-      console.warn('[saveSheetRows] API save failed, falling back to direct DB (invoice totals may be stale):', err)
-    }
+    // When authenticated, the API endpoint is the only sanctioned write path — it carries the
+    // server-side write guard that protects appointment_date / claim_status / submit_date from being
+    // nulled by a stale-snapshot payload (see serviceRoutes.saveProviderSheetRowsCore). The previous
+    // try/catch swallowed API failures and silently fell back to the direct DB write, which (a) wrote
+    // every column including nulls and (b) hid the failure from the user's error banner. That's the
+    // path that caused Jenali's "data was there, then gone hours later" loss: an API hiccup → silent
+    // direct-DB fallback → nulls written → optimistic UI hides the loss → later fetch reveals the gap.
+    // Re-throw so the caller's catch surfaces the error.
+    return await saveSheetRowsViaApi(rows, context, knownDeletedIds)
   }
   return saveSheetRowsDirectDb(db, sheetId, rows, knownDeletedIds)
 }
