@@ -143,11 +143,9 @@ export default function Timecards() {
     if (!selectedClinic || !user) return
 
     const now = new Date()
-    // Calculate week start date (Monday of current week)
+    // Week is Sunday–Saturday: subtract getDay() (Sun=0 … Sat=6) from the date to get the Sunday.
     const weekStart = new Date(now)
-    const day = weekStart.getDay()
-    const diff = weekStart.getDate() - day + (day === 0 ? -6 : 1) // Adjust when day is Sunday
-    weekStart.setDate(diff)
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay())
     weekStart.setHours(0, 0, 0, 0)
 
     const { data, error } = await apiClient
@@ -199,11 +197,9 @@ export default function Timecards() {
     const clockInTime = new Date(formData.clock_in)
     const hours = (clockOutTime.getTime() - clockInTime.getTime()) / (1000 * 60 * 60)
 
-    // Calculate week start date (Monday of the week containing clock_in)
+    // Sunday-based week start.
     const weekStart = new Date(clockInTime)
-    const day = weekStart.getDay()
-    const diff = weekStart.getDate() - day + (day === 0 ? -6 : 1) // Adjust when day is Sunday
-    weekStart.setDate(diff)
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay())
     weekStart.setHours(0, 0, 0, 0)
 
     const { error } = await apiClient.from('timecards').insert({
@@ -248,9 +244,7 @@ export default function Timecards() {
     const clockOutTime = new Date(editForm.clock_out)
     const hours = (clockOutTime.getTime() - clockInTime.getTime()) / (1000 * 60 * 60)
     const weekStart = new Date(clockInTime)
-    const day = weekStart.getDay()
-    const diff = weekStart.getDate() - day + (day === 0 ? -6 : 1)
-    weekStart.setDate(diff)
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay())
     weekStart.setHours(0, 0, 0, 0)
     const { error } = await apiClient
       .from('timecards')
@@ -327,15 +321,21 @@ export default function Timecards() {
     .filter((tc) => asHours(tc.hours) > 0)
     .reduce((sum, tc) => sum + asHours(tc.hours), 0)
 
+  // Always compute a Sunday-based week from `clock_in` and return `YYYY-MM-DD`.
+  // We deliberately ignore `tc.week_start_date` for grouping/display: rows persisted before the
+  // switch from Monday-based to Sunday-based weeks would otherwise show a stale Monday date, and
+  // some legacy rows have a full ISO timestamp in that column which broke `formatWeekRange` with
+  // "Invalid Date". Recomputing keeps display consistent regardless of what was stored.
   const getWeekStart = (tc: Timecard): string => {
-    if (tc.week_start_date) return tc.week_start_date
     const d = new Date(tc.clock_in)
-    const day = d.getDay()
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1)
+    if (Number.isNaN(d.getTime())) return ''
     const weekStart = new Date(d)
-    weekStart.setDate(diff)
+    weekStart.setDate(d.getDate() - d.getDay())
     weekStart.setHours(0, 0, 0, 0)
-    return weekStart.toISOString().split('T')[0]
+    const y = weekStart.getFullYear()
+    const m = String(weekStart.getMonth() + 1).padStart(2, '0')
+    const day = String(weekStart.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
   }
   // Group by week: each week's total = sum of (clock_out - clock_in) for every entry in that week
   const hoursByWeek = timecards
@@ -406,7 +406,11 @@ export default function Timecards() {
   })()
 
   const formatWeekRange = (weekStart: string) => {
-    const weekStartDate = new Date(weekStart + 'T00:00:00')
+    // Accept either `YYYY-MM-DD` or a full ISO timestamp; grab the calendar date part so we don't
+    // produce `Invalid Date` when a legacy row stored a timestamp in `week_start_date`.
+    const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(weekStart ?? '')
+    if (!ymd) return ''
+    const weekStartDate = new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]))
     const weekEnd = new Date(weekStartDate)
     weekEnd.setDate(weekEnd.getDate() + 6)
     return weekStartDate.getMonth() === weekEnd.getMonth()
@@ -688,12 +692,7 @@ export default function Timecards() {
                 </tr>
               ) : (
                 weekEntries.map(({ date, hours }) => {
-                  const weekStart = new Date(date + 'T00:00:00')
-                  const weekEnd = new Date(weekStart)
-                  weekEnd.setDate(weekEnd.getDate() + 6)
-                  const dateRange = weekStart.getMonth() === weekEnd.getMonth()
-                    ? `${weekStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}-${weekEnd.getDate()}, ${weekEnd.getFullYear()}`
-                    : `${weekStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${weekEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
+                  const dateRange = formatWeekRange(date)
                   return (
                     <tr key={date}>
                       <td style={{ whiteSpace: 'nowrap' }} className="text-white/90">{dateRange}</td>

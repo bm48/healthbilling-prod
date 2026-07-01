@@ -84,34 +84,49 @@ export function toDisplayDate(value: string | null | undefined): string {
 
 /**
  * Format raw input as MM-DD-YY while typing.
- * - If the user types a separator (`/`, `-`, `.`, or space), preserve their segments verbatim and
- *   just normalize the separator to `-`. This is how "6/9/25" stays readable instead of being
- *   stripped to "6925" and reflowed into "69-25".
- * - If the user types only digits, auto-insert dashes positionally: "03" → "03", "031" → "03-1",
- *   "031125" → "03-11-25". An 8-digit blob (YYYYMMDD) is treated as YYYY-MM-DD and emitted as
- *   MM-DD-YY.
+ * - Separators (`/`, `-`, `.`, space) are treated as segment hints so "6/9/25" stays "6-9-25"
+ *   instead of collapsing to "69-25". But once a segment overflows its cap (2 digits for MM/DD,
+ *   4 for YYYY), the extra digits spill into the next segment — otherwise typing "060925"
+ *   without dashes would stall at "06-09" and silently drop DD/YY.
+ * - Pure digit input auto-positions: "060925" → "06-09-25". An 8-digit blob is YYYYMMDD.
  */
 export function formatDateOfServiceAsYouType(input: string | null | undefined): string {
   if (input == null) return ''
   const raw = String(input)
   if (raw.length === 0) return ''
-  if (/[\/\-.\s]/.test(raw)) {
-    const segments = raw.split(/[\/\-.\s]+/).slice(0, 3)
-    return segments
-      .map((seg, idx) => seg.replace(/\D/g, '').slice(0, idx === 2 ? 4 : 2))
-      .join('-')
-  }
-  const digits = raw.replace(/\D/g, '')
-  if (digits.length === 0) return ''
-  let mm: string, dd: string, yy: string
-  if (digits.length >= 8) {
-    mm = digits.slice(2, 4)
-    dd = digits.slice(4, 6)
-    yy = digits.slice(6, 8)
+  const hasSeparator = /[\/\-.\s]/.test(raw)
+  let mm: string
+  let dd: string
+  let yy: string
+  if (hasSeparator) {
+    const segs = raw.split(/[\/\-.\s]+/).map((s) => s.replace(/\D/g, ''))
+    const s0 = segs[0] ?? ''
+    const s1 = segs[1] ?? ''
+    const s2 = segs[2] ?? ''
+    mm = s0.slice(0, 2)
+    const ddPool = s0.slice(2) + s1
+    dd = ddPool.slice(0, 2)
+    yy = (ddPool.slice(2) + s2).slice(0, 4)
+    // Preserve user-typed separator positions so "6/" renders as "6-" (cursor cue) and
+    // "6/9/" renders as "6-9-", matching what the old separator branch produced.
+    const typedSegs = Math.min(segs.length, 3)
+    const parts: string[] = [mm]
+    if (typedSegs >= 2 || dd.length) parts.push(dd)
+    if (typedSegs >= 3 || yy.length) parts.push(yy)
+    return parts.join('-')
   } else {
-    mm = digits.slice(0, 2)
-    dd = digits.slice(2, 4)
-    yy = digits.slice(4, 6)
+    const digits = raw.replace(/\D/g, '')
+    if (digits.length === 0) return ''
+    if (digits.length >= 8) {
+      // YYYYMMDD → emit MM-DD-YY (mm at index 4, dd at 6, yy from last two of year)
+      mm = digits.slice(4, 6)
+      dd = digits.slice(6, 8)
+      yy = digits.slice(2, 4)
+    } else {
+      mm = digits.slice(0, 2)
+      dd = digits.slice(2, 4)
+      yy = digits.slice(4, 6)
+    }
   }
   const parts: string[] = [mm]
   if (dd.length) parts.push(dd)

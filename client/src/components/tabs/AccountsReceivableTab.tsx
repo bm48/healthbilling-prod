@@ -64,7 +64,10 @@ type LastSavedARSnapshot = {
 function coerceARAmount(amount: AccountsReceivable['amount']): number | null {
   if (amount == null || (amount as unknown) === 'null') return null
   if (typeof amount === 'number') return Number.isNaN(amount) ? null : amount
-  const n = parseFloat(String(amount))
+  // Strip $, thousands commas, and whitespace so "$1,234.56" parses like "1234.56".
+  const s = String(amount).replace(/[$,\s]/g, '')
+  if (s === '') return null
+  const n = parseFloat(s)
   return Number.isNaN(n) ? null : n
 }
 
@@ -180,12 +183,7 @@ function mergeARFromGridRow(
   const name = toStoredString(String(row[1] ?? ''))
   const date_of_service =
     row[2] === '' || row[2] == null || row[2] === 'null' ? null : parseDateOfServiceInput(String(row[2]))
-  const amount =
-    row[3] === '' || row[3] == null || row[3] === 'null'
-      ? null
-      : typeof row[3] === 'number'
-        ? row[3]
-        : parseFloat(String(row[3])) || null
+  const amount = coerceARAmount(row[3] as AccountsReceivable['amount'])
   const date_recorded =
     row[4] === '' || row[4] == null || row[4] === 'null' ? null : parseDateOfServiceInput(String(row[4]))
   const typeStr = toStoredString(String(row[5] ?? ''))
@@ -1547,7 +1545,7 @@ export default function AccountsReceivableTab({
       }
 
       if (field === 'amount') {
-        const numValue = (newValue === '' || newValue === null || newValue === 'null') ? null : (typeof newValue === 'number' ? newValue : parseFloat(String(newValue)) || null)
+        const numValue = coerceARAmount(newValue as AccountsReceivable['amount'])
         updatedDisplayed[phys] = applySheetPeriodToRow({
           ...ar,
           id: newId,
@@ -1576,7 +1574,13 @@ export default function AccountsReceivableTab({
           updated_at: new Date().toISOString(),
         } as AccountsReceivable)
       } else if (field === 'ar_id') {
-        const raw = (newValue === '' || newValue === 'null') ? '' : String(newValue).trim()
+        // Handsontable sends `null` when the user presses Delete / Backspace-to-empty on a cell —
+        // without this branch the value gets coerced to the string 'null', and the cascade below
+        // that clears Name when ID is empty never fires.
+        const raw =
+          newValue === '' || newValue === null || newValue === 'null'
+            ? ''
+            : String(newValue).trim()
         const idPart = raw ? (raw.split(' - ')[0]?.trim() || raw) : ''
         const value = idPart
 

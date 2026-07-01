@@ -933,9 +933,16 @@ export default function ProviderPayTab({
     )
   }
 
-  const dateInputClass = (empty: boolean) =>
-    `bg-transparent border border-white/30 rounded outline-none text-inherit [color-scheme:dark] ${
-      empty ? 'provider-pay-date-empty' : ''
+  // Border and color-scheme derive from the header's readable text color so empty date inputs
+  // stay visible on both dark and light month backgrounds. Previously the CSS forced a transparent
+  // placeholder + white/30 border, which made the boxes invisible on light-colored month headers
+  // ("Provider Pay - boxes should have blank text instead of white and you can't see the box/text
+  // until after it's typed in").
+  const isDarkHeaderText = headerStyle.textColor === '#ffffff'
+  const dateInputBorderColor = isDarkHeaderText ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.4)'
+  const dateInputClass = (_empty: boolean) =>
+    `bg-transparent border rounded outline-none text-inherit ${
+      isDarkHeaderText ? '[color-scheme:dark]' : '[color-scheme:light]'
     } ${
       isCompactLayout
         ? 'w-full min-w-0 max-w-full box-border px-2 py-1 text-sm'
@@ -1060,7 +1067,7 @@ export default function ProviderPayTab({
             className={`${dateInputClass(!payDate)} ${
               isCompactLayout ? 'w-[6.25rem] px-0.5 py-0 text-xs shrink-0' : 'w-[12rem] px-2 py-1'
             }`}
-            style={{ color: headerStyle.textColor }}
+            style={{ color: headerStyle.textColor, borderColor: dateInputBorderColor }}
           />
         </div>
         {isCompactLayout ? (
@@ -1076,7 +1083,7 @@ export default function ProviderPayTab({
               onChange={(e) => setPayPeriodFrom(e.target.value)}
               disabled={!effectiveCanEdit}
               className={`${dateInputClass(!payPeriodFrom)} w-[6.25rem] px-0.5 py-0 text-xs shrink-0`}
-              style={{ color: headerStyle.textColor }}
+              style={{ color: headerStyle.textColor, borderColor: dateInputBorderColor }}
             />
             <label className="text-xs font-medium opacity-90 shrink-0">To</label>
             <input
@@ -1085,7 +1092,7 @@ export default function ProviderPayTab({
               onChange={(e) => setPayPeriodTo(e.target.value)}
               disabled={!effectiveCanEdit}
               className={`${dateInputClass(!payPeriodTo)} w-[6.25rem] px-0.5 py-0 text-xs shrink-0`}
-              style={{ color: headerStyle.textColor }}
+              style={{ color: headerStyle.textColor, borderColor: dateInputBorderColor }}
             />
           </div>
         ) : (
@@ -1099,7 +1106,7 @@ export default function ProviderPayTab({
                 onChange={(e) => setPayPeriodFrom(e.target.value)}
                 disabled={!effectiveCanEdit}
                 className={`w-[8.5rem] ${dateInputClass(!payPeriodFrom)} px-1.5 py-1`}
-                style={{ color: headerStyle.textColor }}
+                style={{ color: headerStyle.textColor, borderColor: dateInputBorderColor }}
               />
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
@@ -1110,7 +1117,7 @@ export default function ProviderPayTab({
                 onChange={(e) => setPayPeriodTo(e.target.value)}
                 disabled={!effectiveCanEdit}
                 className={`w-[8.5rem] ${dateInputClass(!payPeriodTo)} px-1.5 py-1`}
-                style={{ color: headerStyle.textColor }}
+                style={{ color: headerStyle.textColor, borderColor: dateInputBorderColor }}
               />
             </div>
           </div>
@@ -1182,14 +1189,6 @@ export default function ProviderPayTab({
         }
         .provider-pay-table .htCore td {
           border-color: rgba(0,0,0,0.2);
-        }
-        /* Hide browser date format placeholder when value is empty */
-        .provider-pay-date-empty::-webkit-datetime-edit,
-        .provider-pay-date-empty::-webkit-datetime-edit-fields-wrapper {
-          color: transparent;
-        }
-        .provider-pay-date-empty::-moz-placeholder {
-          color: transparent;
         }
       `}</style>
 
