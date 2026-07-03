@@ -3,7 +3,8 @@ import { apiClient } from '@/lib/apiClient'
 import { Timecard, User } from '@/types'
 import type { Clinic } from '@/types'
 import { useAuth } from '@/contexts/AuthContext'
-import { Lock, LogIn, LogOut, Pencil, Plus, Trash2, Unlock } from 'lucide-react'
+import { Lock, LogIn, LogOut, Pencil, Plus, Printer, Trash2, Unlock } from 'lucide-react'
+import { generateTimecardPaystubPdf, paystubFilename, type TimecardPaystubEntry } from '@/lib/timecardPaystubPdf'
 
 export default function Timecards() {
   const { user, userProfile } = useAuth()
@@ -34,6 +35,14 @@ export default function Timecards() {
   const [clinicsMap, setClinicsMap] = useState<Record<string, string>>({})
   const [editingTimecard, setEditingTimecard] = useState<Timecard | null>(null)
   const [editForm, setEditForm] = useState({ clock_in: '', clock_out: '', notes: '' })
+  const [paystubTarget, setPaystubTarget] = useState<{
+    userId: string
+    weekStart: string
+  } | null>(null)
+  const [paystubForm, setPaystubForm] = useState<{
+    frequency: 'weekly' | 'biweekly'
+    payDate: string
+  }>({ frequency: 'weekly', payDate: '' })
 
   useEffect(() => {
     if (user && userProfile) {
@@ -418,6 +427,124 @@ export default function Timecards() {
       : `${weekStartDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${weekEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
   }
 
+  // Open the paystub modal for a given staff week (admin flow) or the current user's own week
+  // (self-serve flow). Defaults the pay date to today, which matches how most clients cut checks.
+  const openPaystubModal = (userId: string, weekStart: string) => {
+    const today = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    setPaystubTarget({ userId, weekStart })
+    setPaystubForm({
+      frequency: 'weekly',
+      payDate: `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`,
+    })
+  }
+
+  // Build the paystub PDF from the target staff week + user's hourly rate. For biweekly we merge
+  // the target week with the week immediately before it (same user); each day still shows its own
+  // hours row so the employee can see the breakdown.
+  const generatePaystubForTarget = () => {
+    if (!paystubTarget) return
+    const target = paystubTarget
+    // Assemble the pool of timecards this user has. For self-serve, `staffTimecards` will be empty
+    // so we fall back to the personal `timecards` array.
+    const pool = canManageTimecards ? staffTimecards : timecards
+    const userTimecards = pool.filter((tc) => tc.user_id === target.userId && asHours(tc.hours) > 0)
+    if (userTimecards.length === 0) {
+      alert('No hours recorded for this employee.')
+      return
+    }
+
+    const employee: User | null =
+      staffUserById[target.userId] ??
+      (userProfile && userProfile.id === target.userId ? userProfile : null)
+    if (!employee) {
+      alert('Employee record not found.')
+      return
+    }
+    const hourlyRate =
+      typeof employee.hourly_pay === 'number' && Number.isFinite(employee.hourly_pay)
+        ? employee.hourly_pay
+        : 0
+
+    // Weeks to include (Sunday-based). Biweekly bundles the target week + the preceding week.
+    const weekStarts: string[] = [target.weekStart]
+    if (paystubForm.frequency === 'biweekly') {
+      const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(target.weekStart)
+      if (ymd) {
+        const prev = new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]))
+        prev.setDate(prev.getDate() - 7)
+        const y = prev.getFullYear()
+        const m = String(prev.getMonth() + 1).padStart(2, '0')
+        const d = String(prev.getDate()).padStart(2, '0')
+        weekStarts.unshift(`${y}-${m}-${d}`)
+      }
+    }
+
+    // Group the user's timecards by calendar day within the selected weeks.
+    const perDayHours = new Map<string, number>()
+    for (const tc of userTimecards) {
+      const wk = getWeekStart(tc)
+      if (!weekStarts.includes(wk)) continue
+      const dt = new Date(tc.clock_in)
+      if (Number.isNaN(dt.getTime())) continue
+      const y = dt.getFullYear()
+      const m = String(dt.getMonth() + 1).padStart(2, '0')
+      const d = String(dt.getDate()).padStart(2, '0')
+      const key = `${y}-${m}-${d}`
+      perDayHours.set(key, (perDayHours.get(key) ?? 0) + asHours(tc.hours))
+    }
+    const days = [...perDayHours.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, hours]) => ({ date, hours }))
+    const totalHours = days.reduce((s, d) => s + d.hours, 0)
+
+    // Pay period label spans the first covered week's Sunday through the target week's Saturday.
+    const firstWeek = weekStarts[0]
+    const firstYmd = /^(\d{4})-(\d{2})-(\d{2})/.exec(firstWeek)
+    const targetYmd = /^(\d{4})-(\d{2})-(\d{2})/.exec(target.weekStart)
+    let payPeriodLabel = formatWeekRange(target.weekStart)
+    if (firstYmd && targetYmd) {
+      const start = new Date(Number(firstYmd[1]), Number(firstYmd[2]) - 1, Number(firstYmd[3]))
+      const end = new Date(Number(targetYmd[1]), Number(targetYmd[2]) - 1, Number(targetYmd[3]))
+      end.setDate(end.getDate() + 6)
+      payPeriodLabel = start.getFullYear() === end.getFullYear()
+        ? `${start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${end.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
+        : `${start.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} – ${end.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
+    }
+
+    // Pay date input is `YYYY-MM-DD`; format for the PDF header.
+    const payDateLabel = (() => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(paystubForm.payDate)
+      if (!m) return new Date().toLocaleDateString()
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+      return d.toLocaleDateString()
+    })()
+
+    // Clinic block: pick the user's first clinic name as a header line.
+    const clinicName = employee.clinic_ids?.[0] ? clinicsMap[employee.clinic_ids[0]] ?? null : null
+
+    const entry: TimecardPaystubEntry = {
+      employee_name: employee.full_name?.trim() || employee.email || 'Employee',
+      employee_id: null,
+      clinic_name: clinicName,
+      clinic_address: null,
+      clinic_phone: null,
+      frequency: paystubForm.frequency,
+      pay_period_label: payPeriodLabel,
+      pay_date: payDateLabel,
+      days,
+      total_hours: totalHours,
+      hourly_rate: hourlyRate,
+      ytd_hours: null,
+      ytd_pay: null,
+      accent_color: null,
+      notes: null,
+    }
+    const doc = generateTimecardPaystubPdf(entry)
+    doc.save(paystubFilename(entry))
+    setPaystubTarget(null)
+  }
+
   return (
     <div>
       <div className="mb-6">
@@ -637,12 +764,13 @@ export default function Timecards() {
                     <th>Week</th>
                     <th>Dates worked</th>
                     <th>Hours</th>
-                    <th className="w-12">Actions</th>
+                    <th className="w-24">Actions</th>
                   </>
                 ) : (
                   <>
                     <th>Week</th>
                     <th>Hours</th>
+                    <th className="w-16">Paystub</th>
                   </>
                 )}
               </tr>
@@ -670,15 +798,25 @@ export default function Timecards() {
                         <td className="text-white/80">{row.datesWorked}</td>
                         <td style={{ fontWeight: 500 }} className="text-white">{row.totalHours.toFixed(2)} hrs</td>
                         <td>
-                          <button
-                            type="button"
-                            onClick={() => !hasLocked && handleDeleteWeeklyRow(row)}
-                            disabled={hasLocked}
-                            className="p-1.5 text-white/70 hover:text-red-400 hover:bg-white/10 rounded disabled:opacity-40 disabled:pointer-events-none"
-                            title={hasLocked ? 'Week has locked entries' : 'Delete all entries for this week'}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openPaystubModal(row.userId, row.weekStart)}
+                              className="p-1.5 text-white/70 hover:text-white hover:bg-white/10 rounded"
+                              title="Print paystub for this week"
+                            >
+                              <Printer className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => !hasLocked && handleDeleteWeeklyRow(row)}
+                              disabled={hasLocked}
+                              className="p-1.5 text-white/70 hover:text-red-400 hover:bg-white/10 rounded disabled:opacity-40 disabled:pointer-events-none"
+                              title={hasLocked ? 'Week has locked entries' : 'Delete all entries for this week'}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     )
@@ -686,7 +824,7 @@ export default function Timecards() {
                 )
               ) : weekEntries.length === 0 ? (
                 <tr>
-                  <td colSpan={2} className="text-white/60 text-center py-6">
+                  <td colSpan={3} className="text-white/60 text-center py-6">
                     No hours recorded yet.
                   </td>
                 </tr>
@@ -697,6 +835,16 @@ export default function Timecards() {
                     <tr key={date}>
                       <td style={{ whiteSpace: 'nowrap' }} className="text-white/90">{dateRange}</td>
                       <td style={{ fontWeight: 500 }} className="text-white">{hours.toFixed(2)} hrs</td>
+                      <td>
+                        <button
+                          type="button"
+                          onClick={() => user && openPaystubModal(user.id, date)}
+                          className="p-1.5 text-white/70 hover:text-white hover:bg-white/10 rounded"
+                          title="Print paystub for this week"
+                        >
+                          <Printer className="w-4 h-4" />
+                        </button>
+                      </td>
                     </tr>
                   )
                 })
@@ -810,6 +958,73 @@ export default function Timecards() {
                 className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
               >
                 Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {paystubTarget && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-slate-800/95 backdrop-blur-md rounded-lg p-6 w-full max-w-md border border-white/20">
+            <h2 className="text-xl font-bold text-white mb-2">Print Paystub</h2>
+            <p className="text-white/70 text-sm mb-4">
+              {(() => {
+                const emp: User | null =
+                  staffUserById[paystubTarget.userId] ??
+                  (userProfile && userProfile.id === paystubTarget.userId ? userProfile : null)
+                const name = emp?.full_name?.trim() || emp?.email || paystubTarget.userId
+                return `${name} — Week of ${formatWeekRange(paystubTarget.weekStart)}`
+              })()}
+            </p>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-white/90 mb-1">Frequency</label>
+                <div className="flex gap-2">
+                  {(['weekly', 'biweekly'] as const).map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setPaystubForm((s) => ({ ...s, frequency: f }))}
+                      className={`px-3 py-2 rounded-md border text-sm font-medium ${
+                        paystubForm.frequency === f
+                          ? 'bg-blue-600 text-white border-blue-500'
+                          : 'bg-white/10 text-white/80 border-white/20 hover:bg-white/20'
+                      }`}
+                    >
+                      {f === 'weekly' ? 'Weekly (1 week)' : 'Biweekly (2 weeks)'}
+                    </button>
+                  ))}
+                </div>
+                {paystubForm.frequency === 'biweekly' && (
+                  <p className="text-xs text-white/60 mt-2">
+                    Biweekly bundles this week plus the week immediately before it.
+                  </p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-white/90 mb-1">Pay Date</label>
+                <input
+                  type="date"
+                  value={paystubForm.payDate}
+                  onChange={(e) => setPaystubForm((s) => ({ ...s, payDate: e.target.value }))}
+                  className="w-full px-3 py-2 border border-white/20 bg-white/10 backdrop-blur-sm text-white rounded-md"
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex gap-4 justify-end">
+              <button
+                onClick={() => setPaystubTarget(null)}
+                className="px-4 py-2 border border-white/20 bg-white/10 hover:bg-white/20 text-white rounded-md"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={generatePaystubForTarget}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center gap-2"
+              >
+                <Printer className="w-4 h-4" />
+                Generate PDF
               </button>
             </div>
           </div>

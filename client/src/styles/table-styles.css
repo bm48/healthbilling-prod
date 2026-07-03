@@ -658,6 +658,31 @@ providers-handsontable} */
   text-align: center !important;
 }
 
+/* Billing To-Do Notes tab: contenteditable notepad. Placeholder is rendered via ::before because
+   contenteditable doesn't respect the native `placeholder` attribute. */
+.billing-todo-notes-editor:empty::before {
+  content: attr(data-placeholder);
+  color: #94a3b8;
+  pointer-events: none;
+}
+.billing-todo-notes-editor p { margin: 0 0 8px 0; }
+.billing-todo-notes-editor ul,
+.billing-todo-notes-editor ol { margin: 0 0 8px 24px; }
+
+/* Billing To-Do wants long Issue/Notes/F-u notes to wrap and grow the row so the client can see
+   the full text without truncation. The default `.handsontable-custom td` rule above clamps every
+   cell to `white-space: nowrap` + `overflow: hidden`, which defeats the column-level
+   `wordWrap: true` in BillingTodoTab. Override it just for this table. */
+.handsontable-custom.billing-todo-sortable td {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  word-break: break-word !important;
+  vertical-align: top !important;
+  padding: 4px 6px !important;
+  text-align: left !important;
+}
+
 /* Providers tab: read-only cells use Handsontable .htDimmed (gray text). Keep readOnly but match editable cell text color. */
 .providers-handsontable td.htDimmed {
   color: #000000 !important;

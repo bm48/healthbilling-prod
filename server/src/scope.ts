@@ -6,6 +6,7 @@ const TABLES_WITH_CLINIC_ID = new Set([
   'accounts_receivables',
   'ar_backups',
   'audit_logs',
+  'billing_todo_notes',
   'cell_comments',
   'cell_highlights',
   'clinic_addresses',

@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
 import { createBubbleDropdownRenderer, createColoredAutocompleteDropdown } from '@/lib/handsontableCustomRenderers'
+import BillingTodoNotes from '@/components/BillingTodoNotes'
 
 function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
   let max = -1
@@ -74,10 +75,10 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
   // (Complete only). Persisted per-clinic in sessionStorage so the tab choice survives tab
   // switches inside this clinic but doesn't bleed across clinics.
   const viewModeStorageKey = `billing-todo-view-mode-${clinicId}`
-  const [viewMode, setViewMode] = useState<'current' | 'archive'>(() => {
+  const [viewMode, setViewMode] = useState<'current' | 'archive' | 'notes'>(() => {
     try {
       const raw = sessionStorage.getItem(viewModeStorageKey)
-      if (raw === 'archive' || raw === 'current') return raw
+      if (raw === 'archive' || raw === 'current' || raw === 'notes') return raw
     } catch { /* sessionStorage unavailable */ }
     return 'current'
   })
@@ -1228,12 +1229,13 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
 
   return (
     <div className={isInSplitScreen ? 'p-6 split-pane-tab' : 'p-6'}>
-      {/* Current / Archive tabs. Items marked Complete move from Current to Archive automatically
-          since both views are derived from the same `todos` list via status filter. */}
+      {/* Current / Archive / Notes tabs. Items marked Complete move from Current to Archive
+          automatically since both views are derived from the same `todos` list via status filter.
+          Notes is a separate freeform notepad (per clinic) stored in `billing_todo_notes`. */}
       <div className="mb-3 flex items-center gap-2 shrink-0">
-        {(['current', 'archive'] as const).map((mode) => {
+        {(['current', 'archive', 'notes'] as const).map((mode) => {
           const active = viewMode === mode
-          const label = mode === 'current' ? 'Current' : 'Archive'
+          const label = mode === 'current' ? 'Current' : mode === 'archive' ? 'Archive' : 'Notes'
           return (
             <button
               key={mode}
@@ -1256,6 +1258,9 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
           )
         })}
       </div>
+      {viewMode === 'notes' ? (
+        <BillingTodoNotes clinicId={clinicId} canEdit={canEdit} />
+      ) : (
       <div
         ref={tableContainerRef}
         className={`table-container dark-theme ${isInSplitScreen ? 'min-w-0 flex-1' : ''}`}
@@ -1310,6 +1315,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
           className="handsontable-custom billing-todo-sortable"
         />
       </div>
+      )}
       {canEdit && viewMode === 'current' && (
         // Only render in Current view — Archive is read-history; adding empty placeholder rows
         // there would be pointless (they aren't Complete and wouldn't show up in the archive
