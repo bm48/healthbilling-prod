@@ -43,6 +43,18 @@ export default function Timecards() {
     frequency: 'weekly' | 'biweekly'
     payDate: string
   }>({ frequency: 'weekly', payDate: '' })
+  // "Add hours" modal for a specific staff member + week (fixing a missed day, e.g. 6/28).
+  // `weekStart` is `YYYY-MM-DD` (Sunday of the target week); the form pre-fills a clock_in/clock_out
+  // inside that week so the admin only has to type the actual time, not re-pick the date.
+  const [addHoursTarget, setAddHoursTarget] = useState<{
+    userId: string
+    weekStart: string
+  } | null>(null)
+  const [addHoursForm, setAddHoursForm] = useState<{
+    clock_in: string
+    clock_out: string
+    notes: string
+  }>({ clock_in: '', clock_out: '', notes: '' })
 
   useEffect(() => {
     if (user && userProfile) {
@@ -303,6 +315,81 @@ export default function Timecards() {
     loadStaffTimecards()
   }
 
+  // Open the "Add hours" modal for a staff/week combo. Pre-fills clock_in / clock_out with
+  // 9 AM–5 PM on the row's Sunday so the admin only needs to change the date (within the week)
+  // and the exact times, not build the ISO date from scratch. The date picker still allows any
+  // day of that week — nothing enforces "must be inside this week" so if an admin genuinely
+  // needs to backfill a stray hour that got miscategorized, they can.
+  const openAddHoursModal = (userId: string, weekStart: string) => {
+    const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(weekStart)
+    const base = ymd
+      ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]))
+      : new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const day = `${base.getFullYear()}-${pad(base.getMonth() + 1)}-${pad(base.getDate())}`
+    setAddHoursTarget({ userId, weekStart })
+    setAddHoursForm({
+      clock_in: `${day}T09:00`,
+      clock_out: `${day}T17:00`,
+      notes: '',
+    })
+  }
+
+  const handleAddHoursSave = async () => {
+    if (!addHoursTarget || !addHoursForm.clock_in || !addHoursForm.clock_out) return
+    const target = addHoursTarget
+    // Pick a clinic to attach the entry to: prefer the user's first assigned clinic (they may not
+    // be one of the admin's own clinics, so `selectedClinic` can be wrong for cross-clinic adds).
+    const employee = staffUserById[target.userId]
+    const clinicIdForEntry = employee?.clinic_ids?.[0] || selectedClinic || null
+    if (!clinicIdForEntry) {
+      alert('Cannot add hours: no clinic assigned to this user.')
+      return
+    }
+    const clockInTime = new Date(addHoursForm.clock_in)
+    const clockOutTime = new Date(addHoursForm.clock_out)
+    if (Number.isNaN(clockInTime.getTime()) || Number.isNaN(clockOutTime.getTime())) {
+      alert('Please enter valid clock-in and clock-out times.')
+      return
+    }
+    if (clockOutTime.getTime() <= clockInTime.getTime()) {
+      alert('Clock-out must be after clock-in.')
+      return
+    }
+    const hours = (clockOutTime.getTime() - clockInTime.getTime()) / (1000 * 60 * 60)
+    // Recompute Sunday-based week from the actual clock_in date rather than trusting the target
+    // row's weekStart, so a legitimate edit that pushes the date to a neighboring week still lands
+    // in the right weekly summary group.
+    const weekStart = new Date(clockInTime)
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay())
+    weekStart.setHours(0, 0, 0, 0)
+    const hourlyPayRaw = employee?.hourly_pay as unknown
+    const hourlyPay =
+      hourlyPayRaw == null || hourlyPayRaw === ''
+        ? null
+        : typeof hourlyPayRaw === 'number'
+          ? hourlyPayRaw
+          : Number.isFinite(Number(hourlyPayRaw))
+            ? Number(hourlyPayRaw)
+            : null
+    const { error } = await apiClient.from('timecards').insert({
+      user_id: target.userId,
+      clinic_id: clinicIdForEntry,
+      clock_in: clockInTime.toISOString(),
+      clock_out: clockOutTime.toISOString(),
+      hours: Math.round(hours * 100) / 100,
+      hourly_pay: hourlyPay,
+      notes: addHoursForm.notes || null,
+      week_start_date: weekStart.toISOString().split('T')[0],
+    })
+    if (error) {
+      alert('Failed to add hours: ' + (error.message || 'Unknown error'))
+      return
+    }
+    setAddHoursTarget(null)
+    loadStaffTimecards()
+  }
+
   const handleToggleLock = async (tc: Timecard) => {
     const nextLocked = !(tc.is_locked ?? false)
     const { error } = await apiClient
@@ -461,10 +548,15 @@ export default function Timecards() {
       alert('Employee record not found.')
       return
     }
-    const hourlyRate =
-      typeof employee.hourly_pay === 'number' && Number.isFinite(employee.hourly_pay)
-        ? employee.hourly_pay
-        : 0
+    // Postgres NUMERIC comes back as a string through the pg driver, so `typeof === 'number'`
+    // silently returned 0 for every employee even when User Management showed the correct rate.
+    // Coerce via Number() and only fall back to 0 for truly missing / non-finite values.
+    const hourlyRate = (() => {
+      const raw = employee.hourly_pay as unknown
+      if (raw == null || raw === '') return 0
+      const n = typeof raw === 'number' ? raw : Number(raw)
+      return Number.isFinite(n) ? n : 0
+    })()
 
     // Weeks to include (Sunday-based). Biweekly bundles the target week + the preceding week.
     const weekStarts: string[] = [target.weekStart]
@@ -764,7 +856,7 @@ export default function Timecards() {
                     <th>Week</th>
                     <th>Dates worked</th>
                     <th>Hours</th>
-                    <th className="w-24">Actions</th>
+                    <th className="w-32">Actions</th>
                   </>
                 ) : (
                   <>
@@ -799,6 +891,15 @@ export default function Timecards() {
                         <td style={{ fontWeight: 500 }} className="text-white">{row.totalHours.toFixed(2)} hrs</td>
                         <td>
                           <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => !hasLocked && openAddHoursModal(row.userId, row.weekStart)}
+                              disabled={hasLocked}
+                              className="p-1.5 text-white/70 hover:text-white hover:bg-white/10 rounded disabled:opacity-40 disabled:pointer-events-none"
+                              title={hasLocked ? 'Week has locked entries' : 'Add hours to this week'}
+                            >
+                              <Plus className="w-4 h-4" />
+                            </button>
                             <button
                               type="button"
                               onClick={() => openPaystubModal(row.userId, row.weekStart)}
@@ -958,6 +1059,64 @@ export default function Timecards() {
                 className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
               >
                 Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {addHoursTarget && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-slate-800/95 backdrop-blur-md rounded-lg p-6 w-full max-w-md border border-white/20">
+            <h2 className="text-xl font-bold text-white mb-2">Add Hours</h2>
+            <p className="text-white/70 text-sm mb-4">
+              {(() => {
+                const emp = staffUserById[addHoursTarget.userId]
+                const name = emp ? userName(emp) : addHoursTarget.userId
+                return `${name} — Week of ${formatWeekRange(addHoursTarget.weekStart)}`
+              })()}
+            </p>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-white/90 mb-1">Clock In</label>
+                <input
+                  type="datetime-local"
+                  value={addHoursForm.clock_in}
+                  onChange={(e) => setAddHoursForm({ ...addHoursForm, clock_in: e.target.value })}
+                  className="w-full px-3 py-2 border border-white/20 bg-white/10 backdrop-blur-sm text-white rounded-md"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-white/90 mb-1">Clock Out</label>
+                <input
+                  type="datetime-local"
+                  value={addHoursForm.clock_out}
+                  onChange={(e) => setAddHoursForm({ ...addHoursForm, clock_out: e.target.value })}
+                  className="w-full px-3 py-2 border border-white/20 bg-white/10 backdrop-blur-sm text-white rounded-md"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-white/90 mb-1">Notes</label>
+                <textarea
+                  value={addHoursForm.notes}
+                  onChange={(e) => setAddHoursForm({ ...addHoursForm, notes: e.target.value })}
+                  className="w-full px-3 py-2 border border-white/20 bg-white/10 backdrop-blur-sm text-white rounded-md placeholder-white/50"
+                  rows={3}
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex gap-4 justify-end">
+              <button
+                onClick={() => setAddHoursTarget(null)}
+                className="px-4 py-2 border border-white/20 bg-white/10 hover:bg-white/20 text-white rounded-md"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddHoursSave}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Add
               </button>
             </div>
           </div>

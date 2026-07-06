@@ -116,11 +116,12 @@ export function generateTimecardPaystubPdf(entry: TimecardPaystubEntry): jsPDF {
     doc.text(stubLabel, pageW - 14 - doc.getTextWidth(stubLabel) - 6, bandTextY)
   }
 
-  // Earnings table: one row per day worked, then a bold Total row.
+  // Earnings table: one row per day worked, then a bold Total row. Rate column intentionally
+  // omitted — the client only wants Date / Hours / Amount on the printed paystub since the rate
+  // is managed in User Management, not on each stub.
   const tableStartY = bandY + bandH + 6
   const tableMargin = 14
   const tableWidth = pageW - tableMargin * 2
-  const rateStr = formatCurrency(entry.hourly_rate)
   const bodyRows = entry.days
     .filter((d) => Number.isFinite(d.hours) && d.hours > 0)
     .map((d) => {
@@ -128,7 +129,6 @@ export function generateTimecardPaystubPdf(entry: TimecardPaystubEntry): jsPDF {
       return [
         formatDateShort(d.date),
         d.hours.toFixed(2),
-        rateStr,
         formatCurrency(amount),
       ]
     })
@@ -136,7 +136,6 @@ export function generateTimecardPaystubPdf(entry: TimecardPaystubEntry): jsPDF {
   bodyRows.push([
     { content: 'Total', styles: { fontStyle: 'bold' as const, halign: 'left' as const } } as any,
     { content: entry.total_hours.toFixed(2), styles: { fontStyle: 'bold' as const, halign: 'right' as const } } as any,
-    { content: '', styles: { halign: 'right' as const } } as any,
     { content: formatCurrency(netPay), styles: { fontStyle: 'bold' as const, halign: 'right' as const } } as any,
   ])
 
@@ -145,7 +144,6 @@ export function generateTimecardPaystubPdf(entry: TimecardPaystubEntry): jsPDF {
     head: [[
       { content: 'Date', styles: { halign: 'left' } },
       { content: 'Hours', styles: { halign: 'right' } },
-      { content: 'Rate', styles: { halign: 'right' } },
       { content: 'Amount', styles: { halign: 'right' } },
     ]],
     body: bodyRows,
@@ -161,10 +159,9 @@ export function generateTimecardPaystubPdf(entry: TimecardPaystubEntry): jsPDF {
     },
     bodyStyles: { lineColor: [0, 0, 0], lineWidth: 0.2 },
     columnStyles: {
-      0: { cellWidth: tableWidth * 0.35, halign: 'left' },
-      1: { cellWidth: tableWidth * 0.2, halign: 'right' },
-      2: { cellWidth: tableWidth * 0.2, halign: 'right' },
-      3: { cellWidth: tableWidth * 0.25, halign: 'right' },
+      0: { cellWidth: tableWidth * 0.45, halign: 'left' },
+      1: { cellWidth: tableWidth * 0.25, halign: 'right' },
+      2: { cellWidth: tableWidth * 0.3, halign: 'right' },
     },
     margin: { left: tableMargin, right: tableMargin },
   })
