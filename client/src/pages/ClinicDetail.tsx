@@ -2520,16 +2520,30 @@ export default function ClinicDetail() {
 
 
   const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[], monthKeyOverride?: string): Promise<boolean> => {
-    if (!clinicId || !userProfile) {
-      console.warn('[saveProviderSheetRows] dropped — missing clinicId or userProfile', { providerId, hasClinicId: !!clinicId, hasUserProfile: !!userProfile })
-      return false
-    }
-
     // monthKey is captured once at call entry. The drain effect passes the ORIGINAL monthKey from when
     // the save was queued — without that, a deferred save that fires after the user navigated to a
     // different month would persist the old month's rows under the new month's sheet (the "her June
     // data is in May" symptom we already eliminated for the synchronous path via the flush callback).
     const monthKey = monthKeyOverride ?? selectedMonthKey
+
+    // clinicId comes from route params and is stable for the lifetime of this ClinicDetail mount. If it's
+    // missing the whole page is in an unrecoverable state — no queue key we could build now would be
+    // valid at replay time (drain uses `${clinicId}|providerId|monthKey` for hydration). Drop.
+    if (!clinicId) {
+      console.warn('[saveProviderSheetRows] dropped — missing clinicId (route not resolved)', { providerId })
+      return false
+    }
+    if (!userProfile) {
+      // Auth not yet hydrated (initial mount / session re-fetch). Queue instead of dropping so the drain
+      // effect replays this once `userProfile` loads. Symmetric with the `!sheet` and hydration guards
+      // below; the previous silent-drop here matched the "silent save guards" pattern that already bit
+      // us once (edits vanish, optimistic UI hides the loss, DB fetch on remount reveals the gap).
+      const queueKey = `${providerId}|${monthKey}`
+      deferredSavesRef.current.set(queueKey, { providerId, rowsToSave, knownDeletedIds, monthKey, queuedAt: Date.now() })
+      console.warn('[saveProviderSheetRows] DEFERRED — userProfile not yet loaded (will retry when auth completes)', { providerId, monthKey })
+      return false
+    }
+
     const sheetsForMonth = providerSheetsByMonth[monthKey] ?? {}
     const sheet = sheetsForMonth[providerId]
     if (!sheet) {

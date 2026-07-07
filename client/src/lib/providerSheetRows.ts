@@ -89,45 +89,6 @@ function dbToSheetRow(db: ProviderSheetRowDb): SheetRow {
   }
 }
 
-function sheetRowToDbPayload(row: SheetRow, sheetId: string, sortOrder: number): Omit<ProviderSheetRowDb, 'id' | 'created_at' | 'updated_at'> {
-  return {
-    sheet_id: sheetId,
-    sort_order: sortOrder,
-    patient_id: row.patient_id ?? null,
-    appointment_date: row.appointment_date ?? null,
-    appointment_time: row.appointment_time ?? null,
-    visit_type: row.visit_type ?? null,
-    notes: row.notes ?? null,
-    billing_code: row.billing_code ?? null,
-    billing_code_color: row.billing_code_color ?? null,
-    cpt_code: row.cpt_code ?? null,
-    cpt_code_color: row.cpt_code_color ?? null,
-    appointment_status: row.appointment_status ?? null,
-    appointment_status_color: row.appointment_status_color ?? null,
-    claim_status: row.claim_status ?? null,
-    claim_status_color: row.claim_status_color ?? null,
-    submit_date: row.submit_date ?? null,
-    insurance_payment: row.insurance_payment ?? null,
-    insurance_adjustment: row.insurance_adjustment ?? null,
-    invoice_amount: row.invoice_amount ?? null,
-    collected_from_patient: row.collected_from_patient ?? null,
-    patient_pay_status: row.patient_pay_status ?? null,
-    patient_pay_status_color: row.patient_pay_status_color ?? null,
-    payment_date: row.payment_date ?? null,
-    payment_date_color: row.payment_date_color ?? null,
-    ar_type: row.ar_type ?? null,
-    ar_amount: row.ar_amount ?? null,
-    ar_date: row.ar_date ?? null,
-    ar_date_color: row.ar_date_color ?? null,
-    ar_notes: row.ar_notes ?? null,
-    provider_payment_amount: row.provider_payment_amount ?? null,
-    provider_payment_date: row.provider_payment_date ?? null,
-    provider_payment_notes: row.provider_payment_notes ?? null,
-    highlight_color: row.highlight_color ?? null,
-    total: row.total ?? null,
-  }
-}
-
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export function isUuid(id: string): boolean {
   return UUID_REGEX.test(id)
@@ -226,58 +187,6 @@ async function saveSheetRowsViaApi(
   })
 }
 
-async function saveSheetRowsDirectDb(
-  db: NativeClient,
-  sheetId: string,
-  rows: SheetRow[],
-  knownDeletedIds?: string[],
-): Promise<SheetRow[]> {
-  let saved: SheetRow[]
-
-  if (rows.length > 0) {
-    const upsertPayloads = rows.map((row, i) => {
-      const base = sheetRowToDbPayload(row, sheetId, i)
-      if (isUuid(row.id)) {
-        return { id: row.id, ...base, updated_at: new Date().toISOString() } as Record<string, unknown>
-      }
-      return { ...base, updated_at: new Date().toISOString() } as Record<string, unknown>
-    })
-
-    const { data, error } = await db
-      .from('provider_sheet_rows')
-      .upsert(upsertPayloads, { onConflict: 'id' })
-      .select()
-
-    if (error) throw error
-
-    const byUUID = new Map<string, SheetRow>()
-    const bySortOrder = new Map<number, SheetRow>()
-    for (const raw of (data ?? []) as ProviderSheetRowDb[]) {
-      const sr = dbToSheetRow(raw)
-      byUUID.set(raw.id, sr)
-      bySortOrder.set(raw.sort_order, sr)
-    }
-    saved = rows.map((row, i) =>
-      isUuid(row.id) ? (byUUID.get(row.id) ?? row) : (bySortOrder.get(i) ?? row),
-    )
-  } else {
-    saved = []
-  }
-
-  // Deletes ONLY when caller explicitly enumerates them. The implicit orphan sweep (SELECT all, DELETE
-  // anything not in this batch) was the root cause of months-of-data being wiped when stale/partial
-  // batches were saved. Mirrors the server-side guard in serviceRoutes.ts.
-  if (knownDeletedIds !== undefined && knownDeletedIds.length > 0) {
-    const { error: deleteError } = await db
-      .from('provider_sheet_rows')
-      .delete()
-      .in('id', knownDeletedIds)
-    if (deleteError) throw deleteError
-  }
-
-  return saved
-}
-
 /**
  * Fetch all rows for a provider sheet from provider_sheet_rows, ordered by sort_order.
  */
@@ -324,20 +233,22 @@ export async function fetchSheetRowsForSheetIds(
 }
 
 /**
- * Save rows to provider_sheet_rows in as few requests as possible.
+ * Save rows via the server API — the only sanctioned write path.
  *
- * - One batch UPSERT covers all rows: existing rows (UUID ids) update via ON CONFLICT (id),
- *   new rows (non-UUID ids) insert with a server-generated UUID.
- * - Deletes ONLY rows the caller explicitly enumerates in `knownDeletedIds`. The previous
- *   "orphan sweep" behaviour (DELETE everything not in the batch when knownDeletedIds was
- *   omitted) was removed after it destroyed months of provider data when a stale or partial
- *   batch was saved. Callers that legitimately delete rows MUST pass the deleted ids.
+ * The API carries the server-side write guard that protects appointment_date / claim_status /
+ * submit_date from being nulled by a stale-snapshot payload (see serviceRoutes.saveProviderSheetRowsCore),
+ * and it recomputes the clinic invoice. There is no fallback: if the caller isn't authenticated or the
+ * sheet context can't be resolved, we throw so the caller's catch surfaces the failure via the save
+ * error banner. The previous direct-DB fallback wrote every column including nulls and hid failures
+ * from the banner — that was the path that caused Jenali's "data was there, then gone hours later"
+ * loss (silent direct-DB fallback → nulls written → optimistic UI hides it → later fetch reveals the gap).
+ *
+ * - Existing rows (UUID ids) update; new rows (non-UUID ids) insert with a server-generated UUID.
+ * - Deletes ONLY rows the caller explicitly enumerates in `knownDeletedIds`. The previous "orphan sweep"
+ *   (DELETE everything not in the batch when knownDeletedIds was omitted) destroyed months of provider
+ *   data when a stale or partial batch was saved and has been removed.
  *
  * Returns saved rows with real UUIDs in the same order as `rows`.
- */
-/**
- * Save rows via server API (updates `invoices` for the clinic/month) when context is available.
- * Falls back to direct DB upsert only if the API cannot be used.
  */
 export async function saveSheetRows(
   db: NativeClient,
@@ -347,16 +258,11 @@ export async function saveSheetRows(
   saveContext?: SaveSheetRowsContext,
 ): Promise<SheetRow[]> {
   const context = await resolveSaveContext(db, sheetId, saveContext)
-  if (context && getAuthToken()) {
-    // When authenticated, the API endpoint is the only sanctioned write path — it carries the
-    // server-side write guard that protects appointment_date / claim_status / submit_date from being
-    // nulled by a stale-snapshot payload (see serviceRoutes.saveProviderSheetRowsCore). The previous
-    // try/catch swallowed API failures and silently fell back to the direct DB write, which (a) wrote
-    // every column including nulls and (b) hid the failure from the user's error banner. That's the
-    // path that caused Jenali's "data was there, then gone hours later" loss: an API hiccup → silent
-    // direct-DB fallback → nulls written → optimistic UI hides the loss → later fetch reveals the gap.
-    // Re-throw so the caller's catch surfaces the error.
-    return await saveSheetRowsViaApi(rows, context, knownDeletedIds)
+  if (!context) {
+    throw new Error('saveSheetRows: unable to resolve save context (sheet not found or not accessible)')
   }
-  return saveSheetRowsDirectDb(db, sheetId, rows, knownDeletedIds)
+  if (!getAuthToken()) {
+    throw new Error('saveSheetRows: not signed in')
+  }
+  return await saveSheetRowsViaApi(rows, context, knownDeletedIds)
 }

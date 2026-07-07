@@ -365,17 +365,51 @@ async function saveProviderSheetRowsCore(
     const values = cols.map((c) => payload[c])
 
     if (isUuid(id)) {
-      // Write guard for the three columns Jenali has repeatedly lost data on (appointment_date /
-      // claim_status / submit_date). Without this guard, ANY save that arrives with `null` for these
-      // columns — including a stale-snapshot save from a silent client-side failure path — clobbers
-      // a previously-typed value. With COALESCE($N, "col"), a null payload keeps whatever the DB
-      // already has and only a non-null payload overwrites. The trade-off is that the client cannot
-      // CLEAR these three columns via this endpoint anymore; clearing must be done by deleting the
-      // row (which is rare for these three fields — they hold workflow state that monotonically
-      // gains data through a claim's life). If a user ever needs to clear, we can add an explicit
-      // `clearColumns: ['appointment_date', ...]` opt-out in a follow-up. Defending the data is more
-      // important than supporting that 1% case for now.
-      const PROTECTED_FROM_NULL = new Set(['appointment_date', 'claim_status', 'submit_date'])
+      // Write guard for workflow-critical columns. Any save that arrives with `null` for these — including
+      // a stale-snapshot save from a silent client-side failure path — is treated as "no change" instead
+      // of "clear to null". With COALESCE($N, "col"), a null payload keeps whatever the DB already has
+      // and only a non-null payload overwrites. The trade-off is that these columns cannot be CLEARED
+      // via UPDATE; clearing must be done by deleting the whole row. That matches how a user would
+      // actually undo one of these values in workflow terms — a cancelled appointment / voided claim
+      // gets its row removed, not each field wiped individually.
+      //
+      // The protected set covers every field that (a) represents typed-in workflow state we've already
+      // seen stale-snapshot loss on, or (b) is a money / date / notes field where clearing to null in
+      // isolation is uncommon enough to prefer safety. Fields deliberately LEFT UNPROTECTED are ones a
+      // user legitimately toggles between value and null in normal editing (patient_id assign/unassign;
+      // cpt_code / billing_code corrections; status categories; visit_type; appointment_time; the
+      // `_color` fields derived from paired non-color values; user-preference `highlight_color`;
+      // `invoice_amount` which is computed; `sort_order` which is structural).
+      //
+      // If a specific column here turns out to have a legitimate clear workflow we didn't anticipate,
+      // the escape hatch is an explicit `clearColumns: ['<col>', ...]` opt-out on the request payload
+      // that this loop can consult before applying COALESCE. Don't add that speculatively — wait for
+      // the concrete complaint.
+      const PROTECTED_FROM_NULL = new Set([
+        // Original three — the columns Jenali repeatedly lost data on and the reason this guard exists.
+        'appointment_date',
+        'claim_status',
+        'submit_date',
+        // Money fields — corrected via overwrite, not null; if the row shouldn't exist at all, deleted.
+        'insurance_payment',
+        'insurance_adjustment',
+        'collected_from_patient',
+        'ar_amount',
+        'provider_payment_amount',
+        'total',
+        // Dates on entered transactions — rescheduled dates get overwritten, not nulled.
+        'payment_date',
+        'ar_date',
+        'provider_payment_date',
+        // AR classification — once assigned to a row, changed via overwrite, not null.
+        'ar_type',
+        // Notes fields — typed-in free text that has repeatedly been the visible surface of data loss.
+        // Users edit notes by overwriting text (non-null payload → normal write); an explicit clear-
+        // to-null happens rarely enough that we prefer protection.
+        'notes',
+        'ar_notes',
+        'provider_payment_notes',
+      ])
       const setParts = cols
         .filter((c) => c !== 'sheet_id')
         .map((c, idx) =>
