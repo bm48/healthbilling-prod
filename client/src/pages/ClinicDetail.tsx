@@ -26,8 +26,9 @@ import BillingTodoTab from '@/components/tabs/BillingTodoTab'
 import ProvidersTab from '@/components/tabs/ProvidersTab'
 import AccountsReceivableTab from '@/components/tabs/AccountsReceivableTab'
 import ProviderPayTab, { type IsLockProviderPay } from '@/components/tabs/ProviderPayTab'
+import AdminTrackingTab from '@/components/tabs/AdminTrackingTab'
 
-type TabType = 'patients' | 'todo' | 'providers' | 'accounts_receivable' | 'provider_pay'
+type TabType = 'patients' | 'todo' | 'providers' | 'accounts_receivable' | 'provider_pay' | 'admin_tracking'
 
 function initialTabFromPath(
   clinicId: string | undefined,
@@ -39,12 +40,13 @@ function initialTabFromPath(
     const base = `/clinic/${clinicId}/providers/${providerIdFromRoute}`
     if (pathname === `${base}/accounts_receivable`) return 'accounts_receivable'
     if (pathname === `${base}/provider_pay`) return 'provider_pay'
+    if (pathname === `${base}/admin_tracking`) return 'admin_tracking'
     if (pathname === base) return 'providers'
   }
   if (clinicId && pathname.startsWith(`/clinic/${clinicId}/providers`) && !providerIdFromRoute) {
     return 'providers'
   }
-  if (tabParam && ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay'].includes(tabParam)) {
+  if (tabParam && ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay', 'admin_tracking'].includes(tabParam)) {
     return tabParam as TabType
   }
   return 'patients'
@@ -482,10 +484,18 @@ export default function ClinicDetail() {
       clinicId && providerId ? `/clinic/${clinicId}/providers/${providerId}` : null
     const onProviderFinanceAR = scopedBase && location.pathname === `${scopedBase}/accounts_receivable`
     const onProviderFinancePP = scopedBase && location.pathname === `${scopedBase}/provider_pay`
+    const onProviderAdminTracking = scopedBase && location.pathname === `${scopedBase}/admin_tracking`
     const onSingleProviderBilling = !!(scopedBase && location.pathname === scopedBase)
 
-    if (isBillingStaff && clinicId && (onProviderFinanceAR || onProviderFinancePP)) {
+    if (isBillingStaff && clinicId && (onProviderFinanceAR || onProviderFinancePP || onProviderAdminTracking)) {
       navigate(`/clinic/${clinicId}/todo`, { replace: true })
+      return
+    }
+
+    // Admin Tracking is super-admin only. If anyone else deep-links here, bounce them to the same
+    // fallback the tab-sync uses for other unauthorized routes rather than silently rendering nothing.
+    if (onProviderAdminTracking && userProfile?.role !== 'super_admin') {
+      navigate(`/clinic/${clinicId}/providers/${providerId}`, { replace: true })
       return
     }
 
@@ -497,6 +507,10 @@ export default function ClinicDetail() {
       setActiveTab('provider_pay')
       return
     }
+    if (onProviderAdminTracking) {
+      setActiveTab('admin_tracking')
+      return
+    }
     if (providerId && isProvidersRoute && onSingleProviderBilling) {
       setActiveTab('providers')
       return
@@ -505,11 +519,13 @@ export default function ClinicDetail() {
       setActiveTab('providers')
       return
     }
-    if (tab && ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay'].includes(tab)) {
+    if (tab && ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay', 'admin_tracking'].includes(tab)) {
       if (isOfficialStaff && tab !== 'todo' && tab !== 'providers') {
         navigate(`/clinic/${clinicId}/todo`, { replace: true })
-      } else if (isBillingStaff && (tab === 'accounts_receivable' || tab === 'provider_pay')) {
+      } else if (isBillingStaff && (tab === 'accounts_receivable' || tab === 'provider_pay' || tab === 'admin_tracking')) {
         navigate(`/clinic/${clinicId}/todo`, { replace: true })
+      } else if (tab === 'admin_tracking' && userProfile?.role !== 'super_admin') {
+        navigate(`/clinic/${clinicId}/providers`, { replace: true })
       } else {
         // Admin used to be force-redirected away from `/todo` to `/providers`; that redirect was
         // removed so admins can now view and edit the Billing To-Do list directly.
@@ -545,7 +561,7 @@ export default function ClinicDetail() {
   // (patients & todo never call fetchProviders(); AR/PP may be on generic URL). Uses URL providerId or session last sheet.
   useEffect(() => {
     if (!clinicId) return
-    const headerHydrateTabs: TabType[] = ['patients', 'todo', 'accounts_receivable', 'provider_pay']
+    const headerHydrateTabs: TabType[] = ['patients', 'todo', 'accounts_receivable', 'provider_pay', 'admin_tracking']
     if (!headerHydrateTabs.includes(activeTab)) return
     const scopePid = providerId ?? getLastSelectedProviderId()
     if (!scopePid) return
@@ -676,21 +692,21 @@ export default function ClinicDetail() {
         if (contextMatches && cacheForMonth?.[providerId]?.length) {
           if (activeTab === 'providers' && monthKey) void fetchIsLockProviders(monthKey)
           // Month effect often set loading true before cache skip; clear so pageReady can pass.
-          if (activeTab === 'providers' || activeTab === 'provider_pay') setLoading(false)
+          if (activeTab === 'providers' || activeTab === 'provider_pay' || activeTab === 'admin_tracking') setLoading(false)
           return
         }
       } else {
         // Clinic view: skip only if cache is for this clinic
         if (contextMatches && hasCached) {
           if (activeTab === 'providers' && monthKey) void fetchIsLockProviders(monthKey)
-          if (activeTab === 'providers' || activeTab === 'provider_pay') setLoading(false)
+          if (activeTab === 'providers' || activeTab === 'provider_pay' || activeTab === 'admin_tracking') setLoading(false)
           return
         }
       }
     }
 
     const isMonthChangeOnly = monthChanged && !isInitialLoad
-    if (providerId && clinicId && (activeTab === 'providers' || activeTab === 'provider_pay')) {
+    if (providerId && clinicId && (activeTab === 'providers' || activeTab === 'provider_pay' || activeTab === 'admin_tracking')) {
       const prevContext = lastProviderSheetContextRef.current
       const providerChanged = prevContext?.providerId !== providerId
       const monthChangedForProvider = prevContext?.monthKey !== monthKey
@@ -726,7 +742,7 @@ export default function ClinicDetail() {
       })()
       return
     }
-    if (clinicId && !providerId && (activeTab === 'providers' || activeTab === 'provider_pay')) {
+    if (clinicId && !providerId && (activeTab === 'providers' || activeTab === 'provider_pay' || activeTab === 'admin_tracking')) {
       setLoading(true)
       lastProviderSheetsFetchMonthKeyRef.current = selectedMonthKey
       ;(async () => {
@@ -752,7 +768,7 @@ export default function ClinicDetail() {
     if (!clinicId) return
 
     // For providers/provider_pay, only the provider-sheets fetch controls loading (avoids double spinner when selectedMonthKey changes after clinic loads)
-    if (activeTab !== 'providers' && activeTab !== 'provider_pay') {
+    if (activeTab !== 'providers' && activeTab !== 'provider_pay' && activeTab !== 'admin_tracking') {
       setLoading(true)
     }
     try {
@@ -765,14 +781,16 @@ export default function ClinicDetail() {
       }
 
       // Patients, todos, and accounts_receivable tabs now handle their own data fetching
-      if (activeTab === 'providers') {
+      if (activeTab === 'providers' || activeTab === 'admin_tracking') {
+        // Admin Tracking joins patient First Name/LI/Ins onto sheet rows, so it needs the same
+        // patient + billing_code + status_color / column-lock fetches as the Billing (providers) tab.
         await fetchPatients() // Need patients for displaying patient info in provider sheets
         await fetchBillingCodes()
         await fetchStatusColors()
         await fetchColumnLocks()
         await fetchProviders()
         const mk = monthKeyForProviderSheets ?? selectedMonthKey
-        if (mk) await fetchLock(`providers:${mk}`, () => fetchIsLockProviders(mk))
+        if (mk && activeTab === 'providers') await fetchLock(`providers:${mk}`, () => fetchIsLockProviders(mk))
       } else if (activeTab === 'provider_pay') {
         await fetchStatusColors()
         await fetchProviders()
@@ -805,7 +823,7 @@ export default function ClinicDetail() {
       console.error('Error fetching data:', error)
     } finally {
       // Keep loading true for providers/provider_pay until provider sheets fetch completes (single loading state)
-      if (activeTab !== 'providers' && activeTab !== 'provider_pay') {
+      if (activeTab !== 'providers' && activeTab !== 'provider_pay' && activeTab !== 'admin_tracking') {
         setLoading(false)
       }
     }
@@ -3642,7 +3660,9 @@ export default function ClinicDetail() {
                 ? `/clinic/${clinicId}/providers/${scopePid}/accounts_receivable`
                 : tab === 'provider_pay' && scopePid
                   ? `/clinic/${clinicId}/providers/${scopePid}/provider_pay`
-                  : `/clinic/${clinicId}/${tab}`
+                  : tab === 'admin_tracking' && scopePid
+                    ? `/clinic/${clinicId}/providers/${scopePid}/admin_tracking`
+                    : `/clinic/${clinicId}/${tab}`
           navigate(path, { replace: true })
         }).catch(err => {
           console.error('[ClinicDetail] Flush before tab leave failed:', err)
@@ -3655,7 +3675,9 @@ export default function ClinicDetail() {
                 ? `/clinic/${clinicId}/providers/${scopePid}/accounts_receivable`
                 : tab === 'provider_pay' && scopePid
                   ? `/clinic/${clinicId}/providers/${scopePid}/provider_pay`
-                  : `/clinic/${clinicId}/${tab}`
+                  : tab === 'admin_tracking' && scopePid
+                    ? `/clinic/${clinicId}/providers/${scopePid}/admin_tracking`
+                    : `/clinic/${clinicId}/${tab}`
           navigate(path, { replace: true })
         })
         return
@@ -3848,6 +3870,40 @@ export default function ClinicDetail() {
             isViewingBackup={!!selectedBackupVersionAR}
             backupVersionKey={backupViewKeyAR}
             onRegisterFlushBeforeTabLeave={(flush) => { accountsReceivableTabFlushRef.current = flush }}
+          />
+        )
+      }
+      case 'admin_tracking': {
+        // Super-admin-only mirror of the Billing sheet. Uses the same `provider_sheet_rows` state as
+        // the Billing tab (`selectedMonth` / `selectedPayroll`, not the Provider-Pay clock) so edits
+        // on either tab reflect instantly without a separate save path.
+        if (!showAdminTrackingTab) return null
+        const scopePid = providerId ?? getLastSelectedProviderId() ?? undefined
+        const rowsForProvider = scopePid ? providerSheetRows[scopePid] ?? [] : []
+        return (
+          <AdminTrackingTab
+            clinicId={clinicId!}
+            clinicPayroll={clinic?.payroll ?? 1}
+            providerId={scopePid}
+            providers={providers}
+            patients={patients}
+            statusColors={statusColors}
+            rows={rowsForProvider}
+            canEdit={canEdit}
+            isInSplitScreen={!!splitScreen}
+            selectedMonth={selectedMonth}
+            onSelectMonth={(date, payroll) => {
+              setSelectedMonth(new Date(date.getFullYear(), date.getMonth(), 1))
+              if (clinic?.payroll === 2) setSelectedPayroll(payroll)
+            }}
+            selectedPayroll={clinic?.payroll === 2 ? selectedPayroll : undefined}
+            onUpdateRow={handleUpdateProviderSheetRow}
+            onSaveRows={saveProviderSheetRowsDirect}
+            onProviderChange={(pid) => {
+              if (!clinicId || !pid) return
+              // Navigate to the same provider's Admin Tracking URL so refreshes and back-nav stay scoped.
+              navigate(`/clinic/${clinicId}/providers/${pid}/admin_tracking`, { replace: true })
+            }}
           />
         )
       }
@@ -4160,6 +4216,11 @@ export default function ClinicDetail() {
     !isBillingStaff && !isOfficeStaff && !hideFinanceTabsForTopLevel
   const showProviderPayTab =
     !isBillingStaff && !isOfficeStaff && !hideFinanceTabsForTopLevel
+  // Super-admin-only "Admin Tracking" mirror of the Billing sheet with a slimmed column set.
+  // Follows the same hideFinanceTabsForTopLevel rule as AR / Provider Pay: don't clutter the tab
+  // strip when the user is on Patient Info or Billing To-Do.
+  const showAdminTrackingTab =
+    userProfile?.role === 'super_admin' && !hideFinanceTabsForTopLevel
   // Billing staff need the "Billing" (Providers) tab visible from every clinic view so they can
   // jump into a provider's billing sheet without going through the sidebar — they may land on
   // `/todo` by default but still need one-click access to provider sheets. For other roles, keep
@@ -4210,6 +4271,7 @@ export default function ClinicDetail() {
     'providers',
     ...(showAccountsReceivableTab ? (['accounts_receivable'] as const) : []),
     ...(showProviderPayTab ? (['provider_pay'] as const) : []),
+    ...(showAdminTrackingTab ? (['admin_tracking'] as const) : []),
   ]
   const getNextTab = (current: TabType, skip?: TabType): TabType => {
     if (current === 'patients') return 'patients' // Never switch away from Patients when clicking Switchnpm run bu
@@ -4228,7 +4290,9 @@ export default function ClinicDetail() {
           ? 'Providers'
           : tab === 'provider_pay'
             ? 'Provider Pay'
-            : 'Accounts Receivable'
+            : tab === 'admin_tracking'
+              ? 'Admin Tracking'
+              : 'Accounts Receivable'
 
   /** Tabs available in split-screen pane dropdowns (finance tabs always listed in split view).
    *  Billing staff get `providers` (read/edit billing sheets) but still don't get AR or
@@ -4244,6 +4308,9 @@ export default function ClinicDetail() {
             ? ([
                 ...(showAccountsReceivableTab || splitScreen != null ? (['accounts_receivable'] as const) : []),
                 ...(showProviderPayTab || splitScreen != null ? (['provider_pay'] as const) : []),
+                ...(showAdminTrackingTab || (splitScreen != null && userProfile?.role === 'super_admin')
+                  ? (['admin_tracking'] as const)
+                  : []),
               ] as const)
             : []),
         ] as const)
@@ -4326,7 +4393,7 @@ export default function ClinicDetail() {
         const raw = sessionStorage.getItem(`clinic_${clinicId}_splitScreenExitRestore`)
         if (raw) {
           const o = JSON.parse(raw) as { pathname?: string; tab?: string }
-          const tabs: TabType[] = ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay']
+          const tabs: TabType[] = ['patients', 'todo', 'providers', 'accounts_receivable', 'provider_pay', 'admin_tracking']
           if (o.pathname && o.tab && tabs.includes(o.tab as TabType)) {
             restore = { pathname: o.pathname, tab: o.tab as TabType }
           }
@@ -4399,7 +4466,7 @@ export default function ClinicDetail() {
     setContextMenu(null)
   }
 
-  const isProvidersOrPayTab = activeTab === 'providers' || activeTab === 'provider_pay'
+  const isProvidersOrPayTab = activeTab === 'providers' || activeTab === 'provider_pay' || activeTab === 'admin_tracking'
   /** Provider Pay loads its own data; requiring billing-sheet rows here caused infinite page spinner when that fetch skipped rows (races, early return). */
   const singleProviderRouteBillingFinished =
     !!providerId &&
@@ -4585,6 +4652,21 @@ export default function ClinicDetail() {
           >
             <DollarSign size={18} />
             Provider Pay
+          </button>
+          )}
+          {showAdminTrackingTab && (
+          <button
+            onClick={() => handleTabChange('admin_tracking')}
+            className={`px-6 py-3 font-medium transition-colors flex items-center gap-2 ${
+              (splitScreen
+                ? splitScreen.left === 'admin_tracking' || splitScreen.right === 'admin_tracking'
+                : activeTab === 'admin_tracking')
+                ? 'text-primary-400 border-b-2 border-primary-400'
+                : 'text-white/70 hover:text-white'
+            }`}
+          >
+            <FileText size={18} />
+            Admin Tracking
           </button>
           )}
         </div>

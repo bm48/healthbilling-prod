@@ -204,6 +204,16 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/clinic/:clinicId/providers/:providerId/admin_tracking"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <ClinicDetailWithProviderKey />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/clinic/:clinicId/providers/:providerId"
         element={
           <ProtectedRoute>
