@@ -618,12 +618,14 @@ export default function ClinicDetail() {
       // primary `activeTab` is something else (e.g. `todo` on the right). Treat those panes as needing
       // the same data so MonthYearTabs (in the providers pane) gets `statusColors` populated —
       // otherwise the month buttons fall back to the slate-grey default and lose their colors.
+      // Admin Tracking is a mirror of the Billing sheet and renders MonthYearTabs the same way, so it
+      // needs identical fetches (patients for name/LI/Ins join, statusColors for month coloring).
       const panes = new Set<TabType>([activeTab])
       if (splitScreen) {
         panes.add(splitScreen.left)
         panes.add(splitScreen.right)
       }
-      const needsProvidersData = panes.has('providers')
+      const needsProvidersData = panes.has('providers') || panes.has('admin_tracking')
       const needsProviderPayData = panes.has('provider_pay')
       if (needsProvidersData) {
         void fetchPatients()
