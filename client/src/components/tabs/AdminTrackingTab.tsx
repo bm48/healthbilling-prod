@@ -299,7 +299,7 @@ export default function AdminTrackingTab({
             disabled={providers.length === 0}
           >
             {providers.filter((p) => !p.id.startsWith('new-')).map((p) => (
-              <option key={p.id} value={p.id}>
+              <option key={p.id} value={p.id} style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
                 {p.first_name} {p.last_name}
               </option>
             ))}
@@ -445,7 +445,12 @@ function TrackingCell({ row, column, canEdit, onEdit }: TrackingCellProps) {
         className={`${baseInput} bg-slate-800/70`}
       >
         {options.map((opt) => (
-          <option key={opt} value={opt}>{opt || '—'}</option>
+          // Inline style: browsers paint <option> with system colors regardless of parent Tailwind
+          // classes, so a white browser default beats `text-white` inherited from the <select> and
+          // the label becomes invisible. Force the palette on the option itself.
+          <option key={opt} value={opt} style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
+            {opt || '—'}
+          </option>
         ))}
       </select>
     )
