@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { Patient, Provider, SheetRow, StatusColor } from '@/types'
 import MonthYearTabs from '@/components/MonthYearTabs'
+import { readableTextColor } from '@/lib/utils'
 
 export interface AdminTrackingTabProps {
   clinicId: string
@@ -317,13 +318,19 @@ export default function AdminTrackingTab({
         isInSplitScreen={isInSplitScreen}
       />
 
-      <div className="overflow-auto rounded border border-white/20 bg-white/5">
-        <table className="min-w-full text-sm text-white">
+      {/* Table styled to match the real Billing sheet (`.table-spreadsheet` in table-styles.css) but
+       *  swapped to a light-grey base instead of white so super-admin can tell at a glance which
+       *  view they're on. Header stays dark-blue (#1e3a8a) like Billing. */}
+      <div className="overflow-auto rounded border border-slate-300 shadow-sm" style={{ backgroundColor: '#f1f5f9' }}>
+        <table className="min-w-full text-sm border-collapse" style={{ color: '#212529' }}>
           <thead>
-            <tr className="bg-slate-800/80 text-white/80 text-xs uppercase">
-              <th className="px-2 py-1 text-left w-10 border-b border-white/10">#</th>
+            <tr style={{ backgroundColor: '#1e3a8a', color: '#ffffff' }} className="text-xs uppercase">
+              <th className="px-2 py-1.5 text-left w-10 border border-blue-500 sticky top-0 z-10">#</th>
               {COLUMNS.map((col) => (
-                <th key={col.key} className="px-2 py-1 text-left border-b border-white/10 whitespace-nowrap">
+                <th
+                  key={col.key}
+                  className="px-2 py-1.5 text-left border border-blue-500 whitespace-nowrap sticky top-0 z-10"
+                >
                   {col.label}
                 </th>
               ))}
@@ -331,17 +338,23 @@ export default function AdminTrackingTab({
           </thead>
           <tbody>
             {displayedRows.map((row, idx) => (
-              <tr key={row.id} className="odd:bg-white/5 even:bg-white/0">
-                <td className="px-2 py-1 text-white/60 border-b border-white/5">{idx + 1}</td>
+              <tr
+                key={row.id}
+                // Alternating: odd rows are the light-grey base, even rows a shade lighter for
+                // the same "banded" feel the Billing sheet has.
+                style={{ backgroundColor: idx % 2 === 0 ? '#f8fafc' : '#e2e8f0' }}
+              >
+                <td className="px-2 py-0.5 border border-slate-300 text-slate-500 text-xs text-center">
+                  {idx + 1}
+                </td>
                 {COLUMNS.map((col) => (
-                  <td key={col.key} className="px-1 py-0.5 border-b border-white/5 align-top">
-                    <TrackingCell
-                      row={row}
-                      column={col}
-                      canEdit={canEdit}
-                      onEdit={(value) => applyEdit(row.id, col.key, value)}
-                    />
-                  </td>
+                  <TrackingCell
+                    key={col.key}
+                    row={row}
+                    column={col}
+                    canEdit={canEdit}
+                    onEdit={(value) => applyEdit(row.id, col.key, value)}
+                  />
                 ))}
               </tr>
             ))}
@@ -422,6 +435,21 @@ function toDisplay(row: SheetRow, key: TrackingColumn['key']): string {
   return String(raw)
 }
 
+/** Read the per-row status color from the same fields the Billing sheet writes: the `_color`
+ *  siblings on SheetRow. Painting the whole cell (not just a badge) matches Handsontable's look
+ *  and lets #Paid/#Claim Sent/#Other stay recognizable at a glance without a legend. */
+function statusColorForCell(row: SheetRow, column: TrackingColumn): { bg?: string; fg?: string } {
+  if (column.kind === 'select-claim') {
+    const bg = row.claim_status_color ?? undefined
+    return bg ? { bg, fg: readableTextColor(bg) } : {}
+  }
+  if (column.kind === 'select-patient-pay') {
+    const bg = row.patient_pay_status_color ?? undefined
+    return bg ? { bg, fg: readableTextColor(bg) } : {}
+  }
+  return {}
+}
+
 function TrackingCell({ row, column, canEdit, onEdit }: TrackingCellProps) {
   const [draft, setDraft] = useState<string>(toDisplay(row, column.key))
   useEffect(() => {
@@ -429,47 +457,62 @@ function TrackingCell({ row, column, canEdit, onEdit }: TrackingCellProps) {
   }, [row, column.key])
 
   const readOnly = !canEdit
-  const baseInput = 'w-full px-1.5 py-1 rounded bg-transparent border border-transparent hover:border-white/20 focus:border-primary-400 focus:outline-none text-white text-sm disabled:opacity-60'
+  // Transparent-bg input so the <td>'s status color (when present) shows through. Dark text so
+  // it reads on light-grey/white cells, matching the Billing sheet's black-on-white style.
+  const baseInput =
+    'w-full px-1.5 py-0.5 bg-transparent border border-transparent hover:border-slate-400 focus:bg-white focus:border-primary-500 focus:outline-none text-slate-900 text-sm disabled:opacity-60'
+
+  const { bg, fg } = statusColorForCell(row, column)
+  const tdStyle: CSSProperties = {
+    borderColor: '#cbd5e1',
+    ...(bg ? { backgroundColor: bg, color: fg } : {}),
+  }
+  const inputStyle: CSSProperties = fg ? { color: fg } : {}
 
   if (column.kind === 'select-claim' || column.kind === 'select-patient-pay') {
     const options = column.kind === 'select-claim' ? CLAIM_STATUSES : PATIENT_PAY_STATUSES
     return (
-      <select
-        value={draft}
-        onChange={(e) => {
-          const next = e.target.value
-          setDraft(next)
-          onEdit(next)
-        }}
-        disabled={readOnly}
-        className={`${baseInput} bg-slate-800/70`}
-      >
-        {options.map((opt) => (
-          // Inline style: browsers paint <option> with system colors regardless of parent Tailwind
-          // classes, so a white browser default beats `text-white` inherited from the <select> and
-          // the label becomes invisible. Force the palette on the option itself.
-          <option key={opt} value={opt} style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
-            {opt || '—'}
-          </option>
-        ))}
-      </select>
+      <td className="px-0.5 py-0 border border-slate-300 align-middle" style={tdStyle}>
+        <select
+          value={draft}
+          onChange={(e) => {
+            const next = e.target.value
+            setDraft(next)
+            onEdit(next)
+          }}
+          disabled={readOnly}
+          className={baseInput}
+          style={inputStyle}
+        >
+          {options.map((opt) => (
+            // Native <option> styling doesn't respect parent Tailwind, so the dropdown list uses
+            // white bg + black text explicitly (matches the Billing sheet's readable dropdown).
+            <option key={opt} value={opt} style={{ backgroundColor: '#ffffff', color: '#212529' }}>
+              {opt || '—'}
+            </option>
+          ))}
+        </select>
+      </td>
     )
   }
 
-  const inputType = column.kind === 'date' ? 'date' : column.kind === 'currency' ? 'text' : 'text'
+  const inputType = column.kind === 'date' ? 'date' : 'text'
   const placeholder = column.kind === 'currency' ? '$0.00' : ''
 
   return (
-    <input
-      type={inputType}
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => {
-        if (draft !== toDisplay(row, column.key)) onEdit(draft)
-      }}
-      disabled={readOnly}
-      placeholder={placeholder}
-      className={baseInput}
-    />
+    <td className="px-0.5 py-0 border border-slate-300 align-middle" style={tdStyle}>
+      <input
+        type={inputType}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft !== toDisplay(row, column.key)) onEdit(draft)
+        }}
+        disabled={readOnly}
+        placeholder={placeholder}
+        className={baseInput}
+        style={inputStyle}
+      />
+    </td>
   )
 }
