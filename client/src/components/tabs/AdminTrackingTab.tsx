@@ -382,6 +382,7 @@ export default function AdminTrackingTab({
                     column={col}
                     canEdit={canEdit}
                     clinicPayroll={clinicPayroll}
+                    statusColors={statusColors}
                     onEdit={(value) => applyEdit(row.id, col.key, value)}
                   />
                 ))}
@@ -454,7 +455,31 @@ interface TrackingCellProps {
   column: TrackingColumn
   canEdit: boolean
   clinicPayroll?: 1 | 2
+  statusColors: StatusColor[]
   onEdit: (value: string) => void
+}
+
+/** Which `status_colors.type` a dropdown column pulls its per-option colors from. */
+function statusColorTypeForColumn(column: TrackingColumn): StatusColor['type'] | null {
+  if (column.kind === 'select-claim') return 'claim'
+  if (column.kind === 'select-patient-pay') return 'patient_pay'
+  if (column.kind === 'select-month-payment' || column.kind === 'select-month-ar') return 'month'
+  return null
+}
+
+/** Look up { bg, fg } for a single dropdown option label. Matches ProvidersTab's `getStatusColor` /
+ *  `getMonthColor`: month values may be prefixed with "1st " / "2nd " for biweekly clinics, but the
+ *  `status_colors` row is stored under the plain month name. */
+function optionColor(
+  statusColors: StatusColor[],
+  type: StatusColor['type'],
+  value: string,
+): { bg: string; fg: string } | null {
+  if (!value) return null
+  const lookup = type === 'month' ? value.replace(/^(1st|2nd)\s+/i, '').trim() : value
+  const match = statusColors.find((s) => s.status === lookup && s.type === type)
+  if (!match) return null
+  return { bg: match.color, fg: match.text_color || readableTextColor(match.color) }
 }
 
 /** Raw stored value as a string, unformatted. This is what goes into `<input>` when focused (so the
@@ -493,7 +518,7 @@ function statusColorForCell(row: SheetRow, column: TrackingColumn): { bg?: strin
   return { bg, fg: readableTextColor(bg) }
 }
 
-function TrackingCell({ row, column, canEdit, clinicPayroll, onEdit }: TrackingCellProps) {
+function TrackingCell({ row, column, canEdit, clinicPayroll, statusColors, onEdit }: TrackingCellProps) {
   const [focused, setFocused] = useState(false)
   const [draft, setDraft] = useState<string>(toRaw(row, column.key))
   useEffect(() => {
@@ -524,6 +549,7 @@ function TrackingCell({ row, column, canEdit, clinicPayroll, onEdit }: TrackingC
     if (column.kind === 'select-claim') options = CLAIM_STATUSES
     else if (column.kind === 'select-patient-pay') options = PATIENT_PAY_STATUSES
     else options = getMonthOptions(clinicPayroll)
+    const colorType = statusColorTypeForColumn(column)
     return (
       <td className="px-0.5 py-0 border border-slate-300 align-middle" style={tdStyle}>
         <select
@@ -537,13 +563,20 @@ function TrackingCell({ row, column, canEdit, clinicPayroll, onEdit }: TrackingC
           className={baseInput}
           style={inputStyle}
         >
-          {options.map((opt) => (
-            // Native <option> styling doesn't respect parent Tailwind, so the dropdown list uses
-            // white bg + black text explicitly (matches the Billing sheet's readable dropdown).
-            <option key={opt} value={opt} style={{ backgroundColor: '#ffffff', color: '#212529' }}>
-              {opt || ''}
-            </option>
-          ))}
+          {options.map((opt) => {
+            // Paint each option with its status color (Paid=green, Denial=red, etc.) to match the
+            // Billing sheet's colored dropdown list. Native <option> ignores Tailwind but respects
+            // inline background-color / color in every browser we support (Chrome/Edge/Firefox).
+            const color = colorType ? optionColor(statusColors, colorType, opt) : null
+            const style = color
+              ? { backgroundColor: color.bg, color: color.fg }
+              : { backgroundColor: '#ffffff', color: '#212529' }
+            return (
+              <option key={opt} value={opt} style={style}>
+                {opt || ''}
+              </option>
+            )
+          })}
         </select>
       </td>
     )
