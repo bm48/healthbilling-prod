@@ -505,17 +505,40 @@ function toDisplayed(row: SheetRow, column: TrackingColumn): string {
   return raw
 }
 
-/** Read the per-row status color from the same fields the Billing sheet writes: the `_color`
- *  siblings on SheetRow. Painting the whole cell (not just a badge) matches Handsontable's look
- *  and keeps #Paid/#Claim Sent/#Other recognizable at a glance without a legend. */
-function statusColorForCell(row: SheetRow, column: TrackingColumn): { bg?: string; fg?: string } {
-  let bg: string | null | undefined
-  if (column.kind === 'select-claim') bg = row.claim_status_color
-  else if (column.kind === 'select-patient-pay') bg = row.patient_pay_status_color
-  else if (column.kind === 'select-month-payment') bg = row.payment_date_color
-  else if (column.kind === 'select-month-ar') bg = row.ar_date_color
-  if (!bg) return {}
-  return { bg, fg: readableTextColor(bg) }
+/** Read the per-row status color for a cell. Prefer the `_color` sibling on the row (that's what
+ *  the Billing sheet writes when Jenali picks a status), but fall back to a fresh `status_colors`
+ *  lookup by the current value. Without the fallback, rows saved before the color-derivation was in
+ *  place — or rows saved through a code path that skips derivation — render as plain grey even
+ *  when the value is a well-known status like "Paid". */
+function statusColorForCell(
+  row: SheetRow,
+  column: TrackingColumn,
+  statusColors: StatusColor[],
+): { bg?: string; fg?: string } {
+  let cachedBg: string | null | undefined
+  let value: string | null | undefined
+  let type: StatusColor['type'] | null = null
+  if (column.kind === 'select-claim') {
+    cachedBg = row.claim_status_color
+    value = row.claim_status
+    type = 'claim'
+  } else if (column.kind === 'select-patient-pay') {
+    cachedBg = row.patient_pay_status_color
+    value = row.patient_pay_status
+    type = 'patient_pay'
+  } else if (column.kind === 'select-month-payment') {
+    cachedBg = row.payment_date_color
+    value = row.payment_date
+    type = 'month'
+  } else if (column.kind === 'select-month-ar') {
+    cachedBg = row.ar_date_color
+    value = row.ar_date
+    type = 'month'
+  }
+  if (cachedBg) return { bg: cachedBg, fg: readableTextColor(cachedBg) }
+  if (!value || !type) return {}
+  const looked = optionColor(statusColors, type, value)
+  return looked ? { bg: looked.bg, fg: looked.fg } : {}
 }
 
 function TrackingCell({ row, column, canEdit, clinicPayroll, statusColors, onEdit }: TrackingCellProps) {
@@ -531,7 +554,7 @@ function TrackingCell({ row, column, canEdit, clinicPayroll, statusColors, onEdi
   const baseInput =
     'w-full px-1.5 py-0.5 bg-transparent border border-transparent hover:border-slate-400 focus:bg-white focus:border-primary-500 focus:outline-none text-slate-900 text-sm disabled:opacity-60'
 
-  const { bg, fg } = statusColorForCell(row, column)
+  const { bg, fg } = statusColorForCell(row, column, statusColors)
   const tdStyle: CSSProperties = {
     borderColor: '#cbd5e1',
     ...(bg ? { backgroundColor: bg, color: fg } : {}),
