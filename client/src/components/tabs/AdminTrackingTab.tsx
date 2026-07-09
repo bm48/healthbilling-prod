@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { Patient, Provider, SheetRow, StatusColor } from '@/types'
 import MonthYearTabs from '@/components/MonthYearTabs'
-import { readableTextColor } from '@/lib/utils'
+import { readableTextColor, toDisplayDate } from '@/lib/utils'
 
 export interface AdminTrackingTabProps {
   clinicId: string
@@ -32,43 +32,56 @@ export interface AdminTrackingTabProps {
 }
 
 /**
- * Slimmed column set Jenali locked in for the Admin Tracking view. Each column reads/writes a
- * `provider_sheet_rows` field — mirroring the Billing sheet's underlying state so edits sync in
- * real time without a separate save path.
+ * Column set for Admin Tracking, mapped to the exact same `provider_sheet_rows` fields the Billing
+ * sheet uses (see ProvidersTab's `columnFieldsFullBase` + the column defs at ~line 1710-1794 in
+ * that file). The Billing sheet's field order:
  *
- * "Most Recent" and "Ins Pay Date" are Jenali's Admin-view labels; the underlying columns are the
- * Billing sheet's `submit_date` (K) and `payment_date` (Q) respectively. These labels came from the
- * `is_lock_providers` payload (`most_recent_submit_date`, `ins_pay_date`) which is the closest
- * thing we have to a source of truth for Jenali's naming. If she says either label is mapped to
- * the wrong field, only this table needs updating.
+ *   patient_id, patient_first_name, last_initial, patient_insurance,
+ *   [copay, coinsurance hidden],
+ *   appointment_date (Date of Service — real MM-DD-YY text),
+ *   [cpt_code, appointment_status hidden],
+ *   claim_status (colored dropdown),
+ *   submit_date ("Most Recent" — free-form text),
+ *   insurance_payment ("Ins Pay" — currency),
+ *   payment_date ("Ins Pay Date" — colored MONTH dropdown, uses `payment_date_color`),
+ *   insurance_adjustment ("PT RES" — currency),
+ *   collected_from_patient ("PT Paid" — currency),
+ *   patient_pay_status (colored dropdown),
+ *   ar_date ("Patient Paid Month" — colored MONTH dropdown, uses `ar_date_color`).
+ *
+ * The `payment_date` / `ar_date` fields store month NAMES ("January", or "1st January" for biweekly
+ * clinics), NOT calendar dates. This was called out in the ProvidersTab comment about
+ * `PROVIDER_GRID_TEXT_FIELDS_FORMERLY_DATE` — routing them through a date parser nulls the column.
  */
 type TrackingColumn =
   | { key: 'patient_id'; label: 'ID'; kind: 'text' }
   | { key: 'patient_first_name'; label: 'First Name'; kind: 'text' }
   | { key: 'last_initial'; label: 'LI'; kind: 'text' }
   | { key: 'patient_insurance'; label: 'Ins'; kind: 'text' }
-  | { key: 'appointment_date'; label: 'Date of Service'; kind: 'date' }
+  | { key: 'appointment_date'; label: 'Date of Service'; kind: 'date-text' }
   | { key: 'claim_status'; label: 'Claim Status'; kind: 'select-claim' }
-  | { key: 'submit_date'; label: 'Most Recent'; kind: 'date' }
+  | { key: 'submit_date'; label: 'Most Recent'; kind: 'text' }
   | { key: 'insurance_payment'; label: 'Ins Pay'; kind: 'currency' }
-  | { key: 'payment_date'; label: 'Ins Pay Date'; kind: 'date' }
-  | { key: 'invoice_amount'; label: 'PT RES'; kind: 'currency' }
+  | { key: 'payment_date'; label: 'Ins Pay Date'; kind: 'select-month-payment' }
+  | { key: 'insurance_adjustment'; label: 'PT RES'; kind: 'currency' }
   | { key: 'collected_from_patient'; label: 'PT Paid'; kind: 'currency' }
   | { key: 'patient_pay_status'; label: 'PT Pay Status'; kind: 'select-patient-pay' }
+  | { key: 'ar_date'; label: 'Patient Paid Month'; kind: 'select-month-ar' }
 
 const COLUMNS: TrackingColumn[] = [
   { key: 'patient_id', label: 'ID', kind: 'text' },
   { key: 'patient_first_name', label: 'First Name', kind: 'text' },
   { key: 'last_initial', label: 'LI', kind: 'text' },
   { key: 'patient_insurance', label: 'Ins', kind: 'text' },
-  { key: 'appointment_date', label: 'Date of Service', kind: 'date' },
+  { key: 'appointment_date', label: 'Date of Service', kind: 'date-text' },
   { key: 'claim_status', label: 'Claim Status', kind: 'select-claim' },
-  { key: 'submit_date', label: 'Most Recent', kind: 'date' },
+  { key: 'submit_date', label: 'Most Recent', kind: 'text' },
   { key: 'insurance_payment', label: 'Ins Pay', kind: 'currency' },
-  { key: 'payment_date', label: 'Ins Pay Date', kind: 'date' },
-  { key: 'invoice_amount', label: 'PT RES', kind: 'currency' },
+  { key: 'payment_date', label: 'Ins Pay Date', kind: 'select-month-payment' },
+  { key: 'insurance_adjustment', label: 'PT RES', kind: 'currency' },
   { key: 'collected_from_patient', label: 'PT Paid', kind: 'currency' },
   { key: 'patient_pay_status', label: 'PT Pay Status', kind: 'select-patient-pay' },
+  { key: 'ar_date', label: 'Patient Paid Month', kind: 'select-month-ar' },
 ]
 
 const CLAIM_STATUSES = [
@@ -92,8 +105,23 @@ const PATIENT_PAY_STATUSES = [
   'Secondary',
   'Refunded',
   'Payment Plan',
-  'Waiting on Claims',
+  'Waiting on Claim',
+  'Collections',
 ] as const
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+/** Month options for the payment_date / ar_date dropdowns. Matches ProvidersTab's `months` array:
+ *  biweekly clinics get "1st January" / "2nd January" pairs so the color-per-half stripes work. */
+function getMonthOptions(clinicPayroll: 1 | 2 | undefined): readonly string[] {
+  if (clinicPayroll === 2) {
+    return ['', ...MONTH_NAMES.flatMap((m) => [`1st ${m}`, `2nd ${m}`])]
+  }
+  return ['', ...MONTH_NAMES]
+}
 
 const BASE_VISIBLE_ROWS = 20
 const ADD_ROWS_STEP = 50
@@ -184,7 +212,7 @@ function csvEscape(s: string): string {
 function downloadCsv(providerName: string, monthLabel: string, rows: SheetRow[]) {
   const header = COLUMNS.map((c) => csvEscape(c.label)).join(',')
   const dataRows = rows.filter(isRealRow).map((row) =>
-    COLUMNS.map((c) => csvEscape(toDisplay(row, c.key))).join(',')
+    COLUMNS.map((c) => csvEscape(toDisplayed(row, c))).join(',')
   )
   // UTF-8 BOM so Excel opens as UTF-8 and doesn't fall into SYLK detection on the first cell.
   const csv = '﻿' + header + '\n' + dataRows.join('\n')
@@ -353,6 +381,7 @@ export default function AdminTrackingTab({
                     row={row}
                     column={col}
                     canEdit={canEdit}
+                    clinicPayroll={clinicPayroll}
                     onEdit={(value) => applyEdit(row.id, col.key, value)}
                   />
                 ))}
@@ -424,41 +453,56 @@ interface TrackingCellProps {
   row: SheetRow
   column: TrackingColumn
   canEdit: boolean
+  clinicPayroll?: 1 | 2
   onEdit: (value: string) => void
 }
 
-/** Value coerced to a string for the input. Currency/decimal fields stringify whatever the row
- *  holds; that keeps the UI stateless and lets React's controlled input take the current value. */
-function toDisplay(row: SheetRow, key: TrackingColumn['key']): string {
+/** Raw stored value as a string, unformatted. This is what goes into `<input>` when focused (so the
+ *  user can edit the actual digits without fighting a formatter) and what we save back to the row. */
+function toRaw(row: SheetRow, key: TrackingColumn['key']): string {
   const raw = (row as any)[key]
-  if (raw == null) return ''
+  if (raw == null || raw === '') return ''
   return String(raw)
+}
+
+/** Formatted value for display when NOT focused — matches the Billing sheet's presentation:
+ *  MM-DD-YY for real dates, "$1,234.56" for currency, raw text for everything else. Empty stays
+ *  empty (no "$0.00" or "mm/dd/yyyy" filler, per Jenali). */
+function toDisplayed(row: SheetRow, column: TrackingColumn): string {
+  const raw = toRaw(row, column.key)
+  if (raw === '') return ''
+  if (column.kind === 'date-text') return toDisplayDate(raw)
+  if (column.kind === 'currency') {
+    const n = parseFloat(raw.replace(/[,$\s]/g, ''))
+    if (!Number.isFinite(n)) return raw
+    return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  }
+  return raw
 }
 
 /** Read the per-row status color from the same fields the Billing sheet writes: the `_color`
  *  siblings on SheetRow. Painting the whole cell (not just a badge) matches Handsontable's look
- *  and lets #Paid/#Claim Sent/#Other stay recognizable at a glance without a legend. */
+ *  and keeps #Paid/#Claim Sent/#Other recognizable at a glance without a legend. */
 function statusColorForCell(row: SheetRow, column: TrackingColumn): { bg?: string; fg?: string } {
-  if (column.kind === 'select-claim') {
-    const bg = row.claim_status_color ?? undefined
-    return bg ? { bg, fg: readableTextColor(bg) } : {}
-  }
-  if (column.kind === 'select-patient-pay') {
-    const bg = row.patient_pay_status_color ?? undefined
-    return bg ? { bg, fg: readableTextColor(bg) } : {}
-  }
-  return {}
+  let bg: string | null | undefined
+  if (column.kind === 'select-claim') bg = row.claim_status_color
+  else if (column.kind === 'select-patient-pay') bg = row.patient_pay_status_color
+  else if (column.kind === 'select-month-payment') bg = row.payment_date_color
+  else if (column.kind === 'select-month-ar') bg = row.ar_date_color
+  if (!bg) return {}
+  return { bg, fg: readableTextColor(bg) }
 }
 
-function TrackingCell({ row, column, canEdit, onEdit }: TrackingCellProps) {
-  const [draft, setDraft] = useState<string>(toDisplay(row, column.key))
+function TrackingCell({ row, column, canEdit, clinicPayroll, onEdit }: TrackingCellProps) {
+  const [focused, setFocused] = useState(false)
+  const [draft, setDraft] = useState<string>(toRaw(row, column.key))
   useEffect(() => {
-    setDraft(toDisplay(row, column.key))
-  }, [row, column.key])
+    if (!focused) setDraft(toRaw(row, column.key))
+  }, [row, column.key, focused])
 
   const readOnly = !canEdit
   // Transparent-bg input so the <td>'s status color (when present) shows through. Dark text so
-  // it reads on light-grey/white cells, matching the Billing sheet's black-on-white style.
+  // it reads on the light table body — matches the Billing sheet's black-on-white cells.
   const baseInput =
     'w-full px-1.5 py-0.5 bg-transparent border border-transparent hover:border-slate-400 focus:bg-white focus:border-primary-500 focus:outline-none text-slate-900 text-sm disabled:opacity-60'
 
@@ -469,8 +513,17 @@ function TrackingCell({ row, column, canEdit, onEdit }: TrackingCellProps) {
   }
   const inputStyle: CSSProperties = fg ? { color: fg } : {}
 
-  if (column.kind === 'select-claim' || column.kind === 'select-patient-pay') {
-    const options = column.kind === 'select-claim' ? CLAIM_STATUSES : PATIENT_PAY_STATUSES
+  const isDropdown =
+    column.kind === 'select-claim' ||
+    column.kind === 'select-patient-pay' ||
+    column.kind === 'select-month-payment' ||
+    column.kind === 'select-month-ar'
+
+  if (isDropdown) {
+    let options: readonly string[]
+    if (column.kind === 'select-claim') options = CLAIM_STATUSES
+    else if (column.kind === 'select-patient-pay') options = PATIENT_PAY_STATUSES
+    else options = getMonthOptions(clinicPayroll)
     return (
       <td className="px-0.5 py-0 border border-slate-300 align-middle" style={tdStyle}>
         <select
@@ -488,7 +541,7 @@ function TrackingCell({ row, column, canEdit, onEdit }: TrackingCellProps) {
             // Native <option> styling doesn't respect parent Tailwind, so the dropdown list uses
             // white bg + black text explicitly (matches the Billing sheet's readable dropdown).
             <option key={opt} value={opt} style={{ backgroundColor: '#ffffff', color: '#212529' }}>
-              {opt || '—'}
+              {opt || ''}
             </option>
           ))}
         </select>
@@ -496,21 +549,29 @@ function TrackingCell({ row, column, canEdit, onEdit }: TrackingCellProps) {
     )
   }
 
-  const inputType = column.kind === 'date' ? 'date' : 'text'
-  const placeholder = column.kind === 'currency' ? '$0.00' : ''
+  // Text-like cells (text, date-text, currency): show raw digits while focused (so the user can
+  // edit without fighting the formatter), show formatted value when unfocused. No placeholder — an
+  // empty box stays empty, per Jenali's "no filler" ask.
+  const shownValue = focused ? draft : toDisplayed(row, column)
+  const inputAlign =
+    column.kind === 'currency' ? 'text-right' : column.kind === 'date-text' ? 'text-center' : ''
 
   return (
     <td className="px-0.5 py-0 border border-slate-300 align-middle" style={tdStyle}>
       <input
-        type={inputType}
-        value={draft}
+        type="text"
+        value={shownValue}
+        onFocus={() => {
+          setDraft(toRaw(row, column.key))
+          setFocused(true)
+        }}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => {
-          if (draft !== toDisplay(row, column.key)) onEdit(draft)
+          setFocused(false)
+          if (draft !== toRaw(row, column.key)) onEdit(draft)
         }}
         disabled={readOnly}
-        placeholder={placeholder}
-        className={baseInput}
+        className={`${baseInput} ${inputAlign}`}
         style={inputStyle}
       />
     </td>
