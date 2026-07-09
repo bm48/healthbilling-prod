@@ -972,7 +972,15 @@ export default function ProvidersTab({
     return { insPay, collectedFromPt, arTotal, total }
   }, [activeProviderRows])
 
-  // AR total: same rows/amounts as Accounts Receivable tab (month + payroll), not date_recorded-only range query
+  // AR total: same rows/amounts as Accounts Receivable tab (month + payroll), not date_recorded-only range query.
+  //
+  // Provider scope must match the AR tab (see AccountsReceivableTab.buildDisplayedFromList): when the
+  // Billing sheet is scoped to a single provider, the AR total in this bottom bar should show only
+  // that provider's ARs. Previously the query filtered by clinic + payroll only, so the summary showed
+  // the whole clinic's AR total against a single-provider Billing sheet (e.g. $17,728.55 clinic-wide
+  // vs $1,356.16 for the provider actually being viewed). Now we pull provider_id and apply the same
+  // client-side filter the AR tab uses — including intentionally excluding legacy NULL-provider rows
+  // when scoped, per the comment there.
   useEffect(() => {
     if (!clinicId) {
       setArSumFromDb(null)
@@ -981,14 +989,15 @@ export default function ProvidersTab({
     const payrollFilter = clinicPayroll === 2 ? (selectedPayroll ?? 1) : 1
     let cancelled = false
     setArSumFromDb(null)
-    providersDebugTab('useEffect[clinicId, selectedMonth, payroll] → accounts_receivables sum (A-R tab rules)', {
+    providersDebugTab('useEffect[clinicId, selectedMonth, payroll, providerId] → accounts_receivables sum (A-R tab rules)', {
       clinicId,
       payrollFilter,
+      providerId,
       month: selectedMonth.toISOString(),
     })
     apiClient
       .from('accounts_receivables')
-      .select('id, amount, ar_year, ar_month, payroll, created_at, date_of_service, date_recorded')
+      .select('id, amount, ar_year, ar_month, payroll, provider_id, created_at, date_of_service, date_recorded')
       .eq('clinic_id', clinicId)
       .eq('payroll', payrollFilter)
       .order('created_at', { ascending: false })
@@ -999,7 +1008,13 @@ export default function ProvidersTab({
         }
         const rows = (data || []) as AccountsReceivable[]
         const inMonth = rows.filter((row) => isAccountsReceivableRowInMonth(row, selectedMonth))
-        const sum = inMonth.reduce((acc, row) => {
+        const scoped = providerId
+          ? inMonth.filter((row) => {
+              const owner = (row as { provider_id?: string | null }).provider_id ?? null
+              return owner === providerId
+            })
+          : inMonth
+        const sum = scoped.reduce((acc, row) => {
           const raw = row.amount
           if (raw == null || (raw as unknown) === 'null') return acc
           const n = typeof raw === 'number' ? raw : parseFloat(String(raw))
@@ -1010,7 +1025,7 @@ export default function ProvidersTab({
     return () => {
       cancelled = true
     }
-  }, [clinicId, selectedMonth, clinicPayroll, selectedPayroll])
+  }, [clinicId, selectedMonth, clinicPayroll, selectedPayroll, providerId])
 
   // Billing metrics (visits, no shows, paid claims, etc.) for the selected month – admin/billing only
   const billingMetrics = useMemo(() => {
