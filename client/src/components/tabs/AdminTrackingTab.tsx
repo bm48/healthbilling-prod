@@ -260,7 +260,24 @@ export default function AdminTrackingTab({
     setVisibleRowCount((prev) => Math.max(prev, BASE_VISIBLE_ROWS))
   }, [effectiveProviderId])
 
-  const displayedRows = useMemo(() => rows.slice(0, visibleRowCount), [rows, visibleRowCount])
+  // Never hide a populated row. When the user has more than BASE_VISIBLE_ROWS of real data, extend
+  // the visible range to cover every populated row plus a small buffer of empties so they can still
+  // add new rows without immediately hitting "+ Add 50 rows". Without this cap-bump, rows past
+  // row 20 were rendered as hidden even though `rows` had 200 entries from the parent's pad.
+  const populatedRowCount = useMemo(() => {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (isRealRow(rows[i])) return i + 1
+    }
+    return 0
+  }, [rows])
+  const effectiveVisibleCount = Math.min(
+    rows.length,
+    Math.max(visibleRowCount, populatedRowCount + BASE_VISIBLE_ROWS),
+  )
+  const displayedRows = useMemo(
+    () => rows.slice(0, effectiveVisibleCount),
+    [rows, effectiveVisibleCount],
+  )
   const summary = useMemo(() => computeSummary(rows), [rows])
   const monthLabelForCsv = useMemo(
     () => selectedMonth.toLocaleString(undefined, { year: 'numeric', month: '2-digit' }),
@@ -348,8 +365,18 @@ export default function AdminTrackingTab({
 
       {/* Table styled to match the real Billing sheet (`.table-spreadsheet` in table-styles.css) but
        *  swapped to a light-grey base instead of white so super-admin can tell at a glance which
-       *  view they're on. Header stays dark-blue (#1e3a8a) like Billing. */}
-      <div className="overflow-auto rounded border border-slate-300 shadow-sm" style={{ backgroundColor: '#f1f5f9' }}>
+       *  view they're on. Header stays dark-blue (#1e3a8a) like Billing.
+       *  max-height + overflow-auto so the body scrolls inside the container while the sticky
+       *  header stays pinned. Without this, the container grew past the viewport and page-scroll
+       *  pushed the header off-screen. Split-screen gets less height for the same reason
+       *  MonthYearTabs does — the pane's already inside a fixed-height frame. */}
+      <div
+        className="overflow-auto rounded border border-slate-300 shadow-sm"
+        style={{
+          backgroundColor: '#f1f5f9',
+          maxHeight: isInSplitScreen ? 'calc(100vh - 340px)' : 'calc(100vh - 300px)',
+        }}
+      >
         <table className="min-w-full text-sm border-collapse" style={{ color: '#212529' }}>
           <thead>
             <tr style={{ backgroundColor: '#1e3a8a', color: '#ffffff' }} className="text-xs uppercase">
