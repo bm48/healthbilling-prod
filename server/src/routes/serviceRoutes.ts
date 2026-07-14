@@ -338,10 +338,21 @@ async function saveProviderSheetRowsCore(
     throw new Error('Sheet not found or access denied')
   }
 
+  // ORDER BY id ASC to match the client's sheet resolution (fetchProviderSheetData does the same
+  // — see ClinicDetail.tsx:1953). When duplicate provider_sheets rows exist for the same
+  // (clinic, provider, month, year, payroll) tuple — a state the codebase already tolerates
+  // silently — the plain LIMIT 1 without ORDER BY returned whichever row Postgres' heap-scan
+  // happened to yield first. That could differ from what the client fetched: reads went to sheet
+  // A, writes went to sheet B. Users saw edits stick during a session (cached optimistic state)
+  // but a hard refresh re-fetched from sheet A which had no writes → blank sheet. That's the
+  // "refresh keeps blanking Spencer's June/July" report from Jenali. Aligning the ORDER BY makes
+  // reads and writes hit the same row, so at worst the "loser" duplicate sheet becomes an
+  // orphan that never gets touched again (recoverable), never a data-loss cliff.
   const sheetQ = await pool.query<{ id: string }>(
     `SELECT id FROM public.provider_sheets
      WHERE clinic_id = $1::uuid AND provider_id = $2::uuid
        AND month = $3 AND year = $4 AND payroll = $5
+     ORDER BY id ASC
      LIMIT 1`,
     [clinicId, providerId, parsed.month, parsed.year, parsed.payroll],
   )
