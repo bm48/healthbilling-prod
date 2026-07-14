@@ -450,7 +450,17 @@ async function saveProviderSheetRowsCore(
   // batch was POSTed (e.g., from pagehide replay or a save fired before initial hydration). Never sweep
   // implicitly again — orphan rows are recoverable; deleted user input is not.
   if (knownDeletedIds !== undefined) {
-    const toDelete = knownDeletedIds.filter((id) => isUuid(String(id)))
+    // Safeguard: never DELETE a UUID that was just UPDATE-ed / INSERT-ed in the same batch. The loop
+    // above already wrote those rows; wiping them here would be equivalent to a no-op save at best
+    // and total data loss at worst. This bit us on the auto-backup restore path: auto-backups carry
+    // rows with their original UUIDs (see the tab-leave INSERT above), so a caller that passes
+    // "delete every current UUID" alongside a batch that also carries those UUIDs (a plausible
+    // implementation of "wipe stale rows, apply backup") ends up UPDATE-ing then DELETE-ing every
+    // row — the sheet goes blank. Filter the intersection out before the DELETE.
+    const savedIdSet = new Set(savedIds.map(String))
+    const toDelete = knownDeletedIds
+      .filter((id) => isUuid(String(id)))
+      .filter((id) => !savedIdSet.has(String(id)))
     if (toDelete.length > 0) {
       await pool.query(
         `DELETE FROM public.provider_sheet_rows WHERE id = ANY($1::uuid[]) AND sheet_id = $2::uuid`,

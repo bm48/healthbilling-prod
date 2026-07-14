@@ -2881,19 +2881,25 @@ export default function ClinicDetail() {
       expiresAt,
     }
     const restoredRows = padSheetRowsTo200(backup.rows as SheetRow[])
-    // Delete every existing UUID row on this sheet as part of the restore. Without this, backup rows
-    // (which arrive with non-UUID ids like `backup-N` or empty strings — see
-    // providerSheetBackups.ts:194) get INSERTed as fresh rows while the pre-existing UUID rows stay
-    // in the DB untouched. The UI paints the correct backup on top so it *looks* fine, but on the
-    // next fetch (tab-leave → return, or a fresh page load) the DB returns BOTH sets and the sheet
-    // shows the same patient row duplicated N times. That's the "every time I leave the sheet it
-    // duplicates again" pattern from Jenali on Spencer's June 2026 sheet.
-    // Scope: we only pass ids that were in state at restore-time for THIS provider+month. The server
-    // route deletes them from THIS sheet_id only (see saveProviderSheetRowsCore's knownDeletedIds
-    // handling), so there is no cross-sheet risk. The "orphan sweep" that was removed for causing
-    // wider data loss (see providerSheetRows.ts:247-249) deleted anything NOT in the batch across
-    // all rows; this is the opposite — an explicit id list, bounded to the current sheet.
-    const preExistingIds = currentRowsForProvider.map((r) => r.id).filter(isUuid)
+    // Clean up duplicate/stale rows that were added AFTER this backup was taken. These are rows
+    // sitting in the DB with UUIDs that do NOT appear in the backup payload — i.e. rows the user
+    // (or a bug) added since. Without an explicit delete list, they stay in the DB forever and the
+    // "sheet duplicates every time I leave" symptom Jenali hit on Spencer's June/July 2026 sheets.
+    //
+    // CRITICAL: exclude any UUID that IS in the backup payload — the server processes UPDATE/INSERT
+    // first and DELETE after (serviceRoutes.ts:361-460). Auto-backups store rows with their original
+    // UUIDs (serviceRoutes.ts:566), so those UUIDs will UPDATE existing rows in the same call.
+    // Adding them to knownDeletedIds too meant the server UPDATEd the row (restoring the data) then
+    // immediately DELETEd it — that's the "sheets no longer save, keep going blank" regression from
+    // my previous fix.
+    const backupUuidSet = new Set<string>()
+    for (const r of restoredRows) {
+      if (isUuid(r.id)) backupUuidSet.add(r.id)
+    }
+    const preExistingIds = currentRowsForProvider
+      .map((r) => r.id)
+      .filter(isUuid)
+      .filter((id) => !backupUuidSet.has(id))
     await saveProviderSheetRows(providerId, restoredRows, preExistingIds, targetMonthKey)
     // Bump providerRowsVersion so HOT updateSettings runs with the merged row IDs — without this,
     // the grid keeps showing the pre-restore data even though state changed.
@@ -2913,9 +2919,10 @@ export default function ClinicDetail() {
   }, [providerId, selectedMonthKey, saveProviderSheetRows])
 
   /** Revert the most recent restore (Ctrl+Z or toast dismiss) by re-applying the snapshot we kept.
-   *  Same duplicate-on-fetch bug applies here as handleAutoBackupRestore: without an explicit delete
-   *  list, the snapshot rows INSERT alongside the current (post-restore) rows and duplicates surface
-   *  on the next fetch. Delete the current sheet's UUID rows before re-applying the pre-restore snap. */
+   *  Same shape as handleAutoBackupRestore: delete UUIDs that are in current DB but NOT in the
+   *  snapshot payload — those are the restored rows we want to remove. Do NOT delete UUIDs that
+   *  the snapshot also carries, because the server UPDATE runs before DELETE and we'd wipe rows
+   *  we just wrote. */
   const handleUndoLastRestore = useCallback(async () => {
     const snap = restoreSnapshotRef.current
     if (!snap) return
@@ -2925,8 +2932,15 @@ export default function ClinicDetail() {
     try {
       const currentRows =
         (providerSheetRowsByMonthRef.current[snap.monthKey] ?? {})[snap.providerId] ?? []
-      const currentUuidIds = currentRows.map((r) => r.id).filter(isUuid)
-      await saveProviderSheetRows(snap.providerId, snap.rows, currentUuidIds, snap.monthKey)
+      const snapUuidSet = new Set<string>()
+      for (const r of snap.rows) {
+        if (isUuid(r.id)) snapUuidSet.add(r.id)
+      }
+      const idsToDelete = currentRows
+        .map((r) => r.id)
+        .filter(isUuid)
+        .filter((id) => !snapUuidSet.has(id))
+      await saveProviderSheetRows(snap.providerId, snap.rows, idsToDelete, snap.monthKey)
       setProviderRowsVersion((v) => v + 1)
     } catch (e) {
       console.error('[auto-backup] undo restore failed:', e)
