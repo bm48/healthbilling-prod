@@ -442,6 +442,40 @@ async function saveProviderSheetRowsCore(
         savedIds.push(id)
       }
     } else {
+      // Duplicate-INSERT diagnostic: warn if an existing row on this sheet already carries the
+      // same identifying tuple (patient_id + appointment_date + cpt_code). The INSERT still runs —
+      // this is observability only, not enforcement — because we don't yet know if it's safe to
+      // reject (e.g. the same patient legitimately has two visits on one day). The log line lets
+      // us catch Jenali's "random duplicate patients appear during the day" pattern live so we
+      // can identify the client-side race producing them. Only fires when the row carries a
+      // non-null patient_id — untyped placeholder INSERTs are noise.
+      const incomingPatientId = payload.patient_id
+      if (incomingPatientId != null && incomingPatientId !== '') {
+        const dupCheck = await pool.query<{ id: string; created_at: string }>(
+          `SELECT id, created_at FROM public.provider_sheet_rows
+           WHERE sheet_id = $1::uuid
+             AND patient_id IS NOT DISTINCT FROM $2
+             AND appointment_date IS NOT DISTINCT FROM $3
+             AND cpt_code IS NOT DISTINCT FROM $4
+           LIMIT 5`,
+          [sheetId, incomingPatientId, payload.appointment_date, payload.cpt_code],
+        )
+        if (dupCheck.rowCount && dupCheck.rowCount > 0) {
+          // eslint-disable-next-line no-console
+          console.warn('[provider_sheet_rows] duplicate INSERT candidate', {
+            sheetId,
+            incomingTempId: id,
+            incomingPatientId,
+            incomingAppointmentDate: payload.appointment_date,
+            incomingCptCode: payload.cpt_code,
+            existingMatches: dupCheck.rows.map((r) => ({ id: r.id, created_at: r.created_at })),
+            callerId,
+            clinicId,
+            providerId,
+            selectedMonthKey,
+          })
+        }
+      }
       const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(', ')
       const iq = await pool.query<Record<string, unknown>>(
         `INSERT INTO public.provider_sheet_rows (${cols.map((c) => `"${c}"`).join(', ')})
