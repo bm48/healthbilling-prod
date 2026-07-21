@@ -442,6 +442,46 @@ async function saveProviderSheetRowsCore(
         savedIds.push(id)
       }
     } else {
+      // Date-only stray guard: reject INSERTs whose ONLY content is `appointment_date`. Those rows
+      // are stale-state artifacts from the pagehide/debounce race (same race behind the identity
+      // dedupe below) — the row was captured mid-edit after the user typed a date but before they
+      // typed a patient_id. They surface in the sheet as rows with nothing but a date filled in
+      // (rows 113/114/116/117/119-122 in the Morgan Huls July 2026 screenshot). A billing row
+      // without a patient / CPT / status / money field / notes isn't a real entry — nothing in
+      // this app makes decisions based on a date alone. Dropping them silently avoids polluting
+      // the sheet with stray dated rows the user never intended to create. Identity-dedupe below
+      // handles the "date + patient_id" duplicates; this guard handles the "date only" cousins.
+      const isDateOnlyStray =
+        payload.appointment_date != null && payload.appointment_date !== '' &&
+        !payload.patient_id &&
+        !payload.cpt_code &&
+        !payload.appointment_status &&
+        !payload.claim_status &&
+        !payload.submit_date &&
+        !payload.insurance_payment &&
+        !payload.insurance_adjustment &&
+        (payload.invoice_amount == null || payload.invoice_amount === '') &&
+        !payload.collected_from_patient &&
+        !payload.patient_pay_status &&
+        !payload.payment_date &&
+        !payload.ar_date &&
+        (payload.ar_amount == null || payload.ar_amount === '') &&
+        !payload.ar_type &&
+        !payload.notes &&
+        !payload.ar_notes
+      if (isDateOnlyStray) {
+        // eslint-disable-next-line no-console
+        console.warn('[provider_sheet_rows] skipped date-only stray INSERT', {
+          sheetId,
+          incomingTempId: id,
+          appointmentDate: payload.appointment_date,
+          callerId,
+          clinicId,
+          providerId,
+          selectedMonthKey,
+        })
+        continue
+      }
       // Server-side idempotency dedupe (mitigation for the client-side pagehide/debounce race —
       // see ClinicDetail.tsx onPageHide + ProvidersTab's per-edit localStorage write around
       // line 2519-2537). When the user types, ProvidersTab writes the current in-memory rows to
