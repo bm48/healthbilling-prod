@@ -442,39 +442,46 @@ async function saveProviderSheetRowsCore(
         savedIds.push(id)
       }
     } else {
-      // Date-only stray guard: reject INSERTs whose ONLY content is `appointment_date`. Those rows
-      // are stale-state artifacts from the pagehide/debounce race (same race behind the identity
-      // dedupe below) — the row was captured mid-edit after the user typed a date but before they
-      // typed a patient_id. They surface in the sheet as rows with nothing but a date filled in
-      // (rows 113/114/116/117/119-122 in the Morgan Huls July 2026 screenshot). A billing row
-      // without a patient / CPT / status / money field / notes isn't a real entry — nothing in
-      // this app makes decisions based on a date alone. Dropping them silently avoids polluting
-      // the sheet with stray dated rows the user never intended to create. Identity-dedupe below
-      // handles the "date + patient_id" duplicates; this guard handles the "date only" cousins.
-      const isDateOnlyStray =
-        payload.appointment_date != null && payload.appointment_date !== '' &&
-        !payload.patient_id &&
-        !payload.cpt_code &&
-        !payload.appointment_status &&
-        !payload.claim_status &&
-        !payload.submit_date &&
-        !payload.insurance_payment &&
-        !payload.insurance_adjustment &&
-        (payload.invoice_amount == null || payload.invoice_amount === '') &&
-        !payload.collected_from_patient &&
-        !payload.patient_pay_status &&
-        !payload.payment_date &&
-        !payload.ar_date &&
-        (payload.ar_amount == null || payload.ar_amount === '') &&
-        !payload.ar_type &&
-        !payload.notes &&
-        !payload.ar_notes
-      if (isDateOnlyStray) {
+      // Patient-less stray guard: reject INSERTs that have NO patient_id AND no money/notes
+      // fields. These are stale-state artifacts from the client-side pagehide/debounce race — the
+      // row was captured mid-edit after the user typed some combination of date / CPT / status
+      // but before they picked a patient. A billing row without a patient isn't a valid entry
+      // (nothing in this app bills or reports on patient-less rows), so persisting them just
+      // pollutes the sheet with "empty" rows the user never intended to create.
+      //
+      // History of this rule:
+      //  - v1: rejected rows that had ONLY `appointment_date` set. Caught the specific pattern in
+      //    rows 113/114/116/117/119-122 in Morgan Huls July 2026.
+      //  - v2 (this): widened to reject any patient-less row that lacks money/notes. Rows 118/119
+      //    in the follow-up screenshot had `appointment_date + cpt_code + status` set (v1's guard
+      //    let them through) but still no patient — those are the same class of stray, produced
+      //    when the race captures a slightly further-along mid-edit.
+      //
+      // We deliberately keep money/notes fields as escape hatches: an incoming row with a real
+      // dollar amount or user-typed notes might represent something the app doesn't otherwise
+      // model (a manual adjustment, an AR-only entry that ended up here) — safer to persist
+      // those than drop them, since money/notes can't be re-derived if lost.
+      const hasPatient = payload.patient_id != null && payload.patient_id !== ''
+      const hasMeaningfulNonPatientField =
+        (payload.insurance_payment != null && payload.insurance_payment !== '') ||
+        (payload.insurance_adjustment != null && payload.insurance_adjustment !== '') ||
+        (payload.collected_from_patient != null && payload.collected_from_patient !== '') ||
+        (payload.invoice_amount != null && payload.invoice_amount !== '') ||
+        (payload.ar_amount != null && payload.ar_amount !== '') ||
+        (payload.provider_payment_amount != null && payload.provider_payment_amount !== '') ||
+        (payload.total != null && payload.total !== '') ||
+        (payload.notes != null && payload.notes !== '') ||
+        (payload.ar_notes != null && payload.ar_notes !== '') ||
+        (payload.provider_payment_notes != null && payload.provider_payment_notes !== '')
+      if (!hasPatient && !hasMeaningfulNonPatientField) {
         // eslint-disable-next-line no-console
-        console.warn('[provider_sheet_rows] skipped date-only stray INSERT', {
+        console.warn('[provider_sheet_rows] skipped patient-less stray INSERT', {
           sheetId,
           incomingTempId: id,
           appointmentDate: payload.appointment_date,
+          cptCode: payload.cpt_code,
+          appointmentStatus: payload.appointment_status,
+          claimStatus: payload.claim_status,
           callerId,
           clinicId,
           providerId,
