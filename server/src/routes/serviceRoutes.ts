@@ -509,18 +509,25 @@ async function saveProviderSheetRowsCore(
       // for the same patient on the same date but with different times/CPTs would still collapse
       // here — if that's a real workflow, we'll add a discriminator (appointment_time in the key,
       // or an explicit "force-insert" flag on the payload) once we see it complained about.
+      //
+      // `IS NOT DISTINCT FROM` on appointment_date (instead of `=`) so NULL matches NULL. Without
+      // that, two INSERTs both carrying (patient_id, appointment_date=NULL) would slip through
+      // because `NULL = NULL` is false in SQL. That was the "patient set, date not yet typed"
+      // gap Bert flagged after the first server-side dedupe rolled out — the identity dedupe
+      // caught (P, D) + (P, D) duplicates but not (P, NULL) + (P, NULL) duplicates from the same
+      // race. The outer guard now only requires `patient_id`, not date, so the SELECT runs for
+      // both cases. Rows without patient_id go straight to INSERT (no meaningful identity to
+      // dedupe on); those either carry other data (fine to have multiple) or are date-only
+      // strays already dropped by the guard above.
       const incomingPatientId = payload.patient_id
-      const incomingApptDate = payload.appointment_date
+      const incomingApptDate = payload.appointment_date ?? null
       let idempotentUpdateApplied = false
-      if (
-        incomingPatientId != null && incomingPatientId !== '' &&
-        incomingApptDate != null && incomingApptDate !== ''
-      ) {
+      if (incomingPatientId != null && incomingPatientId !== '') {
         const dupCheck = await pool.query<{ id: string }>(
           `SELECT id FROM public.provider_sheet_rows
            WHERE sheet_id = $1::uuid
              AND patient_id = $2
-             AND appointment_date = $3
+             AND appointment_date IS NOT DISTINCT FROM $3
            ORDER BY created_at ASC
            LIMIT 1`,
           [sheetId, incomingPatientId, incomingApptDate],
