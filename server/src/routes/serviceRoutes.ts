@@ -442,50 +442,97 @@ async function saveProviderSheetRowsCore(
         savedIds.push(id)
       }
     } else {
-      // Duplicate-INSERT diagnostic: warn if an existing row on this sheet already carries the
-      // same identifying tuple (patient_id + appointment_date + cpt_code). The INSERT still runs —
-      // this is observability only, not enforcement — because we don't yet know if it's safe to
-      // reject (e.g. the same patient legitimately has two visits on one day). The log line lets
-      // us catch Jenali's "random duplicate patients appear during the day" pattern live so we
-      // can identify the client-side race producing them. Only fires when the row carries a
-      // non-null patient_id — untyped placeholder INSERTs are noise.
+      // Server-side idempotency dedupe (mitigation for the client-side pagehide/debounce race —
+      // see ClinicDetail.tsx onPageHide + ProvidersTab's per-edit localStorage write around
+      // line 2519-2537). When the user types, ProvidersTab writes the current in-memory rows to
+      // localStorage (with `new-*` temp ids), then the 400ms debounced save fires. If the tab
+      // becomes hidden mid-window, ClinicDetail's onPageHide POSTs the localStorage rows via
+      // keepalive fetch — server INSERTs them. When the tab returns, the pending debounce also
+      // fires with the SAME `new-*` ids (the ref never learned about the pagehide POST because it
+      // was fire-and-forget with no response). Server INSERTs them again → duplicate row for the
+      // same edit. Multiply by every tab-switch during a workday and you get Jenali's Morgan/
+      // Spencer/Keana pattern (same patient row repeated 5-7 times, sometimes with mixed states).
+      //
+      // Rule: if an incoming INSERT carries a real identity (patient_id AND appointment_date both
+      // non-null) that matches an existing row on this sheet, treat it as an UPDATE of the
+      // existing row instead of creating a new one. Use COALESCE on EVERY column (not just the
+      // usual PROTECTED_FROM_NULL set) so a stale payload with fewer fields can never null out
+      // data that arrived from another (concurrent or earlier) save. Net effect: identical
+      // duplicates collapse into a single row; enriching data merges into the existing row;
+      // legitimately distinct rows (different date, different patient, or a truly new visit) go
+      // through the normal INSERT path.
+      //
+      // Match key is (sheet_id, patient_id, appointment_date). We intentionally do NOT include
+      // cpt_code / appointment_status in the match because the race often catches a row before
+      // those fields are typed, so the duplicate INSERT would carry NULL cpt while the earlier
+      // one has the real CPT — requiring exact cpt match would leave the duplicate. Two visits
+      // for the same patient on the same date but with different times/CPTs would still collapse
+      // here — if that's a real workflow, we'll add a discriminator (appointment_time in the key,
+      // or an explicit "force-insert" flag on the payload) once we see it complained about.
       const incomingPatientId = payload.patient_id
-      if (incomingPatientId != null && incomingPatientId !== '') {
-        const dupCheck = await pool.query<{ id: string; created_at: string }>(
-          `SELECT id, created_at FROM public.provider_sheet_rows
+      const incomingApptDate = payload.appointment_date
+      let idempotentUpdateApplied = false
+      if (
+        incomingPatientId != null && incomingPatientId !== '' &&
+        incomingApptDate != null && incomingApptDate !== ''
+      ) {
+        const dupCheck = await pool.query<{ id: string }>(
+          `SELECT id FROM public.provider_sheet_rows
            WHERE sheet_id = $1::uuid
-             AND patient_id IS NOT DISTINCT FROM $2
-             AND appointment_date IS NOT DISTINCT FROM $3
-             AND cpt_code IS NOT DISTINCT FROM $4
-           LIMIT 5`,
-          [sheetId, incomingPatientId, payload.appointment_date, payload.cpt_code],
+             AND patient_id = $2
+             AND appointment_date = $3
+           ORDER BY created_at ASC
+           LIMIT 1`,
+          [sheetId, incomingPatientId, incomingApptDate],
         )
-        if (dupCheck.rowCount && dupCheck.rowCount > 0) {
-          // eslint-disable-next-line no-console
-          console.warn('[provider_sheet_rows] duplicate INSERT candidate', {
-            sheetId,
-            incomingTempId: id,
-            incomingPatientId,
-            incomingAppointmentDate: payload.appointment_date,
-            incomingCptCode: payload.cpt_code,
-            existingMatches: dupCheck.rows.map((r) => ({ id: r.id, created_at: r.created_at })),
-            callerId,
-            clinicId,
-            providerId,
-            selectedMonthKey,
-          })
+        if (dupCheck.rowCount && dupCheck.rows[0]) {
+          const existingId = dupCheck.rows[0].id
+          // COALESCE on every column: incoming NULL never overwrites existing data. Incoming non-
+          // null does overwrite (so enrichment — adding CPT to a row that only had patient/date —
+          // still works). This mirrors PROTECTED_FROM_NULL's semantics but applied universally.
+          const dedupCols = cols.filter((c) => c !== 'sheet_id')
+          const dedupSetParts = dedupCols.map(
+            (c, idx) => `"${c}" = COALESCE($${idx + 1}, "${c}")`,
+          )
+          const dedupSetParams = dedupCols.map((c) => payload[c])
+          const uq = await pool.query<Record<string, unknown>>(
+            `UPDATE public.provider_sheet_rows
+             SET ${dedupSetParts.join(', ')}, "updated_at" = now()
+             WHERE id = $${dedupSetParams.length + 1}::uuid AND sheet_id = $${dedupSetParams.length + 2}::uuid
+             RETURNING *`,
+            [...dedupSetParams, existingId, sheetId],
+          )
+          if (uq.rows[0]) {
+            savedIds.push(String(uq.rows[0].id))
+            savedRows.push(uq.rows[0])
+            idempotentUpdateApplied = true
+            // eslint-disable-next-line no-console
+            console.warn('[provider_sheet_rows] collapsed duplicate INSERT into existing row', {
+              sheetId,
+              incomingTempId: id,
+              collapsedIntoRowId: existingId,
+              patientId: incomingPatientId,
+              appointmentDate: incomingApptDate,
+              callerId,
+              clinicId,
+              providerId,
+              selectedMonthKey,
+            })
+          }
         }
       }
-      const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(', ')
-      const iq = await pool.query<Record<string, unknown>>(
-        `INSERT INTO public.provider_sheet_rows (${cols.map((c) => `"${c}"`).join(', ')})
-         VALUES (${placeholders})
-         RETURNING *`,
-        values,
-      )
-      if (iq.rows[0]) {
-        savedIds.push(String(iq.rows[0].id))
-        savedRows.push(iq.rows[0])
+      if (!idempotentUpdateApplied) {
+        const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(', ')
+        const iq = await pool.query<Record<string, unknown>>(
+          `INSERT INTO public.provider_sheet_rows (${cols.map((c) => `"${c}"`).join(', ')})
+           VALUES (${placeholders})
+           RETURNING *`,
+          values,
+        )
+        if (iq.rows[0]) {
+          savedIds.push(String(iq.rows[0].id))
+          savedRows.push(iq.rows[0])
+        }
       }
     }
   }
