@@ -3907,9 +3907,11 @@ export default function ClinicDetail() {
         )
       }
       case 'admin_tracking': {
-        // Super-admin-only mirror of the Billing sheet. Uses the same `provider_sheet_rows` state as
-        // the Billing tab (`selectedMonth` / `selectedPayroll`, not the Provider-Pay clock) so edits
-        // on either tab reflect instantly without a separate save path.
+        // Super-admin-only view. Reads live from the same `provider_sheet_rows` state as the Billing
+        // tab (`selectedMonth` / `selectedPayroll`, not the Provider-Pay clock) so new Billing data
+        // shows up here immediately. Edits made inside Admin Tracking are held in a per-cell
+        // localStorage overlay inside the tab component and never flow back to Billing — per
+        // Jenali's ask, this is a one-way mirror.
         if (!showAdminTrackingTab) return null
         const scopePid = providerId ?? getLastSelectedProviderId() ?? undefined
         const rowsForProvider = scopePid ? providerSheetRows[scopePid] ?? [] : []
@@ -3930,8 +3932,6 @@ export default function ClinicDetail() {
               if (clinic?.payroll === 2) setSelectedPayroll(payroll)
             }}
             selectedPayroll={clinic?.payroll === 2 ? selectedPayroll : undefined}
-            onUpdateRow={handleUpdateProviderSheetRow}
-            onSaveRows={saveProviderSheetRowsDirect}
             onProviderChange={(pid) => {
               if (!clinicId || !pid) return
               // Navigate to the same provider's Admin Tracking URL so refreshes and back-nav stay scoped.

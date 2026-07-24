@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import type { Patient, Provider, SheetRow, StatusColor } from '@/types'
 import MonthYearTabs from '@/components/MonthYearTabs'
 import { readableTextColor, toDisplayDate } from '@/lib/utils'
@@ -13,8 +13,10 @@ export interface AdminTrackingTabProps {
    *  tab keeps in sync via enrichSheetRowsFromPatients. */
   patients: Patient[]
   statusColors: StatusColor[]
-  /** Rows for the currently selected provider + month, sourced from `provider_sheet_rows`.
-   *  Same underlying state as the Billing tab so edits mirror automatically. */
+  /** Rows for the currently selected provider + month, sourced from `provider_sheet_rows` and used
+   *  as the READ-ONLY base for this view. Admin edits are layered on top locally (see overlay
+   *  below) and never propagate back to `provider_sheet_rows` — per Jenali's ask, Billing → Admin
+   *  Tracking is one-way. */
   rows: SheetRow[]
   canEdit: boolean
   isInSplitScreen?: boolean
@@ -23,11 +25,6 @@ export interface AdminTrackingTabProps {
    *  the Billing month + payroll state is separate from the Provider-Pay clock. */
   onSelectMonth: (date: Date, payroll: 1 | 2) => void
   selectedPayroll?: 1 | 2
-  /** Update a single cell on the provider's sheet. Same callback the Billing tab uses. */
-  onUpdateRow: (providerId: string, rowId: string, field: string, value: any) => void
-  /** Immediate save trigger — parent's `saveProviderSheetRowsDirect`. We debounce edits here and
-   *  call this with the latest rows once the debounce window closes. */
-  onSaveRows: (providerId: string, rows: SheetRow[]) => Promise<void>
   onProviderChange?: (providerId: string) => void
 }
 
@@ -125,7 +122,6 @@ function getMonthOptions(clinicPayroll: 1 | 2 | undefined): readonly string[] {
 
 const BASE_VISIBLE_ROWS = 20
 const ADD_ROWS_STEP = 50
-const DEBOUNCE_MS = 400
 
 /** Parse currency-ish input ($1,234.56, "1234.56", or empty). Returns 0 for anything unparseable
  *  so a stray character in one cell never nukes the whole sum. */
@@ -139,6 +135,16 @@ function parseAmount(val: unknown): number {
 
 function formatCurrency(n: number): string {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/** True if a currency raw parses to exactly zero. We treat these as "no value" everywhere in this
+ *  tab — a lot of `provider_sheet_rows` rows come back with "0" / "0.00" in currency columns as a
+ *  placeholder, and Jenali reported those "0"s were sticking around when she typed (bug: input
+ *  starts with "0", "5" becomes "05"). Zero displays blank; typing into a blank cell starts fresh. */
+function isZeroCurrencyRaw(raw: string): boolean {
+  if (raw === '') return false
+  const n = parseFloat(raw.replace(/[,$\s]/g, ''))
+  return Number.isFinite(n) && n === 0
 }
 
 /** True if the row is not just an empty placeholder — used for #visits and the CSV export.
@@ -237,7 +243,57 @@ function pickProviderForFallback(providers: Provider[], preferId?: string): Prov
   return providers.find((p) => !p.id.startsWith('new-')) ?? null
 }
 
+/** Overlay = per-cell edits made in Admin Tracking that must NOT reach Billing. Keyed by row.id →
+ *  partial patch of the row. Persisted to localStorage so a refresh preserves the admin's work,
+ *  scoped by clinic + provider + month (+ payroll half for biweekly clinics) so switching context
+ *  loads the right slice. */
+type OverlayMap = Record<string, Partial<SheetRow>>
+
+function overlayStorageKey(
+  clinicId: string,
+  providerId: string | undefined,
+  selectedMonth: Date,
+  clinicPayroll: 1 | 2 | undefined,
+  selectedPayroll: 1 | 2 | undefined,
+): string {
+  const y = selectedMonth.getFullYear()
+  const m = String(selectedMonth.getMonth() + 1).padStart(2, '0')
+  const base = `admin_tracking_overlay:${clinicId}:${providerId ?? ''}:${y}-${m}`
+  return clinicPayroll === 2 ? `${base}:${selectedPayroll ?? 1}` : base
+}
+
+function loadOverlay(key: string): OverlayMap {
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem(key) : null
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? (parsed as OverlayMap) : {}
+  } catch {
+    return {}
+  }
+}
+
+function persistOverlay(key: string, overlay: OverlayMap): void {
+  try {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(key, JSON.stringify(overlay))
+  } catch {
+    // Storage full / disabled — silently ignore; the in-memory overlay still works for the session.
+  }
+}
+
+/** Fields that carry a sibling `_color` cache. When the admin overrides the value, we must also
+ *  null out the cached color so `statusColorForCell`'s fallback recomputes the color from the new
+ *  value; otherwise the stale color (from the Billing row) would keep painting the cell. */
+const COLOR_LINKED_FIELDS: Record<string, keyof SheetRow> = {
+  claim_status: 'claim_status_color',
+  patient_pay_status: 'patient_pay_status_color',
+  payment_date: 'payment_date_color',
+  ar_date: 'ar_date_color',
+}
+
 export default function AdminTrackingTab({
+  clinicId,
   clinicPayroll,
   providerId,
   providers,
@@ -248,8 +304,6 @@ export default function AdminTrackingTab({
   selectedMonth,
   onSelectMonth,
   selectedPayroll,
-  onUpdateRow,
-  onSaveRows,
   onProviderChange,
 }: AdminTrackingTabProps) {
   const effectiveProvider = pickProviderForFallback(providers, providerId)
@@ -260,74 +314,91 @@ export default function AdminTrackingTab({
     setVisibleRowCount((prev) => Math.max(prev, BASE_VISIBLE_ROWS))
   }, [effectiveProviderId])
 
+  const overlayKey = useMemo(
+    () => overlayStorageKey(clinicId, effectiveProviderId, selectedMonth, clinicPayroll, selectedPayroll),
+    [clinicId, effectiveProviderId, selectedMonth, clinicPayroll, selectedPayroll],
+  )
+  const [overlay, setOverlay] = useState<OverlayMap>(() => loadOverlay(overlayKey))
+  useEffect(() => {
+    setOverlay(loadOverlay(overlayKey))
+  }, [overlayKey])
+
+  /** Merged rows = Billing base + admin overlay applied on top. Every derived value (displayed
+   *  rows, summary, CSV) reads from this, never from `rows` directly, so the admin sees a
+   *  consistent view of their edits without any of them leaking back to Billing. */
+  const mergedRows = useMemo(() => {
+    if (Object.keys(overlay).length === 0) return rows
+    return rows.map((row) => {
+      const patch = overlay[row.id]
+      return patch ? { ...row, ...patch } : row
+    })
+  }, [rows, overlay])
+
   // Never hide a populated row. When the user has more than BASE_VISIBLE_ROWS of real data, extend
   // the visible range to cover every populated row plus a small buffer of empties so they can still
   // add new rows without immediately hitting "+ Add 50 rows". Without this cap-bump, rows past
   // row 20 were rendered as hidden even though `rows` had 200 entries from the parent's pad.
   const populatedRowCount = useMemo(() => {
-    for (let i = rows.length - 1; i >= 0; i--) {
-      if (isRealRow(rows[i])) return i + 1
+    for (let i = mergedRows.length - 1; i >= 0; i--) {
+      if (isRealRow(mergedRows[i])) return i + 1
     }
     return 0
-  }, [rows])
+  }, [mergedRows])
   const effectiveVisibleCount = Math.min(
-    rows.length,
+    mergedRows.length,
     Math.max(visibleRowCount, populatedRowCount + BASE_VISIBLE_ROWS),
   )
   const displayedRows = useMemo(
-    () => rows.slice(0, effectiveVisibleCount),
-    [rows, effectiveVisibleCount],
+    () => mergedRows.slice(0, effectiveVisibleCount),
+    [mergedRows, effectiveVisibleCount],
   )
-  const summary = useMemo(() => computeSummary(rows), [rows])
+  const summary = useMemo(() => computeSummary(mergedRows), [mergedRows])
   const monthLabelForCsv = useMemo(
     () => selectedMonth.toLocaleString(undefined, { year: 'numeric', month: '2-digit' }),
     [selectedMonth]
   )
 
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const latestRowsRef = useRef<SheetRow[]>(rows)
-  useEffect(() => { latestRowsRef.current = rows }, [rows])
-  const pendingSavePidRef = useRef<string | null>(null)
-  const onSaveRowsRef = useRef(onSaveRows)
-  useEffect(() => { onSaveRowsRef.current = onSaveRows }, [onSaveRows])
-
-  useEffect(() => () => {
-    // If the user switches tabs while a save is scheduled, don't drop it — fire immediately so their
-    // edit reaches the DB. Silent drop was the class of bug the "Silent save guards" memory calls out.
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = null
-      const pid = pendingSavePidRef.current
-      if (pid) {
-        void onSaveRowsRef.current(pid, latestRowsRef.current).catch((err) => {
-          console.error('[AdminTrackingTab] unmount-flush save failed:', err)
-        })
-      }
-    }
-    pendingSavePidRef.current = null
-  }, [])
-
-  const scheduleSave = () => {
-    if (!effectiveProviderId) return
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    pendingSavePidRef.current = effectiveProviderId
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null
-      const pid = pendingSavePidRef.current
-      pendingSavePidRef.current = null
-      if (!pid) return
-      void onSaveRowsRef.current(pid, latestRowsRef.current).catch((err) => {
-        console.error('[AdminTrackingTab] debounced save failed:', err)
+  const applyEdit = useCallback(
+    (rowId: string, field: keyof SheetRow, rawValue: string) => {
+      if (!canEdit) return
+      const trimmed = rawValue === '' ? null : rawValue
+      setOverlay((prev) => {
+        const rowPatch: Partial<SheetRow> = { ...(prev[rowId] ?? {}), [field]: trimmed as any }
+        const colorField = COLOR_LINKED_FIELDS[field as string]
+        if (colorField) {
+          // Null the cached color; statusColorForCell will re-derive from the new value via
+          // status_colors so the swatch matches (e.g., Paid → green, Denial → red).
+          ;(rowPatch as any)[colorField] = null
+        }
+        const next: OverlayMap = { ...prev, [rowId]: rowPatch }
+        persistOverlay(overlayKey, next)
+        return next
       })
-    }, DEBOUNCE_MS)
-  }
+    },
+    [canEdit, overlayKey],
+  )
 
-  const applyEdit = (rowId: string, field: string, rawValue: string) => {
-    if (!canEdit || !effectiveProviderId) return
-    const trimmed = rawValue === '' ? null : rawValue
-    onUpdateRow(effectiveProviderId, rowId, field, trimmed)
-    scheduleSave()
-  }
+  // Refs for Enter-key row navigation. Keyed by `${rowIdx}:${colIdx}` — cells register their
+  // editable element on mount and unregister on unmount. Pressing Enter in a cell focuses the same
+  // column in the next row (spreadsheet-like), per Jenali's ask.
+  const inputRefs = useRef<Map<string, HTMLInputElement | HTMLSelectElement>>(new Map())
+  const registerCellRef = useCallback(
+    (rowIdx: number, colIdx: number, el: HTMLInputElement | HTMLSelectElement | null) => {
+      const key = `${rowIdx}:${colIdx}`
+      if (el) inputRefs.current.set(key, el)
+      else inputRefs.current.delete(key)
+    },
+    [],
+  )
+  const focusNextRowCell = useCallback((rowIdx: number, colIdx: number) => {
+    const target = inputRefs.current.get(`${rowIdx + 1}:${colIdx}`)
+    if (!target) return
+    target.focus()
+    if (target instanceof HTMLInputElement) {
+      // Select all so the next Enter-then-type overwrites cleanly, matching Excel/Sheets behavior.
+      target.select()
+    }
+  }, [])
 
   const handleAddRows = () => {
     setVisibleRowCount((n) => n + ADD_ROWS_STEP)
@@ -402,7 +473,7 @@ export default function AdminTrackingTab({
                 <td className="px-2 py-0.5 border border-slate-300 text-slate-500 text-xs text-center">
                   {idx + 1}
                 </td>
-                {COLUMNS.map((col) => (
+                {COLUMNS.map((col, colIdx) => (
                   <TrackingCell
                     key={col.key}
                     row={row}
@@ -410,6 +481,10 @@ export default function AdminTrackingTab({
                     canEdit={canEdit}
                     clinicPayroll={clinicPayroll}
                     statusColors={statusColors}
+                    rowIdx={idx}
+                    colIdx={colIdx}
+                    registerRef={registerCellRef}
+                    onEnterNext={() => focusNextRowCell(idx, colIdx)}
                     onEdit={(value) => applyEdit(row.id, col.key, value)}
                   />
                 ))}
@@ -444,7 +519,7 @@ export default function AdminTrackingTab({
           type="button"
           onClick={() => {
             const providerName = effectiveProvider ? `${effectiveProvider.first_name} ${effectiveProvider.last_name}` : 'Provider'
-            downloadCsv(providerName, monthLabelForCsv, rows)
+            downloadCsv(providerName, monthLabelForCsv, mergedRows)
           }}
           className="px-3 py-1.5 rounded bg-white/10 hover:bg-white/20 text-white text-sm border border-white/20"
         >
@@ -483,6 +558,10 @@ interface TrackingCellProps {
   canEdit: boolean
   clinicPayroll?: 1 | 2
   statusColors: StatusColor[]
+  rowIdx: number
+  colIdx: number
+  registerRef: (rowIdx: number, colIdx: number, el: HTMLInputElement | HTMLSelectElement | null) => void
+  onEnterNext: () => void
   onEdit: (value: string) => void
 }
 
@@ -517,9 +596,19 @@ function toRaw(row: SheetRow, key: TrackingColumn['key']): string {
   return String(raw)
 }
 
+/** Raw value tuned for editing: same as toRaw, except zero-valued currency is returned as ''.
+ *  This is what fills the input's `draft` so the user typing "5" into a "0"-backed cell doesn't
+ *  produce "05". */
+function editableRawFor(row: SheetRow, column: TrackingColumn): string {
+  const raw = toRaw(row, column.key)
+  if (column.kind === 'currency' && isZeroCurrencyRaw(raw)) return ''
+  return raw
+}
+
 /** Formatted value for display when NOT focused — matches the Billing sheet's presentation:
  *  MM-DD-YY for real dates, "$1,234.56" for currency, raw text for everything else. Empty stays
- *  empty (no "$0.00" or "mm/dd/yyyy" filler, per Jenali). */
+ *  empty (no "$0.00" or "mm/dd/yyyy" filler, per Jenali). Zero-valued currency also renders as
+ *  blank, since Billing sometimes seeds those columns with "0" as a placeholder. */
 function toDisplayed(row: SheetRow, column: TrackingColumn): string {
   const raw = toRaw(row, column.key)
   if (raw === '') return ''
@@ -527,6 +616,7 @@ function toDisplayed(row: SheetRow, column: TrackingColumn): string {
   if (column.kind === 'currency') {
     const n = parseFloat(raw.replace(/[,$\s]/g, ''))
     if (!Number.isFinite(n)) return raw
+    if (n === 0) return ''
     return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
   return raw
@@ -568,12 +658,23 @@ function statusColorForCell(
   return looked ? { bg: looked.bg, fg: looked.fg } : {}
 }
 
-function TrackingCell({ row, column, canEdit, clinicPayroll, statusColors, onEdit }: TrackingCellProps) {
+function TrackingCell({
+  row,
+  column,
+  canEdit,
+  clinicPayroll,
+  statusColors,
+  rowIdx,
+  colIdx,
+  registerRef,
+  onEnterNext,
+  onEdit,
+}: TrackingCellProps) {
   const [focused, setFocused] = useState(false)
-  const [draft, setDraft] = useState<string>(toRaw(row, column.key))
+  const [draft, setDraft] = useState<string>(() => editableRawFor(row, column))
   useEffect(() => {
-    if (!focused) setDraft(toRaw(row, column.key))
-  }, [row, column.key, focused])
+    if (!focused) setDraft(editableRawFor(row, column))
+  }, [row, column, focused])
 
   const readOnly = !canEdit
   // Transparent-bg input so the <td>'s status color (when present) shows through. Dark text so
@@ -594,6 +695,17 @@ function TrackingCell({ row, column, canEdit, clinicPayroll, statusColors, onEdi
     column.kind === 'select-month-payment' ||
     column.kind === 'select-month-ar'
 
+  const handleEnter = (e: KeyboardEvent<HTMLInputElement | HTMLSelectElement>) => {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    // For text-like cells commit the pending draft first (blur would do this, but Enter skips blur
+    // because we call focus() on the next cell — which does fire our onBlur, but only AFTER the
+    // committed value has been read from state). Belt-and-braces: commit synchronously here so
+    // the overlay sees the edit before focus moves.
+    if (!isDropdown && draft !== editableRawFor(row, column)) onEdit(draft)
+    onEnterNext()
+  }
+
   if (isDropdown) {
     let options: readonly string[]
     if (column.kind === 'select-claim') options = CLAIM_STATUSES
@@ -603,12 +715,14 @@ function TrackingCell({ row, column, canEdit, clinicPayroll, statusColors, onEdi
     return (
       <td className="px-0.5 py-0 border border-slate-300 align-middle" style={tdStyle}>
         <select
+          ref={(el) => registerRef(rowIdx, colIdx, el)}
           value={draft}
           onChange={(e) => {
             const next = e.target.value
             setDraft(next)
             onEdit(next)
           }}
+          onKeyDown={handleEnter}
           disabled={readOnly}
           className={baseInput}
           style={inputStyle}
@@ -642,16 +756,18 @@ function TrackingCell({ row, column, canEdit, clinicPayroll, statusColors, onEdi
   return (
     <td className="px-0.5 py-0 border border-slate-300 align-middle" style={tdStyle}>
       <input
+        ref={(el) => registerRef(rowIdx, colIdx, el)}
         type="text"
         value={shownValue}
         onFocus={() => {
-          setDraft(toRaw(row, column.key))
+          setDraft(editableRawFor(row, column))
           setFocused(true)
         }}
         onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={handleEnter}
         onBlur={() => {
           setFocused(false)
-          if (draft !== toRaw(row, column.key)) onEdit(draft)
+          if (draft !== editableRawFor(row, column)) onEdit(draft)
         }}
         disabled={readOnly}
         className={`${baseInput} ${inputAlign}`}
