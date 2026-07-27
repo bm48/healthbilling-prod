@@ -392,10 +392,12 @@ async function saveProviderSheetRowsCore(
       // `_color` fields derived from paired non-color values; user-preference `highlight_color`;
       // `invoice_amount` which is computed; `sort_order` which is structural).
       //
-      // If a specific column here turns out to have a legitimate clear workflow we didn't anticipate,
-      // the escape hatch is an explicit `clearColumns: ['<col>', ...]` opt-out on the request payload
-      // that this loop can consult before applying COALESCE. Don't add that speculatively — wait for
-      // the concrete complaint.
+      // Escape hatch (implemented 2026-07-27): if the incoming row carries `_clearColumns: string[]`
+      // — a meta field the client attaches when the user's action was explicitly "clear this
+      // column" — those columns bypass COALESCE and write the incoming value (null) directly.
+      // `_clearColumns` is stripped naturally by rowToDbPayload (it only pulls known DB columns), so
+      // it never reaches the SQL statement itself. Currently the only client tagger is the
+      // "user cleared the patient dropdown" flow at ProvidersTab.tsx:2135 + ClinicDetail.tsx:3295.
       const PROTECTED_FROM_NULL = new Set([
         // Original three — the columns Jenali repeatedly lost data on and the reason this guard exists.
         'appointment_date',
@@ -420,13 +422,35 @@ async function saveProviderSheetRowsCore(
         'notes',
         'ar_notes',
         'provider_payment_notes',
+        // Patient identity + display fields (added 2026-07-27). These were the leak that let stray
+        // "date-only" rows form on Spencer's July 2026 sheet: an UPDATE payload arriving with
+        // patient_id=null (from any of a pagehide race, a stale-snapshot save, or an accidental
+        // Handsontable fill-down) would clear the patient while `appointment_date` — which is
+        // PROTECTED — stuck around, orphaning the row. Now patient_id is protected the same way,
+        // so a stale-null payload no longer erases the patient. The intentional "user cleared the
+        // patient dropdown" flow opts in via `_clearColumns` (see comment above).
+        'patient_id',
+        'patient_first_name',
+        'patient_last_name',
+        'last_initial',
+        'patient_insurance',
+        'patient_copay',
+        'patient_coinsurance',
       ])
+      const rawClearCols = (row as Record<string, unknown>)._clearColumns
+      const clearCols = new Set(
+        Array.isArray(rawClearCols)
+          ? rawClearCols.filter((c): c is string => typeof c === 'string')
+          : [],
+      )
       const setParts = cols
         .filter((c) => c !== 'sheet_id')
         .map((c, idx) =>
-          PROTECTED_FROM_NULL.has(c)
-            ? `"${c}" = COALESCE($${idx + 1}, "${c}")`
-            : `"${c}" = $${idx + 1}`,
+          clearCols.has(c)
+            ? `"${c}" = $${idx + 1}`
+            : PROTECTED_FROM_NULL.has(c)
+              ? `"${c}" = COALESCE($${idx + 1}, "${c}")`
+              : `"${c}" = $${idx + 1}`,
         )
       const setParams = cols.filter((c) => c !== 'sheet_id').map((c) => payload[c])
       const uq = await pool.query<Record<string, unknown>>(

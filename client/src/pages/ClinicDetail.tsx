@@ -3300,6 +3300,19 @@ export default function ClinicDetail() {
             updated.patient_insurance = null
             updated.patient_copay = null
             updated.patient_coinsurance = null
+            // Tag as intentional clear so the server bypasses the patient-identity COALESCE guard
+            // (added 2026-07-27; see serviceRoutes.ts saveProviderSheetRowsCore `_clearColumns`).
+            // Without this, the null writes would be silently ignored — patient info would stick
+            // around in the DB even though the user asked to clear it.
+            ;(updated as unknown as { _clearColumns: string[] })._clearColumns = [
+              'patient_id',
+              'patient_first_name',
+              'patient_last_name',
+              'last_initial',
+              'patient_insurance',
+              'patient_copay',
+              'patient_coinsurance',
+            ]
           }
           if (field === 'billing_code') {
             const code = billingCodes.find(c => c.code === value)

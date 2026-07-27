@@ -2132,7 +2132,7 @@ export default function ProvidersTab({
             if (t) clearTimeout(t)
             patientIdEditDebounceRef.current.delete(row)
             patientIdEditLatestPidRef.current.delete(row)
-            updatedRows[row] = {
+            const cleared = {
               ...sheetRow,
               id: newId,
               patient_id: null,
@@ -2144,6 +2144,20 @@ export default function ProvidersTab({
               patient_coinsurance: null,
               updated_at: new Date().toISOString(),
             } as SheetRow
+            // Tag as an intentional clear so the server bypasses the patient-identity COALESCE
+            // guard for these columns (serviceRoutes.ts saveProviderSheetRowsCore's `_clearColumns`
+            // escape hatch, added 2026-07-27). Without this tag, patient_id + friends are
+            // silent-null protected — the stray-row fix — and this deliberate clear would no-op.
+            ;(cleared as unknown as { _clearColumns: string[] })._clearColumns = [
+              'patient_id',
+              'patient_first_name',
+              'patient_last_name',
+              'last_initial',
+              'patient_insurance',
+              'patient_copay',
+              'patient_coinsurance',
+            ]
+            updatedRows[row] = cleared
             return
           }
           // Non-empty IDs must be validated against DB first (beforeChange defers + setDataAtCell(..., 'patientIdDbValidated')).
