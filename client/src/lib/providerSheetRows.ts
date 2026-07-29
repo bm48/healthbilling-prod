@@ -145,10 +145,33 @@ async function resolveSaveContext(
   }
 }
 
+/** Optional observability hints supplied to the server audit log. Never affect the write. */
+export interface SaveObservability {
+  /** Human-readable trigger for the save. Enum-ish; the audit viewer groups by this. Examples:
+   *  'debounced' (400ms after typing), 'pagehide-keepalive' (tab hidden mid-edit),
+   *  'restore' (auto-backup restore), 'manual' (an explicit Save button), 'unknown' (default). */
+  source?: string
+  /** Rarely provided by the caller — usually generated inside saveSheetRowsViaApi via
+   *  crypto.randomUUID(). Only pass an override if you're threading a correlation ID from a
+   *  larger flow that already has one (e.g., restore → save → post-restore fetch). */
+  correlationId?: string
+}
+
+/** UUID for `correlationId` when the browser exposes crypto.randomUUID (all modern browsers +
+ *  our SSR-free deploy). Falls back to a timestamped random string so tests / older environments
+ *  don't crash — the audit column is a plain text so any unique-ish value works. */
+function generateCorrelationId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `corr-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+}
+
 async function saveSheetRowsViaApi(
   rows: SheetRow[],
   context: SaveSheetRowsContext,
   knownDeletedIds?: string[],
+  observability?: SaveObservability,
 ): Promise<SheetRow[]> {
   const token = getAuthToken()
   if (!token) throw new Error('Not signed in')
@@ -158,6 +181,8 @@ async function saveSheetRowsViaApi(
     providerId: context.providerId,
     selectedMonthKey: context.selectedMonthKey,
     rows,
+    correlationId: observability?.correlationId ?? generateCorrelationId(),
+    source: observability?.source ?? 'unknown',
   }
   if (knownDeletedIds !== undefined) {
     body.knownDeletedIds = knownDeletedIds.filter((id) => isUuid(id))
@@ -256,6 +281,7 @@ export async function saveSheetRows(
   rows: SheetRow[],
   knownDeletedIds?: string[],
   saveContext?: SaveSheetRowsContext,
+  observability?: SaveObservability,
 ): Promise<SheetRow[]> {
   const context = await resolveSaveContext(db, sheetId, saveContext)
   if (!context) {
@@ -264,5 +290,5 @@ export async function saveSheetRows(
   if (!getAuthToken()) {
     throw new Error('saveSheetRows: not signed in')
   }
-  return await saveSheetRowsViaApi(rows, context, knownDeletedIds)
+  return await saveSheetRowsViaApi(rows, context, knownDeletedIds, observability)
 }

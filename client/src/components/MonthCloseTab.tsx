@@ -138,7 +138,7 @@ export default function MonthCloseTab() {
           provider_payment_date: new Date().toISOString().split('T')[0],
         }))
 
-        await saveSheetRows(apiClient, sheet.id, updatedRows)
+        await saveSheetRows(apiClient, sheet.id, updatedRows, undefined, undefined, { source: 'month-close-provider-pay-distribution' })
       }
 
       alert('Provider payments calculated successfully!')

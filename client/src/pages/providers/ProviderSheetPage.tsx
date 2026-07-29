@@ -627,7 +627,7 @@ export default function ProviderSheetPage() {
           clinicId,
           providerId,
           selectedMonthKey: selectedMonthKey ?? `${targetYear}-${targetMonth}`,
-        })
+        }, { source: 'provider-sheet-page' })
         didPersist = true
 
         // Step 5 — Fetch fresh patients BEFORE the state merge (mirrors ClinicDetail line 2523).

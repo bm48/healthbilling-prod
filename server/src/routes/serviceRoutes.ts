@@ -306,6 +306,62 @@ type SaveProviderSheetResult = {
   invoiceRecomputed: boolean
 }
 
+/** Structural summary of one save request written to `provider_sheet_save_audit`. Never contains
+ *  free-text patient data — see the PHI note on the table definition (server/sql/
+ *  create_provider_sheet_save_audit_table.sql). */
+interface SaveAuditRow {
+  correlationId: string | null
+  userId: string
+  clinicId: string
+  providerId: string
+  sheetId: string | null
+  selectedMonthKey: string
+  source: string | null
+  rowCount: number
+  lockWaitMs: number | null
+  elapsedMs: number
+  success: boolean
+  errorMessage: string | null
+  actions: Record<string, unknown>
+}
+
+async function writeSaveAuditRow(row: SaveAuditRow): Promise<void> {
+  await pool.query(
+    `INSERT INTO public.provider_sheet_save_audit
+      (correlation_id, user_id, clinic_id, provider_id, sheet_id, selected_month_key,
+       source, row_count, lock_wait_ms, elapsed_ms, success, error_message, actions)
+     VALUES
+      ($1, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
+    [
+      row.correlationId,
+      row.userId,
+      row.clinicId,
+      row.providerId,
+      row.sheetId,
+      row.selectedMonthKey,
+      row.source,
+      row.rowCount,
+      row.lockWaitMs,
+      row.elapsedMs,
+      row.success,
+      row.errorMessage,
+      JSON.stringify(row.actions),
+    ],
+  )
+}
+
+/** Optional observability context supplied by the client (see `saveSheetRowsViaApi` in
+ *  client/src/lib/providerSheetRows.ts). None of these values affect the write itself — they
+ *  only get echoed into `provider_sheet_save_audit` so post-incident investigation can trace
+ *  "which client action caused this save" without guessing from timestamps. */
+interface SaveAuditContext {
+  /** Client-generated UUID that ties one client action to one server request (and one audit row). */
+  correlationId?: string
+  /** Client-provided hint for what triggered the save: 'debounced', 'pagehide-keepalive',
+   *  'restore', 'manual', etc. Used to filter the audit viewer by trigger. */
+  source?: string
+}
+
 /** Saves provider sheet rows and awaits invoice recompute for the clinic/month/year. */
 async function saveProviderSheetRowsCore(
   callerId: string,
@@ -314,7 +370,33 @@ async function saveProviderSheetRowsCore(
   selectedMonthKey: string,
   rows: unknown[],
   knownDeletedIds?: string[],
+  auditContext?: SaveAuditContext,
 ): Promise<SaveProviderSheetResult> {
+  const requestStartMs = Date.now()
+  // Running counts of what the loop did — copied into the audit row's `actions` JSON at the end
+  // so we can spot at a glance which branch handled which incoming row (dedupe-collapse vs.
+  // plain INSERT vs. rejected-by-guard). Populated inside the loop below.
+  const actionCounts = {
+    updates: 0,
+    inserts: 0,
+    dedupe_collapses: 0,
+    rejected_patient_less: 0,
+    deletes: 0,
+  }
+  const actionRefs = {
+    /** UUIDs of rows the loop UPDATE'd (had a real DB id on the way in). */
+    update_row_ids: [] as string[],
+    /** UUIDs of rows the loop INSERT'd fresh (were `new-*`/`empty-*` on the way in). */
+    insert_row_ids: [] as string[],
+    /** Pairs where an incoming `new-*` was collapsed into an existing UUID row by the dedupe. */
+    collapsed_pairs: [] as { temp: string; into: string }[],
+    /** UUIDs the caller asked to delete (only ones actually deleted after the same-batch guard). */
+    deleted_row_ids: [] as string[],
+  }
+  let lockAcquiredMs: number | null = null
+  let sheetIdForAudit: string | null = null
+  let successForAudit = true
+  let errorMessageForAudit: string | null = null
   const parsed = parseMonthKey(selectedMonthKey)
   if (!parsed) {
     throw new Error('Invalid selectedMonthKey')
@@ -360,6 +442,7 @@ async function saveProviderSheetRowsCore(
   if (!sheetId) {
     throw new Error('Sheet not found for this clinic/provider/month')
   }
+  sheetIdForAudit = sheetId
 
   const rowsToProcess = rows
     .filter((r: unknown) => typeof r === 'object' && r !== null && rowHasData(r as Record<string, unknown>))
@@ -368,6 +451,33 @@ async function saveProviderSheetRowsCore(
   const cols = PROVIDER_SHEET_ROW_COLS
   const savedIds: string[] = []
   const savedRows: Record<string, unknown>[] = []
+
+  // Serialize concurrent saves against the same sheet inside a transaction with an advisory lock.
+  // Without this, two overlapping requests — the classic being the 400ms debounced save colliding
+  // with the pagehide keepalive replay that fires when the user switches tabs mid-edit — can both
+  // execute the dedupe SELECT at ~line 590, both see zero matching rows, and both fall through to
+  // the INSERT that produces the "same patient + same date × N rows" pattern (Spencer's
+  // Garrett/Keri/James clusters, 2026-07-28). Advisory lock keyed on sheet_id makes the whole loop
+  // atomic w.r.t. other saves against the same sheet; different sheets don't contend on this key.
+  //
+  // pg_advisory_xact_lock auto-releases on COMMIT/ROLLBACK, so no explicit unlock path is needed.
+  // hashtextextended → int8 fits the lock's bigint signature; the 'provider_sheet_rows_save:'
+  // prefix keeps this key space isolated from any other advisory locks we might add later.
+  //
+  // NOTE: this lock is server-side only, so it only serializes requests hitting the same server
+  // process (or across processes via Postgres). If a genuinely-out-of-order client retry lands
+  // AFTER the winning request completes with stale data, the write is still applied — the
+  // PROTECTED_FROM_NULL guard is what defends against that. Lock + guard = complementary; neither
+  // subsumes the other.
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`provider_sheet_rows_save:${sheetId}`],
+    )
+    // Timestamp after the lock returns so `lock_wait_ms` (audit column) reflects contention.
+    lockAcquiredMs = Date.now()
 
   for (let i = 0; i < rowsToProcess.length; i++) {
     const row = rowsToProcess[i]
@@ -453,7 +563,7 @@ async function saveProviderSheetRowsCore(
               : `"${c}" = $${idx + 1}`,
         )
       const setParams = cols.filter((c) => c !== 'sheet_id').map((c) => payload[c])
-      const uq = await pool.query<Record<string, unknown>>(
+      const uq = await client.query<Record<string, unknown>>(
         `UPDATE public.provider_sheet_rows SET ${setParts.join(', ')}, "updated_at" = now()
          WHERE id = $${setParams.length + 1}::uuid AND sheet_id = $${setParams.length + 2}::uuid
          RETURNING *`,
@@ -462,6 +572,8 @@ async function saveProviderSheetRowsCore(
       if (uq.rows[0]) {
         savedIds.push(String(uq.rows[0].id))
         savedRows.push(uq.rows[0])
+        actionCounts.updates += 1
+        actionRefs.update_row_ids.push(String(uq.rows[0].id))
       } else {
         savedIds.push(id)
       }
@@ -511,6 +623,7 @@ async function saveProviderSheetRowsCore(
           providerId,
           selectedMonthKey,
         })
+        actionCounts.rejected_patient_less += 1
         continue
       }
       // Server-side idempotency dedupe (mitigation for the client-side pagehide/debounce race —
@@ -554,7 +667,7 @@ async function saveProviderSheetRowsCore(
       const incomingApptDate = payload.appointment_date ?? null
       let idempotentUpdateApplied = false
       if (incomingPatientId != null && incomingPatientId !== '') {
-        const dupCheck = await pool.query<{ id: string }>(
+        const dupCheck = await client.query<{ id: string }>(
           `SELECT id FROM public.provider_sheet_rows
            WHERE sheet_id = $1::uuid
              AND patient_id = $2
@@ -573,7 +686,7 @@ async function saveProviderSheetRowsCore(
             (c, idx) => `"${c}" = COALESCE($${idx + 1}, "${c}")`,
           )
           const dedupSetParams = dedupCols.map((c) => payload[c])
-          const uq = await pool.query<Record<string, unknown>>(
+          const uq = await client.query<Record<string, unknown>>(
             `UPDATE public.provider_sheet_rows
              SET ${dedupSetParts.join(', ')}, "updated_at" = now()
              WHERE id = $${dedupSetParams.length + 1}::uuid AND sheet_id = $${dedupSetParams.length + 2}::uuid
@@ -584,6 +697,8 @@ async function saveProviderSheetRowsCore(
             savedIds.push(String(uq.rows[0].id))
             savedRows.push(uq.rows[0])
             idempotentUpdateApplied = true
+            actionCounts.dedupe_collapses += 1
+            actionRefs.collapsed_pairs.push({ temp: id, into: String(uq.rows[0].id) })
             // eslint-disable-next-line no-console
             console.warn('[provider_sheet_rows] collapsed duplicate INSERT into existing row', {
               sheetId,
@@ -601,7 +716,7 @@ async function saveProviderSheetRowsCore(
       }
       if (!idempotentUpdateApplied) {
         const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(', ')
-        const iq = await pool.query<Record<string, unknown>>(
+        const iq = await client.query<Record<string, unknown>>(
           `INSERT INTO public.provider_sheet_rows (${cols.map((c) => `"${c}"`).join(', ')})
            VALUES (${placeholders})
            RETURNING *`,
@@ -610,6 +725,8 @@ async function saveProviderSheetRowsCore(
         if (iq.rows[0]) {
           savedIds.push(String(iq.rows[0].id))
           savedRows.push(iq.rows[0])
+          actionCounts.inserts += 1
+          actionRefs.insert_row_ids.push(String(iq.rows[0].id))
         }
       }
     }
@@ -632,14 +749,82 @@ async function saveProviderSheetRowsCore(
       .filter((id) => isUuid(String(id)))
       .filter((id) => !savedIdSet.has(String(id)))
     if (toDelete.length > 0) {
-      await pool.query(
+      await client.query(
         `DELETE FROM public.provider_sheet_rows WHERE id = ANY($1::uuid[]) AND sheet_id = $2::uuid`,
         [toDelete, sheetId],
       )
+      actionCounts.deletes = toDelete.length
+      actionRefs.deleted_row_ids = toDelete.map(String)
     }
   }
 
+    await client.query('COMMIT')
+  } catch (e) {
+    // ROLLBACK best-effort. If it throws (e.g., connection reset already killed the txn), swallow
+    // that so the original error is what bubbles up — otherwise the caller sees a misleading
+    // "rollback failed" instead of the actual root cause.
+    try {
+      await client.query('ROLLBACK')
+    } catch {
+      // ignored
+    }
+    successForAudit = false
+    errorMessageForAudit = e instanceof Error ? e.message : String(e)
+    // Write the audit row for the failed save BEFORE releasing the client (so the audit table
+    // still gets an entry with success=false), then rethrow so the handler returns the error to
+    // the client. Best-effort — never let audit failure mask the original save failure.
+    try {
+      await writeSaveAuditRow({
+        correlationId: auditContext?.correlationId ?? null,
+        userId: callerId,
+        clinicId,
+        providerId,
+        sheetId: sheetIdForAudit,
+        selectedMonthKey,
+        source: auditContext?.source ?? null,
+        rowCount: rowsToProcess.length,
+        lockWaitMs: lockAcquiredMs != null ? lockAcquiredMs - requestStartMs : null,
+        elapsedMs: Date.now() - requestStartMs,
+        success: successForAudit,
+        errorMessage: errorMessageForAudit,
+        actions: { ...actionCounts, ...actionRefs },
+      })
+    } catch (auditErr) {
+      // eslint-disable-next-line no-console
+      console.error('[provider_sheet_save_audit] insert-on-failure failed:', auditErr)
+    }
+    throw e
+  } finally {
+    client.release()
+  }
+
+  // Invoice recompute runs AFTER the transaction commits — it's an independent read/write on a
+  // different table, and keeping it out of the lock avoids extending the critical section that
+  // other save requests are queued behind.
   await recomputeClinicInvoice(clinicId, parsed.month, parsed.year)
+
+  // Best-effort audit write on the success path. Any failure here is logged but not re-thrown —
+  // the save already committed and the caller should see success.
+  try {
+    await writeSaveAuditRow({
+      correlationId: auditContext?.correlationId ?? null,
+      userId: callerId,
+      clinicId,
+      providerId,
+      sheetId: sheetIdForAudit,
+      selectedMonthKey,
+      source: auditContext?.source ?? null,
+      rowCount: rowsToProcess.length,
+      lockWaitMs: lockAcquiredMs != null ? lockAcquiredMs - requestStartMs : null,
+      elapsedMs: Date.now() - requestStartMs,
+      success: true,
+      errorMessage: null,
+      actions: { ...actionCounts, ...actionRefs },
+    })
+  } catch (auditErr) {
+    // eslint-disable-next-line no-console
+    console.error('[provider_sheet_save_audit] insert-on-success failed:', auditErr)
+  }
 
   return {
     saved: savedIds.length,
@@ -662,6 +847,10 @@ async function handleSaveProviderSheetRows(req: import('express').Request, res: 
   const knownDeletedIds = Array.isArray(req.body?.knownDeletedIds)
     ? req.body.knownDeletedIds.map((id: unknown) => String(id)).filter((id: string) => isUuid(id))
     : undefined
+  // Observability fields — optional, echoed into the audit table only, do not affect the write.
+  // Length-capped so a malformed client can't blow up the audit row.
+  const correlationId = typeof req.body?.correlationId === 'string' ? req.body.correlationId.trim().slice(0, 128) : undefined
+  const source = typeof req.body?.source === 'string' ? req.body.source.trim().slice(0, 64) : undefined
 
   if (!clinicId || !providerId || !selectedMonthKey) {
     res.status(400).json({ error: 'Missing clinicId, providerId, or selectedMonthKey' })
@@ -676,6 +865,7 @@ async function handleSaveProviderSheetRows(req: import('express').Request, res: 
       selectedMonthKey,
       rows,
       knownDeletedIds,
+      { correlationId, source },
     )
     res.json({ success: true, saved: result.saved, rows: result.rows, invoiceRecomputed: result.invoiceRecomputed })
   } catch (err) {
@@ -1209,5 +1399,108 @@ serviceRoutes.post('/recompute-all-invoices', async (req, res) => {
     // eslint-disable-next-line no-console
     console.error('[invoice] recompute-all-invoices failed:', err)
     res.status(500).json({ error: 'Failed to recompute invoices' })
+  }
+})
+
+/** GET /api/super-admin/save-audit-logs
+ *
+ * Powers the super-admin viewer at /super-admin/save-audit. Reads rows from
+ * `provider_sheet_save_audit` (see server/sql/create_provider_sheet_save_audit_table.sql) with
+ * optional filters and a hard cap. Super-admin only — the table contains cross-clinic activity.
+ *
+ * Query params (all optional):
+ *   clinic_id, provider_id, sheet_id — exact UUID match
+ *   selected_month_key                — exact text match ('YYYY-M' or 'YYYY-M-2')
+ *   correlation_id                    — jump to a specific event
+ *   source                            — filter by trigger ('pagehide-keepalive', etc.)
+ *   from_ts / to_ts                   — ISO 8601 range on created_at
+ *   only_with_inserts                 — 'true' to filter to rows that INSERTed at least one row
+ *                                       (the class most likely to relate to a duplicate/stray report)
+ *   limit                             — 1..500, default 200
+ */
+serviceRoutes.get('/super-admin/save-audit-logs', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  if (!(await requireSuperAdmin(callerId))) {
+    res.status(403).json({ error: 'Super admin only' })
+    return
+  }
+
+  const filters: string[] = []
+  const params: unknown[] = []
+  const push = (clause: string, value: unknown) => {
+    params.push(value)
+    filters.push(clause.replace('?', `$${params.length}`))
+  }
+
+  const strParam = (name: string): string | undefined => {
+    const raw = req.query[name]
+    if (typeof raw !== 'string') return undefined
+    const trimmed = raw.trim()
+    return trimmed === '' ? undefined : trimmed
+  }
+
+  const clinicId = strParam('clinic_id')
+  if (clinicId && isUuid(clinicId)) push('a.clinic_id = ?::uuid', clinicId)
+  const providerIdParam = strParam('provider_id')
+  if (providerIdParam && isUuid(providerIdParam)) push('a.provider_id = ?::uuid', providerIdParam)
+  const sheetId = strParam('sheet_id')
+  if (sheetId && isUuid(sheetId)) push('a.sheet_id = ?::uuid', sheetId)
+  const selectedMonthKey = strParam('selected_month_key')
+  if (selectedMonthKey) push('a.selected_month_key = ?', selectedMonthKey)
+  const correlationId = strParam('correlation_id')
+  if (correlationId) push('a.correlation_id = ?', correlationId)
+  const source = strParam('source')
+  if (source) push('a.source = ?', source)
+  const fromTs = strParam('from_ts')
+  if (fromTs) push('a.created_at >= ?::timestamptz', fromTs)
+  const toTs = strParam('to_ts')
+  if (toTs) push('a.created_at <= ?::timestamptz', toTs)
+  if (strParam('only_with_inserts') === 'true') {
+    // Cast the JSONB int out with ->> so we can compare numerically. Rows without an 'inserts'
+    // key are treated as 0 via COALESCE.
+    filters.push(`COALESCE((a.actions->>'inserts')::int, 0) > 0`)
+  }
+
+  let limit = Number(req.query.limit ?? 200)
+  if (!Number.isFinite(limit) || limit < 1) limit = 200
+  if (limit > 500) limit = 500
+
+  const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
+
+  try {
+    const q = await pool.query(
+      `SELECT
+         a.id,
+         a.created_at,
+         a.correlation_id,
+         a.user_id,
+         u.email AS user_email,
+         a.clinic_id,
+         a.provider_id,
+         a.sheet_id,
+         a.selected_month_key,
+         a.source,
+         a.row_count,
+         a.lock_wait_ms,
+         a.elapsed_ms,
+         a.success,
+         a.error_message,
+         a.actions
+       FROM public.provider_sheet_save_audit a
+       LEFT JOIN public.users u ON u.id = a.user_id
+       ${whereClause}
+       ORDER BY a.created_at DESC
+       LIMIT ${limit}`,
+      params,
+    )
+    res.json({ rows: q.rows })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[save-audit-logs] fetch failed:', err)
+    res.status(500).json({ error: 'Failed to load save audit log' })
   }
 })

@@ -7,6 +7,7 @@ import ProviderSheet from '@/pages/ProviderSheet'
 import Reports from '@/pages/Reports'
 import Timecards from '@/pages/Timecards'
 import SuperAdminSettings from '@/pages/SuperAdminSettings'
+import SaveAuditLog from '@/pages/SaveAuditLog'
 import ClinicDetail from '@/pages/ClinicDetail'
 import ClinicDashboard from '@/pages/ClinicDashboard'
 
@@ -168,6 +169,16 @@ function AppRoutes() {
           <ProtectedRoute>
             <Layout>
               <SuperAdminSettings />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/super-admin/save-audit"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <SaveAuditLog />
             </Layout>
           </ProtectedRoute>
         }

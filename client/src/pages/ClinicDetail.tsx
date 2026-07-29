@@ -2203,7 +2203,7 @@ export default function ClinicDetail() {
       })
       existingRowsMap.forEach(row => updatedRowData.push(row))
 
-      await saveSheetRows(apiClient, currentSheet.id, updatedRowData)
+      await saveSheetRows(apiClient, currentSheet.id, updatedRowData, undefined, undefined, { source: 'sync-provider-rows-fromLegacyState' })
       await fetchProviderSheetData()
     } catch (error) {
       console.error('Error saving provider rows:', error)
@@ -2539,7 +2539,7 @@ export default function ClinicDetail() {
 
 
 
-  const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[], monthKeyOverride?: string): Promise<boolean> => {
+  const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[], monthKeyOverride?: string, source?: string): Promise<boolean> => {
     // monthKey is captured once at call entry. The drain effect passes the ORIGINAL monthKey from when
     // the save was queued — without that, a deferred save that fires after the user navigated to a
     // different month would persist the old month's rows under the new month's sheet (the "her June
@@ -2660,6 +2660,11 @@ export default function ClinicDetail() {
         clinicId,
         providerId,
         selectedMonthKey: monthKey,
+      }, {
+        // Echoed into the server audit table only. Callers of saveProviderSheetRows pass a hint
+        // (pagehide-drain / restore / delete / add-row / debounced / etc.) so the audit viewer
+        // can filter "which client trigger caused this save?" without guessing from timing.
+        source: source ?? 'unknown',
       })
       didPersist = true
       // Record the successful-save timestamp BEFORE any post-save state work so the drain effect's
@@ -2813,7 +2818,7 @@ export default function ClinicDetail() {
         // its replay actually reached the DB (silent guard hits would otherwise look like success).
         // Pass `pending.monthKey` so the replay targets the queuer's intended month, not whatever month
         // the user has navigated to since.
-        saveProviderSheetRows(providerId, toSave, pendingDeletes, pending.monthKey)
+        saveProviderSheetRows(providerId, toSave, pendingDeletes, pending.monthKey, 'deferred-drain-queued')
           .then((persisted) => pending.resolvers.forEach((r) => r.resolve(persisted)))
           .catch((err) => pending.resolvers.forEach((r) => r.reject(err)))
       }
@@ -2857,7 +2862,7 @@ export default function ClinicDetail() {
     }
     for (const entry of toRetry) {
       console.log('[ClinicDetail] draining deferred save', { providerId: entry.providerId, monthKey: entry.monthKey, rows: entry.rowsToSave.length, queuedMsAgo: Date.now() - entry.queuedAt })
-      saveProviderSheetRows(entry.providerId, entry.rowsToSave, entry.knownDeletedIds, entry.monthKey)
+      saveProviderSheetRows(entry.providerId, entry.rowsToSave, entry.knownDeletedIds, entry.monthKey, 'deferred-replay')
         .catch((err) => console.error('[ClinicDetail] deferred save replay failed:', err))
     }
   }, [providerSheetsByMonth, clinicId, userProfile, saveProviderSheetRows])
@@ -2904,7 +2909,7 @@ export default function ClinicDetail() {
       return { ...r, id: newId }
     })
     const preExistingIds = currentRowsForProvider.map((r) => r.id).filter(isUuid)
-    await saveProviderSheetRows(providerId, restoredRows, preExistingIds, targetMonthKey)
+    await saveProviderSheetRows(providerId, restoredRows, preExistingIds, targetMonthKey, 'auto-backup-restore')
     // Bump providerRowsVersion so HOT updateSettings runs with the merged row IDs — without this,
     // the grid keeps showing the pre-restore data even though state changed.
     setProviderRowsVersion((v) => v + 1)
@@ -2941,7 +2946,7 @@ export default function ClinicDetail() {
         return { ...r, id: newId }
       })
       const idsToDelete = currentRows.map((r) => r.id).filter(isUuid)
-      await saveProviderSheetRows(snap.providerId, rowsForUndo, idsToDelete, snap.monthKey)
+      await saveProviderSheetRows(snap.providerId, rowsForUndo, idsToDelete, snap.monthKey, 'auto-backup-restore-undo')
       setProviderRowsVersion((v) => v + 1)
     } catch (e) {
       console.error('[auto-backup] undo restore failed:', e)
@@ -3114,7 +3119,7 @@ export default function ClinicDetail() {
         // Only delete the localStorage backup if saveProviderSheetRows actually persisted to DB.
         // A silently-dropped save (guard fail, missing sheet, not yet hydrated) resolves to `false`;
         // keeping the key gives the next mount / pagehide keepalive another chance to land the data.
-        saveProviderSheetRows(providerId, data.rows).then((persisted) => {
+        saveProviderSheetRows(providerId, data.rows, undefined, undefined, 'localstorage-restore-on-mount').then((persisted) => {
           if (persisted) {
             try { localStorage.removeItem(key) } catch (_) {}
           } else {
@@ -3198,11 +3203,20 @@ export default function ClinicDetail() {
           })
           if (!hasMeaningfulRow) return
 
+          // correlationId + source populate the server audit table so the pagehide-keepalive path
+          // shows up distinctly in the save-audit viewer. Every pagehide fire gets a fresh ID —
+          // this POST is fire-and-forget with no matching debounced-save to correlate against.
+          const correlationId =
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `corr-pagehide-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
           const body = JSON.stringify({
             clinicId: entryClinicId,
             providerId: entryProviderId,
             selectedMonthKey: entryMonthKey,
             rows,
+            correlationId,
+            source: 'pagehide-keepalive',
           })
           fetch(savePendingUrl, {
             method: 'POST',
@@ -3520,7 +3534,7 @@ export default function ClinicDetail() {
         return { ...prev, [selectedMonthKey]: { ...current, [providerId]: rowsAfterDelete } }
       })
     })
-    await saveProviderSheetRows(providerId, rowsAfterDelete, deletedDbIds)
+    await saveProviderSheetRows(providerId, rowsAfterDelete, deletedDbIds, undefined, 'delete-rows')
     if (deletedWithIndex.length > 0) {
       lastUndoRef.current = () => {
         setProviderSheetRowsByMonth(prev => {
@@ -3533,7 +3547,7 @@ export default function ClinicDetail() {
             const clamped = Math.min(index, next.length)
             next = [...next.slice(0, clamped), row, ...next.slice(clamped)]
           }
-          saveProviderSheetRows(providerId, next).catch(err => console.error('Undo provider row: save failed', err))
+          saveProviderSheetRows(providerId, next, undefined, undefined, 'undo-delete-rows').catch(err => console.error('Undo provider row: save failed', err))
           return { ...prev, [selectedMonthKey]: { ...current, [providerId]: next } }
         })
       }
@@ -3595,7 +3609,7 @@ export default function ClinicDetail() {
     const newRow = createEmptyRow()
     const newRows = [...rows.slice(0, idx), newRow, ...rows.slice(idx)]
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: newRows } }))
-    saveProviderSheetRows(providerId, newRows).catch(err => console.error('Failed to save after add row', err))
+    saveProviderSheetRows(providerId, newRows, undefined, undefined, 'add-row').catch(err => console.error('Failed to save after add row', err))
   }, [providerSheetRows, saveProviderSheetRows, selectedMonthKey])
 
   const handleAddProviderRowBelow = useCallback((providerId: string, afterRowId: string) => {
@@ -3648,12 +3662,14 @@ export default function ClinicDetail() {
     const newRow = createEmptyRow()
     const newRows = [...rows.slice(0, idx + 1), newRow, ...rows.slice(idx + 1)]
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: newRows } }))
-    saveProviderSheetRows(providerId, newRows).catch(err => console.error('Failed to save after add row', err))
+    saveProviderSheetRows(providerId, newRows, undefined, undefined, 'add-row').catch(err => console.error('Failed to save after add row', err))
   }, [providerSheetRows, saveProviderSheetRows, selectedMonthKey])
 
-  // Direct save function that accepts providerId and rows - for use when we have computed updated data
+  // Direct save function that accepts providerId and rows - for use when we have computed updated data.
+  // Called by ProvidersTab from the typing/debounce path — that's the main "user is actively editing"
+  // trigger, so we tag saves from it 'typing-debounced-or-direct' in the audit table.
   const saveProviderSheetRowsDirect = useCallback(async (providerId: string, rowsToSave: SheetRow[]) => {
-    await saveProviderSheetRows(providerId, rowsToSave)
+    await saveProviderSheetRows(providerId, rowsToSave, undefined, undefined, 'typing-debounced-or-direct')
   }, [saveProviderSheetRows])
 
   const handleReorderProviderRows = useCallback((providerId: string, movedRows: number[], finalIndex: number) => {
@@ -3667,7 +3683,7 @@ export default function ClinicDetail() {
     const newRows = arr
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: newRows } }))
     setProviderRowsVersion(v => v + 1)
-    saveProviderSheetRows(providerId, newRows).catch(err => console.error('Failed to persist provider row order', err))
+    saveProviderSheetRows(providerId, newRows, undefined, undefined, 'reorder-rows').catch(err => console.error('Failed to persist provider row order', err))
   }, [providerSheetRows, saveProviderSheetRows, selectedMonthKey])
 
   const handleTabChange = (tab: TabType) => {

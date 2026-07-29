@@ -22,6 +22,7 @@ import {
   Lock,
   KeyRound,
   X,
+  Activity,
 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { apiClient } from '@/lib/apiClient'
@@ -874,6 +875,19 @@ export default function Layout({ children }: LayoutProps) {
                           >
                             <Lock size={16} />
                             <span>Month Close</span>
+                          </Link>
+                        )}
+                        {isSuperAdmin && (
+                          <Link
+                            to="/super-admin/save-audit"
+                            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm ${
+                              location.pathname === '/super-admin/save-audit'
+                                ? 'bg-primary-600 text-white font-medium'
+                                : 'text-white/60 hover:bg-white/10 hover:text-white'
+                            }`}
+                          >
+                            <Activity size={16} />
+                            <span>Save audit log</span>
                           </Link>
                         )}
                       </div>
