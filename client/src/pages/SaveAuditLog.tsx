@@ -1,7 +1,45 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
+import { apiClient } from '@/lib/apiClient'
 import { getApiBase, getAuthToken } from '@/lib/invoiceApi'
+
+/** Minimal shapes for the dropdown lookups. Full Clinic/Provider/ProviderSheet types live in
+ *  @/types; we only pull the fields the dropdowns need. */
+interface ClinicOption {
+  id: string
+  name: string
+}
+interface ProviderOption {
+  id: string
+  first_name: string
+  last_name: string
+  clinic_ids: string[] | null
+  active: boolean | null
+}
+interface SheetOption {
+  id: string
+  clinic_id: string
+  provider_id: string
+  month: number
+  year: number
+  payroll: number | null
+}
+
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** Build the `selected_month_key` string that the server-side audit column uses (see
+ *  buildMonthKey in client/src/lib/providerSheetRows.ts). Match its convention exactly:
+ *  `${year}-${month}` for payroll 1, `${year}-${month}-2` for payroll 2. */
+function buildMonthKeyForSheet(s: SheetOption): string {
+  return Number(s.payroll) === 2 ? `${s.year}-${s.month}-2` : `${s.year}-${s.month}`
+}
+
+/** Display label for a sheet in the dropdown, e.g. "Jul 2026" or "Jul 2026 (biweekly ½)". */
+function labelForSheet(s: SheetOption): string {
+  const base = `${MONTH_ABBR[s.month - 1] ?? s.month} ${s.year}`
+  return Number(s.payroll) === 2 ? `${base} (biweekly ½)` : base
+}
 
 /**
  * Super-admin viewer for `provider_sheet_save_audit`.
@@ -124,6 +162,89 @@ export default function SaveAuditLog() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Dropdown lookups. Fetched once for clinics + providers (super-admin sees everything), and on
+  // demand for sheets whenever the user picks a clinic + provider pair. Keeping these in
+  // component state (rather than a shared cache) is fine — this page opens rarely, always by
+  // the same super-admin, and the lists change infrequently.
+  const [clinics, setClinics] = useState<ClinicOption[]>([])
+  const [providers, setProviders] = useState<ProviderOption[]>([])
+  const [sheets, setSheets] = useState<SheetOption[]>([])
+  const [lookupsError, setLookupsError] = useState<string | null>(null)
+
+  // One-shot: clinics + providers on mount. Sheets are a separate effect keyed to selected
+  // clinic+provider so we don't pull the full sheet list up front.
+  useEffect(() => {
+    if (userProfile?.role !== 'super_admin') return
+    let cancelled = false
+    void (async () => {
+      try {
+        const [clinicsRes, providersRes] = await Promise.all([
+          apiClient.from('clinics').select('id, name').order('name'),
+          apiClient.from('providers').select('id, first_name, last_name, clinic_ids, active'),
+        ])
+        if (cancelled) return
+        if (clinicsRes.error) throw clinicsRes.error
+        if (providersRes.error) throw providersRes.error
+        setClinics((clinicsRes.data ?? []) as ClinicOption[])
+        // Sort providers by last name then first — dropdown scan order should match how users
+        // think about the roster. Filter out inactive so the list stays short.
+        const active = ((providersRes.data ?? []) as ProviderOption[])
+          .filter((p) => p.active !== false)
+          .sort((a, b) => {
+            const ln = (a.last_name ?? '').localeCompare(b.last_name ?? '')
+            if (ln !== 0) return ln
+            return (a.first_name ?? '').localeCompare(b.first_name ?? '')
+          })
+        setProviders(active)
+      } catch (err) {
+        if (cancelled) return
+        setLookupsError(err instanceof Error ? err.message : 'Failed to load clinics/providers')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [userProfile])
+
+  // Sheets refetch when clinic+provider selection changes. Skips if either half is missing.
+  useEffect(() => {
+    if (!filters.clinicId || !filters.providerId) {
+      setSheets([])
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data, error: sheetsErr } = await apiClient
+          .from('provider_sheets')
+          .select('id, clinic_id, provider_id, month, year, payroll')
+          .eq('clinic_id', filters.clinicId)
+          .eq('provider_id', filters.providerId)
+          .order('year', { ascending: false })
+          .order('month', { ascending: false })
+          .order('payroll', { ascending: true })
+        if (cancelled) return
+        if (sheetsErr) throw sheetsErr
+        setSheets((data ?? []) as SheetOption[])
+      } catch (err) {
+        if (cancelled) return
+        setSheets([])
+        setLookupsError(err instanceof Error ? err.message : 'Failed to load sheets')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [filters.clinicId, filters.providerId])
+
+  // Providers filtered by the currently-selected clinic. If no clinic is picked we show every
+  // provider — that's useful for correlation-ID / source-only investigations where the user
+  // doesn't remember which clinic they belong to.
+  const providersForClinic = useMemo(() => {
+    if (!filters.clinicId) return providers
+    return providers.filter((p) => (p.clinic_ids ?? []).includes(filters.clinicId))
+  }, [providers, filters.clinicId])
+
   const fetchRows = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -207,34 +328,82 @@ export default function SaveAuditLog() {
 
       <div className="rounded border border-white/20 bg-slate-900/60 p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
         <label className="text-sm text-white/80">
-          Clinic ID
-          <input
-            type="text"
+          Clinic
+          <select
             value={filters.clinicId}
-            onChange={(e) => setFilters((f) => ({ ...f, clinicId: e.target.value }))}
-            placeholder="uuid"
+            // Clearing / changing clinic wipes provider + sheet + month-key so we don't leave
+            // stale downstream selections that don't match the new clinic's roster.
+            onChange={(e) =>
+              setFilters((f) => ({
+                ...f,
+                clinicId: e.target.value,
+                providerId: '',
+                sheetId: '',
+                selectedMonthKey: '',
+              }))
+            }
             className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm"
-          />
+          >
+            <option value="" style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>(any clinic)</option>
+            {clinics.map((c) => (
+              <option key={c.id} value={c.id} style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
+                {c.name}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="text-sm text-white/80">
-          Provider ID
-          <input
-            type="text"
+          Provider
+          <select
             value={filters.providerId}
-            onChange={(e) => setFilters((f) => ({ ...f, providerId: e.target.value }))}
-            placeholder="uuid"
+            // Changing provider wipes sheet + month-key for the same reason clinic does.
+            onChange={(e) =>
+              setFilters((f) => ({
+                ...f,
+                providerId: e.target.value,
+                sheetId: '',
+                selectedMonthKey: '',
+              }))
+            }
             className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm"
-          />
+          >
+            <option value="" style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>(any provider)</option>
+            {providersForClinic.map((p) => (
+              <option key={p.id} value={p.id} style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
+                {p.first_name} {p.last_name}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="text-sm text-white/80">
-          Sheet ID
-          <input
-            type="text"
+          Sheet
+          <select
             value={filters.sheetId}
-            onChange={(e) => setFilters((f) => ({ ...f, sheetId: e.target.value }))}
-            placeholder="uuid"
-            className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm"
-          />
+            // Selecting a sheet auto-populates selected_month_key so the two filters stay in
+            // sync — the audit endpoint honors both, and mismatched values would return zero
+            // rows in a way that looks like "the query is broken" rather than "the filter is
+            // over-constrained."
+            onChange={(e) => {
+              const selectedId = e.target.value
+              const matched = sheets.find((s) => s.id === selectedId)
+              setFilters((f) => ({
+                ...f,
+                sheetId: selectedId,
+                selectedMonthKey: matched ? buildMonthKeyForSheet(matched) : '',
+              }))
+            }}
+            disabled={!filters.clinicId || !filters.providerId}
+            className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm disabled:opacity-50"
+          >
+            <option value="" style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
+              {filters.clinicId && filters.providerId ? '(any sheet)' : '(pick clinic + provider first)'}
+            </option>
+            {sheets.map((s) => (
+              <option key={s.id} value={s.id} style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
+                {labelForSheet(s)}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="text-sm text-white/80">
           Selected month key
@@ -329,6 +498,12 @@ export default function SaveAuditLog() {
       {error && (
         <div className="rounded border border-red-500/40 bg-red-900/30 text-red-200 px-3 py-2 text-sm">
           {error}
+        </div>
+      )}
+      {lookupsError && (
+        <div className="rounded border border-amber-500/40 bg-amber-900/30 text-amber-200 px-3 py-2 text-sm">
+          Dropdown load failed: {lookupsError}. Filter inputs will be empty; use text-only filters
+          (Correlation ID, Selected month key, dates) as a fallback.
         </div>
       )}
 
