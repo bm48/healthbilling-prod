@@ -202,6 +202,79 @@ function mergeARFromGridRow(
   }
 }
 
+/**
+ * Pick a `created_at` for each new row about to be INSERTed so DESC fetch ordering keeps rows in
+ * the position where the user typed them. Without this, INSERTs get the DB default `now()` and
+ * every new row jumps to the top on the next fetch: rows typed top-to-bottom come back bottom-to-
+ * top, which reads as "rows keep shifting" (Jenali, 2026-07-30).
+ *
+ * For a run of new rows sandwiched between real neighbors with created_at Tp (above, larger) and
+ * Tn (below, smaller), distribute the run's timestamps evenly between Tp and Tn. Ends of the list
+ * fall back to `neighbor ± 1s * offset`, and a completely empty sheet uses `now() - offset`.
+ * Empty / placeholder / already-new rows still occupy positions in the run so the assignment stays
+ * consistent even when the user leaves gaps.
+ */
+function planCreatedAtForNewRows(
+  fullList: AccountsReceivable[],
+  insertIds: Set<string>,
+  selectedMonth: Date,
+  payrollValue: number,
+): Map<string, string> {
+  const targets = new Map<string, string>()
+  if (insertIds.size === 0) return targets
+
+  const sameMonth = fullList.filter((r) => {
+    if (r.id.startsWith('placeholder-')) return false
+    if (!isAccountsReceivableRowInMonth(r, selectedMonth)) return false
+    if ((r.payroll ?? 1) !== payrollValue) return false
+    return true
+  })
+
+  const isPending = (r: AccountsReceivable) =>
+    r.id.startsWith('empty-') || r.id.startsWith('new-') || insertIds.has(r.id)
+
+  const parseCreated = (r: AccountsReceivable): number | null => {
+    if (!r.created_at || isPending(r)) return null
+    const t = new Date(String(r.created_at)).getTime()
+    return Number.isFinite(t) ? t : null
+  }
+
+  let i = 0
+  while (i < sameMonth.length) {
+    if (!isPending(sameMonth[i])) { i++; continue }
+    let j = i
+    while (j < sameMonth.length && isPending(sameMonth[j])) j++
+    const runLen = j - i
+
+    let Tp: number | null = null
+    for (let k = i - 1; k >= 0; k--) {
+      const t = parseCreated(sameMonth[k])
+      if (t != null) { Tp = t; break }
+    }
+    let Tn: number | null = null
+    for (let k = j; k < sameMonth.length; k++) {
+      const t = parseCreated(sameMonth[k])
+      if (t != null) { Tn = t; break }
+    }
+
+    const now = Date.now()
+    const slotAt = (idx: number): number => {
+      if (Tp != null && Tn != null) return Tp - ((Tp - Tn) * (idx + 1)) / (runLen + 1)
+      if (Tp != null) return Tp - (idx + 1) * 1000
+      if (Tn != null) return Tn + (runLen - idx) * 1000
+      return now - idx * 1000
+    }
+
+    for (let idx = 0; idx < runLen; idx++) {
+      const id = sameMonth[i + idx].id
+      if (!insertIds.has(id)) continue
+      targets.set(id, new Date(slotAt(idx)).toISOString())
+    }
+    i = j
+  }
+  return targets
+}
+
 interface AccountsReceivableTabProps {
   clinicId: string
   /** 1 = default; 2 = clinic has two pay periods, show Payroll 1/2 selector */
@@ -704,6 +777,21 @@ export default function AccountsReceivableTab({
     try {
       const savedARMap = new Map<string, AccountsReceivable>()
 
+      // Reserve DESC-ordered created_at slots for the new rows so they land in the position the
+      // user typed them into (see planCreatedAtForNewRows). Without this every INSERT gets the
+      // default now() and jumps to the top on the next fetch.
+      const insertIds = new Set(
+        arToProcess
+          .filter((r) => r.id.startsWith('new-') || r.id.startsWith('empty-'))
+          .map((r) => r.id)
+      )
+      const plannedCreatedAtByOldId = planCreatedAtForNewRows(
+        arToSave,
+        insertIds,
+        selectedMonthRef.current,
+        clinicPayroll === 2 ? selectedPayroll : 1,
+      )
+
       for (let i = 0; i < arToProcess.length; i++) {
         const ar = arToProcess[i]
         const oldId = ar.id
@@ -785,7 +873,9 @@ export default function AccountsReceivableTab({
         // provider whose URL it was created on. providerId is null on the clinic-level AR view,
         // in which case the row is "unscoped" and visible everywhere (matches the existing legacy
         // behavior for old rows).
-        const insertPayload = { ...arData, provider_id: providerId ?? null }
+        const insertPayload: Record<string, unknown> = { ...arData, provider_id: providerId ?? null }
+        const plannedCreatedAt = plannedCreatedAtByOldId.get(oldId)
+        if (plannedCreatedAt) insertPayload.created_at = plannedCreatedAt
         const { error: insertError, data: insertedAR } = await apiClient
           .from('accounts_receivables')
           .insert(insertPayload)

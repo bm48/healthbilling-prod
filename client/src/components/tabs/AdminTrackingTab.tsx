@@ -191,7 +191,9 @@ function computeSummary(rows: SheetRow[]): TrackingSummary {
     if (row.appointment_status === 'No Show' || row.appointment_status === 'Cancellation') {
       noShowsAndCancels += 1
     }
-    if (row.claim_status === 'Paid') paid += 1
+    // Deductible counts as Paid per Jenali (2026-07-30) — patient owed the amount but it was
+    // still collected, so operationally it lands in the same bucket as Paid.
+    if (row.claim_status === 'Paid' || row.claim_status === 'Deductible') paid += 1
     else if (row.claim_status === 'Claim Sent') claimSent += 1
     else if (row.claim_status) other += 1
   }
