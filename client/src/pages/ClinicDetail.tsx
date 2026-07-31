@@ -4,7 +4,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
 import { fetchSheetRows, fetchSheetRowsForSheetIds, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
-import { fetchBackupCsvAsSheetRows, padSheetRowsTo200 } from '@/lib/providerSheetBackups'
+import { fetchBackupCsvAsSheetRows, padSheetRowsToBase, ROWS_PER_PROVIDER } from '@/lib/providerSheetBackups'
 import { sheetRowsToUiCsv, type ProviderSheetUiExportLayout } from '@/lib/providerSheetBackupUiExport'
 import BackupVersionsBar, { type BackupVersionMeta } from '@/components/BackupVersionsBar'
 import AutoBackupsBar from '@/components/AutoBackupsBar'
@@ -2051,7 +2051,7 @@ export default function ClinicDetail() {
       updateLastSavedProviderRowsRef.current?.(rows)
       setProviderRows(rows)
 
-      // Create empty rows for providers table (200 rows per provider)
+      // Create empty rows for providers table (ROWS_PER_PROVIDER per provider — see constant)
       const createEmptyProviderSheetRow = (index: number): SheetRow => ({
         id: `empty-${index}`,
         patient_id: null,
@@ -2096,7 +2096,7 @@ export default function ClinicDetail() {
         updated_at: new Date().toISOString(),
       })
 
-      const emptyRowsNeeded = Math.max(0, 200 - sheetRows.length)
+      const emptyRowsNeeded = Math.max(0, ROWS_PER_PROVIDER - sheetRows.length)
       const emptyRows = Array.from({ length: emptyRowsNeeded }, (_, i) => 
         createEmptyProviderSheetRow(i)
       )
@@ -2493,7 +2493,7 @@ export default function ClinicDetail() {
           updated_at: new Date().toISOString(),
         })
 
-        const emptyRowsNeeded = Math.max(0, 200 - sheetRows.length)
+        const emptyRowsNeeded = Math.max(0, ROWS_PER_PROVIDER - sheetRows.length)
         const emptyRows = Array.from({ length: emptyRowsNeeded }, (_, i) => createEmptyProviderSheetRow(i))
         rowsMap[providerId] = [...sheetRows, ...emptyRows]
       }
@@ -2718,7 +2718,7 @@ export default function ClinicDetail() {
         })
 
         const nonEmptyRows = updatedRows.filter((r) => !r.id.startsWith('empty-'))
-        const emptyRowsNeeded = Math.max(0, 200 - nonEmptyRows.length)
+        const emptyRowsNeeded = Math.max(0, ROWS_PER_PROVIDER - nonEmptyRows.length)
         const existingEmptyCount = updatedRows.filter((r) => r.id.startsWith('empty-')).length
         let nextForProvider = updatedRows
         if (emptyRowsNeeded > existingEmptyCount) {
@@ -2900,7 +2900,7 @@ export default function ClinicDetail() {
     //
     // No foreign keys reference provider_sheet_rows.id from other tables (grep confirmed), so a
     // new UUID per row does not break any cross-table references.
-    const restoredRows = padSheetRowsTo200(backup.rows as SheetRow[]).map((r) => {
+    const restoredRows = padSheetRowsToBase(backup.rows as SheetRow[]).map((r) => {
       if (!isUuid(r.id)) return r
       // Non-UUID (empty-*, backup-*, new-*, empty string) already gets INSERTed by the server;
       // only UUIDs need re-labeling. Random suffix so multiple restore attempts don't collide on
@@ -3364,9 +3364,9 @@ export default function ClinicDetail() {
         return row
       })
       let nextMonthRows: Record<string, SheetRow[]> = { ...currentPrev, [providerId]: updatedRows }
-      // Ensure we maintain 200 rows total per provider
+      // Ensure we maintain ROWS_PER_PROVIDER rows total per provider (see shared constant)
       const nonEmptyRows = updatedRows.filter(r => !r.id.startsWith('empty-'))
-      const emptyRowsNeeded = Math.max(0, 200 - nonEmptyRows.length)
+      const emptyRowsNeeded = Math.max(0, ROWS_PER_PROVIDER - nonEmptyRows.length)
       const existingEmptyCount = updatedRows.filter(r => r.id.startsWith('empty-')).length
       if (emptyRowsNeeded > existingEmptyCount) {
         const createEmptyRow = (index: number): SheetRow => ({
@@ -4125,7 +4125,7 @@ export default function ClinicDetail() {
             }}
             getDownloadBlob={async (version) => {
               const raw = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
-              const padded = padSheetRowsTo200(raw)
+              const padded = padSheetRowsToBase(raw)
               const layout =
                 providerSheetExportLayoutRef.current ?? {
                   showVisitTypeColumn: providersTabShowVisitTypeColumn,
@@ -4143,7 +4143,7 @@ export default function ClinicDetail() {
               lastRequestedBackupIdRef.current = requestedId
               const rows = await fetchBackupCsvAsSheetRows(apiClient, version.file_path)
               if (lastRequestedBackupIdRef.current !== requestedId) return
-              setBackupOverrideRows(padSheetRowsTo200(rows))
+              setBackupOverrideRows(padSheetRowsToBase(rows))
               setSelectedBackupVersion(version)
               setBackupViewKey((k) => k + 1)
             }}

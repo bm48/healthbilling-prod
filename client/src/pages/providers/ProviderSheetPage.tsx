@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
 import { fetchSheetRows, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
+import { ROWS_PER_PROVIDER } from '@/lib/providerSheetBackups'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
 import { dedupeProvidersByUser, fetchActiveProviderUserEmails } from '@/lib/providerUserFilter'
 import { useAuth } from '@/contexts/AuthContext'
@@ -386,7 +387,7 @@ export default function ProviderSheetPage() {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
-      const emptyCount = Math.max(0, 200 - sheetRows.length)
+      const emptyCount = Math.max(0, ROWS_PER_PROVIDER - sheetRows.length)
       const emptyRows = Array.from({ length: emptyCount }, (_, i) => createEmptyRow(i))
       const allRows = [...sheetRows, ...emptyRows]
 
@@ -679,9 +680,8 @@ export default function ProviderSheetPage() {
 
           // 8b — Pad back to base row count if a row was deleted (mirrors ClinicDetail line 2566).
           // Without this, post-delete state could fall below the display minimum.
-          const baseRows = 200
           const nonEmptyRows = updatedRows.filter((r) => !r.id.startsWith('empty-'))
-          const emptyRowsNeeded = Math.max(0, baseRows - nonEmptyRows.length)
+          const emptyRowsNeeded = Math.max(0, ROWS_PER_PROVIDER - nonEmptyRows.length)
           const existingEmptyCount = updatedRows.filter((r) => r.id.startsWith('empty-')).length
           if (emptyRowsNeeded > existingEmptyCount) {
             const iso = new Date().toISOString()

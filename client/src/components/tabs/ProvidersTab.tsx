@@ -11,6 +11,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { parseDateOfServiceInput, toStoredString } from '@/lib/utils'
 import { computeBillingMetrics } from '@/lib/billingMetrics'
 import { isAccountsReceivableRowInMonth } from '@/lib/accountsReceivableInMonth'
+import { ROWS_PER_PROVIDER } from '@/lib/providerSheetBackups'
 import {
   sheetRowsToUiMatrix,
   providerSheetUiExportHeaders,
@@ -347,9 +348,11 @@ export default function ProvidersTab({
   /** Set while a delete batch is in flight so the table can show a "Deleting…" indicator. */
   const [isDeletingRows, setIsDeletingRows] = useState(false)
   /** Billing-sheet "Add 50 rows" button: bumps the pad-to target so the user can scroll into more
-   * empty rows when 200 isn't enough. Persisted to localStorage per clinic so a refresh keeps the
-   * grid at the size the user grew it to. */
-  const BILLING_SHEET_BASE_ROWS = 200
+   * empty rows when the default isn't enough. Persisted to localStorage per clinic so a refresh
+   * keeps the grid at the size the user grew it to. Base value mirrors the exported
+   * ROWS_PER_PROVIDER constant in @/lib/providerSheetBackups (bumped 200 → 300 on 2026-07-31 per
+   * Jenali; Keana had hit the cap). */
+  const BILLING_SHEET_BASE_ROWS = ROWS_PER_PROVIDER
   const BILLING_SHEET_ROWS_STEP = 50
   const extraEmptyRowsStorageKey = clinicId ? `providers-extra-rows-${clinicId}` : null
   const [extraEmptyRows, setExtraEmptyRows] = useState(() => {
@@ -406,15 +409,20 @@ export default function ProvidersTab({
       })
   }, [])
   /**
-   * Tri-state condense:
-   *  - 'full'      → all columns
-   *  - 'condensed' → ID through Appt/Note Status (+ Visit Type when on)
-   *  - 'minimal'   → First Name, LI, Date of Service, then Claim Status onward
+   * Four-state condense (added `front_office` on 2026-07-31 per Jenali):
+   *  - 'full'         → all columns
+   *  - 'condensed'    → ID through Appt/Note Status (+ Visit Type when on) — scheduling view
+   *  - 'minimal'      → First Name, LI, Date of Service, then Claim Status onward — claims view
+   *  - 'front_office' → ID, First Name, LI, Ins, DOS + PT RES, PT Paid, PT Pay Status —
+   *    the front-desk cluster: identify the patient, confirm the visit date, and log the
+   *    patient-side payment. Deliberately excludes claim / insurance-pay columns because a
+   *    front-office user doesn't act on those.
    */
-  type CondenseMode = 'full' | 'condensed' | 'minimal'
+  type CondenseMode = 'full' | 'condensed' | 'minimal' | 'front_office'
   const [condenseMode, setCondenseMode] = useState<CondenseMode>('full')
   const isCondensed = condenseMode === 'condensed'
   const isMinimal = condenseMode === 'minimal'
+  const isFrontOffice = condenseMode === 'front_office'
   const [arSumFromDb, setArSumFromDb] = useState<number | null>(null)
   /** Bumped to force Handsontable to resync from props. */
   const [structureVersion, setStructureVersion] = useState(0)
@@ -439,8 +447,9 @@ export default function ProvidersTab({
       providerLevel,
       isCondensed,
       isMinimal,
+      isFrontOffice,
     }),
-    [showVisitTypeColumn, showCopayCoinsuranceColumns, officeStaffView, isProviderView, providerLevel, isCondensed, isMinimal]
+    [showVisitTypeColumn, showCopayCoinsuranceColumns, officeStaffView, isProviderView, providerLevel, isCondensed, isMinimal, isFrontOffice]
   )
 
   /** Indices kept (in the visual column order incl. Visit Type) for minimal-condense mode.
@@ -451,6 +460,18 @@ export default function ProvidersTab({
     const indices: number[] = [0, 1, 2, 6]
     for (let i = 9 + vtShift; i <= 18 + vtShift; i++) indices.push(i)
     return indices
+  }, [showVisitTypeColumn])
+
+  /** Indices kept for front-office mode (added 2026-07-31). Per Jenali: "patient info and Date
+   *  of Service and then the Pt Res, Pt Paid, and Pay status." Visual positions in the full
+   *  layout (with Visit Type inserted at index 9 when enabled — that push shifts everything at
+   *  and past 9, so PT RES / PT Paid / PT Pay Status at base 13/14/15 become 14/15/16):
+   *    0=ID, 1=First Name, 2=LI, 3=Ins, 6=Date of Service, 13/14/15=PT RES/PT Paid/PT Pay Status.
+   *  Excludes Co-pay/Co-Ins (4/5) even when they're on — the front desk view is about the
+   *  post-visit payment state, not scheduling. */
+  const frontOfficeVisualIndices = useMemo(() => {
+    const vtShift = showVisitTypeColumn ? 1 : 0
+    return [0, 1, 2, 3, 6, 13 + vtShift, 14 + vtShift, 15 + vtShift]
   }, [showVisitTypeColumn])
 
   useEffect(() => {
@@ -829,7 +850,7 @@ export default function ProvidersTab({
   // unwanted columns happens via the columns filter, not by shortening the matrix. CSV export is
   // unaffected — it still calls sheetRowsToUiMatrix with the real (compacted) layout.
   const fullGridLayout = useMemo(
-    (): ProviderSheetUiExportLayout => ({ ...providerSheetUiLayout, isCondensed: false, isMinimal: false }),
+    (): ProviderSheetUiExportLayout => ({ ...providerSheetUiLayout, isCondensed: false, isMinimal: false, isFrontOffice: false }),
     [providerSheetUiLayout],
   )
   const getTableDataFromRows = useCallback(
@@ -1073,11 +1094,16 @@ export default function ProvidersTab({
     ? columnFieldsOfficeStaff
     : isProviderView
       ? (providerLevel === 2 ? columnFieldsFull : columnFieldsProviderView)
-      : (showCondenseButton && isMinimal
-          ? minimalVisualIndices.map(shiftForCopayCoins).map((i) => columnFieldsFull[i])
-          : showCondenseButton && isCondensed
-            ? columnFieldsFull.slice(0, showCopayCoinsuranceColumns ? 9 : 7)
-            : columnFieldsFull)
+      : (showCondenseButton && isFrontOffice
+          // Front-office view: same index-map treatment as minimal — visual indices → source fields.
+          // `shiftForCopayCoins` normalizes for Co-pay/Co-Ins being hidden, matching how the
+          // minimal branch already does it.
+          ? frontOfficeVisualIndices.map(shiftForCopayCoins).map((i) => columnFieldsFull[i])
+          : showCondenseButton && isMinimal
+            ? minimalVisualIndices.map(shiftForCopayCoins).map((i) => columnFieldsFull[i])
+            : showCondenseButton && isCondensed
+              ? columnFieldsFull.slice(0, showCopayCoinsuranceColumns ? 9 : 7)
+              : columnFieldsFull)
   const columnTitles = useMemo(
     () => providerSheetUiExportHeaders(providerSheetUiLayout),
     [providerSheetUiLayout]
@@ -1142,6 +1168,13 @@ export default function ProvidersTab({
     if (showVisitTypeColumn) fullVisible.push(null)
     fullVisible.push(...full.slice(8))
     const fullVisibleFiltered = dropCopayCoinsFromVisualArr(fullVisible)
+    if (!isProviderView && showCondenseButton && isFrontOffice) {
+      // Same index-shift rule as minimal: dropCopayCoins removes visual indices 4/5, so anything
+      // ≥ 6 in the pre-drop numbering slides down by 2 in the filtered array.
+      return frontOfficeVisualIndices
+        .map((i) => (showCopayCoinsuranceColumns ? i : i >= 6 ? i - 2 : i))
+        .map((i) => fullVisibleFiltered[i] ?? null)
+    }
     if (!isProviderView && showCondenseButton && isMinimal) {
       // After dropCopayCoins, original indices ≥ 6 shift down by 2 when copayCoins is off (indices 4 and 5 are gone).
       return minimalVisualIndices
@@ -1155,7 +1188,7 @@ export default function ProvidersTab({
       return fullVisibleFiltered.slice(0, condensedCount)
     }
     return fullVisibleFiltered
-  }, [officeStaffView, isProviderView, providerLevel, showVisitTypeColumn, showCopayCoinsuranceColumns, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices])
+  }, [officeStaffView, isProviderView, providerLevel, showVisitTypeColumn, showCopayCoinsuranceColumns, showCondenseButton, isCondensed, isMinimal, isFrontOffice, minimalVisualIndices, frontOfficeVisualIndices])
 
   /** Bumps when lock flags change so Handsontable re-renders headers (see `afterGetColHeader` + `colHeaderRefreshKey`). */
   const providerLocksKey = useMemo(() => {
@@ -1792,6 +1825,14 @@ export default function ProvidersTab({
         readOnly: getReadOnlyForColumn(18 + (showVisitTypeColumn ? 1 : 0), !canEdit || getReadOnly('notes'))
       },
     ])
+    if (showCondenseButton && isFrontOffice) {
+      // Front-office keeps ID (data:0), First Name (1), LI (2), Ins (3), DOS (6), PT RES (13
+      // pre-VT shift → 14 with VT), PT Paid (14 → 15), PT Pay Status (15 → 16). Same
+      // filter-by-source-index technique as Minimal so copay/coins hiding doesn't matter.
+      const VToffset = showVisitTypeColumn ? 1 : 0
+      const keep = new Set<number>([0, 1, 2, 3, 6, 13 + VToffset, 14 + VToffset, 15 + VToffset])
+      return fullProviderColumns.filter((c) => typeof c.data === 'number' && keep.has(c.data))
+    }
     if (showCondenseButton && isMinimal) {
       // Minimal keeps ID (data:0), First Name (data:1), LI (data:2), DOS (data:6), and Claim
       // Status onward. ID is always included so the user can tell which patient each row belongs
@@ -1811,7 +1852,7 @@ export default function ProvidersTab({
       return fullProviderColumns.slice(0, condensedCount)
     }
     return fullProviderColumns
-  }, [activeProvider, clinicPayroll, billingCodes, statusColors, getCPTColor, getStatusColor, getMonthColor, patients, canEdit, lockData, getReadOnly, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, showVisitTypeColumn, showCopayCoinsuranceColumns, restrictEditToSchedulingColumns])
+  }, [activeProvider, clinicPayroll, billingCodes, statusColors, getCPTColor, getStatusColor, getMonthColor, patients, canEdit, lockData, getReadOnly, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, isFrontOffice, showVisitTypeColumn, showCopayCoinsuranceColumns, restrictEditToSchedulingColumns])
 
   const afterGetProviderColHeader = useCallback(
     (col: number, TH: HTMLTableCellElement, headerLevel?: number) => {
@@ -2391,7 +2432,7 @@ export default function ProvidersTab({
       }
     }
 
-    // Only pad to target when under target (allow more than target rows). Target = 200 + any extra
+    // Only pad to target when under target (allow more than target rows). Target = ROWS_PER_PROVIDER + any extra
     // rows the user requested via the "Add 50 rows" button below the table.
     if (updatedRows.length < padTargetRows) {
       const emptyRowsNeeded = padTargetRows - updatedRows.length
@@ -2595,7 +2636,7 @@ export default function ProvidersTab({
     if (hadPatientIdMerge || hadPatientIdClear || hadDateColumnEdit || hadTotalAutoUpdate || uniqueDeleteIds.length > 0) {
       setStructureVersion((v) => v + 1)
     }
-  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRows, runWithDeleteToast, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, minimalVisualIndices, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
+  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRows, runWithDeleteToast, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, isFrontOffice, minimalVisualIndices, frontOfficeVisualIndices, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
 
   const createEmptySheetRowForSync = useCallback(
     (providerId: string, emptySuffix: number): SheetRow => ({
@@ -2949,10 +2990,16 @@ export default function ProvidersTab({
         ? ['#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#fce5cd', '#ead1dd', '#b191cd', '#b191cd', '#b191cd'] // Patient through Appt/Note Status, then PT payment columns
         : isProviderView
           ? ['#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#fce5cd', '#ead1dd'] // Patient info (pink), Date/CPT (orange/beige), Appt/Note Status (purple/pink)
-          : showCondenseButton && isMinimal
-            // Minimal: First Name, LI, DOS (all pink), then claim status onward (pulled from fullHeaderColors at indices 9..18).
-            ? [fullHeaderColors[0], '#f5cbcc', '#f5cbcc', '#f5cbcc', ...fullHeaderColors.slice(9)]
-            : (showCondenseButton && isCondensed ? [fullHeaderColors[0], ...fullHeaderColors.slice(0, 9)] : [fullHeaderColors[0], ...fullHeaderColors])
+          : showCondenseButton && isFrontOffice
+            // Front office: row-number pink stripe, ID/First Name/LI/Ins pink (4 patient cols),
+            // DOS orange, then PT RES / PT Paid / PT Pay Status purple (3 PT cols). Colors chosen
+            // to match the same fields' backgrounds in other modes so the visual mapping stays
+            // consistent across mode switches.
+            ? [fullHeaderColors[0], '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#b191cd', '#b191cd', '#b191cd']
+            : showCondenseButton && isMinimal
+              // Minimal: First Name, LI, DOS (all pink), then claim status onward (pulled from fullHeaderColors at indices 9..18).
+              ? [fullHeaderColors[0], '#f5cbcc', '#f5cbcc', '#f5cbcc', ...fullHeaderColors.slice(9)]
+              : (showCondenseButton && isCondensed ? [fullHeaderColors[0], ...fullHeaderColors.slice(0, 9)] : [fullHeaderColors[0], ...fullHeaderColors])
       
       // Apply header colors
       setTimeout(() => {
@@ -2969,7 +3016,7 @@ export default function ProvidersTab({
         })
       }, 100)
     }
-  }, [activeProvider, providerColumnsWithLocks, isProviderView, officeStaffView, showCondenseButton, isCondensed, isMinimal])
+  }, [activeProvider, providerColumnsWithLocks, isProviderView, officeStaffView, showCondenseButton, isCondensed, isMinimal, isFrontOffice])
 
   const tableContainerRef = useRef<HTMLDivElement>(null)
   const [tableHeight, setTableHeight] = useState(isInSplitScreen ? 400 : 600)
@@ -3115,16 +3162,26 @@ export default function ProvidersTab({
       />
 
       {showCondenseButton && (() => {
-        const nextMode: CondenseMode = condenseMode === 'full' ? 'condensed' : condenseMode === 'condensed' ? 'minimal' : 'full'
+        // Cycle: full → condensed → minimal → front_office → full.
+        // Title on the button describes what CLICKING will do next (i.e., what the *next* mode
+        // is), so the user reads the label as an action. Icons chosen to hint at the *next*
+        // mode's shape rather than the current one, same as before.
+        const nextMode: CondenseMode =
+          condenseMode === 'full' ? 'condensed'
+          : condenseMode === 'condensed' ? 'minimal'
+          : condenseMode === 'minimal' ? 'front_office'
+          : 'full'
         const titleByMode: Record<CondenseMode, string> = {
           full: 'Condense (hide Claim Status through Notes)',
           condensed: 'Show only First Name, LI, Date of Service + Claim Status onward',
-          minimal: 'Show all columns',
+          minimal: 'Show front-office columns (patient info, DOS, PT payment)',
+          front_office: 'Show all columns',
         }
         const labelByMode: Record<CondenseMode, string> = {
           full: '−',
           condensed: '⇥',
-          minimal: '+',
+          minimal: '⊞',
+          front_office: '+',
         }
         return (
           <div className="flex justify-end -mt-6">

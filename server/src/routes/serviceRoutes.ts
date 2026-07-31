@@ -798,13 +798,15 @@ async function saveProviderSheetRowsCore(
     client.release()
   }
 
-  // Invoice recompute runs AFTER the transaction commits — it's an independent read/write on a
-  // different table, and keeping it out of the lock avoids extending the critical section that
-  // other save requests are queued behind.
-  await recomputeClinicInvoice(clinicId, parsed.month, parsed.year)
+  // Write the success audit row BEFORE running the invoice recompute. Order matters: recompute
+  // used to run first, and a throw in it (division-by-zero on empty totals, a corrupt
+  // provider_pay row, etc.) would surface as a 500 to the client while the DB already held the
+  // committed save — but the audit row would never be written. That gap was flagged during
+  // Spencer's 2026-07-30 "no audit for saves that clearly happened" investigation and is why
+  // we now record the audit first, then attempt recompute, then report.
+  let invoiceRecomputed = true
+  let recomputeErrorMessage: string | null = null
 
-  // Best-effort audit write on the success path. Any failure here is logged but not re-thrown —
-  // the save already committed and the caller should see success.
   try {
     await writeSaveAuditRow({
       correlationId: auditContext?.correlationId ?? null,
@@ -826,10 +828,29 @@ async function saveProviderSheetRowsCore(
     console.error('[provider_sheet_save_audit] insert-on-success failed:', auditErr)
   }
 
+  // Invoice recompute is an independent aggregation on a different table. We deliberately do NOT
+  // let a recompute failure fail the user's save (data is already committed and audited; a stale
+  // invoice can be re-computed later via /api/recompute-invoices-for-month or the next save on
+  // this clinic-month). Log the failure, return `invoiceRecomputed: false`, and continue.
+  try {
+    await recomputeClinicInvoice(clinicId, parsed.month, parsed.year)
+  } catch (recomputeErr) {
+    invoiceRecomputed = false
+    recomputeErrorMessage = recomputeErr instanceof Error ? recomputeErr.message : String(recomputeErr)
+    // eslint-disable-next-line no-console
+    console.error('[invoice] recomputeClinicInvoice failed after successful save:', {
+      clinicId,
+      month: parsed.month,
+      year: parsed.year,
+      correlationId: auditContext?.correlationId ?? null,
+      error: recomputeErrorMessage,
+    })
+  }
+
   return {
     saved: savedIds.length,
     rows: savedRows,
-    invoiceRecomputed: true,
+    invoiceRecomputed,
   }
 }
 
@@ -1502,5 +1523,38 @@ serviceRoutes.get('/super-admin/save-audit-logs', async (req, res) => {
     // eslint-disable-next-line no-console
     console.error('[save-audit-logs] fetch failed:', err)
     res.status(500).json({ error: 'Failed to load save audit log' })
+  }
+})
+
+/** DELETE /api/super-admin/save-audit-logs
+ *
+ * Wipes every row in `provider_sheet_save_audit`. Super-admin only. Intended for use from the
+ * viewer page's "Delete all logs" button after a debug window closes — the audit table can grow
+ * quickly on high-traffic sheets, and the 30-day retention query is a floor, not a ceiling, so
+ * an explicit "start fresh" control is useful.
+ *
+ * No filter support on purpose: keep the destructive path unambiguous. If we later need
+ * "delete just this clinic's rows" the safe way is to add a POST with a required scope body,
+ * not to layer optional filters onto this DELETE.
+ */
+serviceRoutes.delete('/super-admin/save-audit-logs', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  if (!(await requireSuperAdmin(callerId))) {
+    res.status(403).json({ error: 'Super admin only' })
+    return
+  }
+  try {
+    const result = await pool.query(`DELETE FROM public.provider_sheet_save_audit`)
+    // eslint-disable-next-line no-console
+    console.warn('[save-audit-logs] wiped', { deletedBy: callerId, rowsDeleted: result.rowCount ?? 0 })
+    res.json({ success: true, deleted: result.rowCount ?? 0 })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[save-audit-logs] delete-all failed:', err)
+    res.status(500).json({ error: 'Failed to delete audit log' })
   }
 })

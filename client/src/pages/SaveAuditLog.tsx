@@ -270,6 +270,37 @@ export default function SaveAuditLog() {
     }
   }, [filters, limit])
 
+  /** Wipe every audit row. Guarded by a browser confirm() so a stray click can't destroy the
+   *  entire debug history. On success, refetches (which will render "no rows match"). */
+  const deleteAllLogs = useCallback(async () => {
+    const confirmed = typeof window !== 'undefined' && window.confirm(
+      'Delete ALL save-audit rows across every clinic and provider?\n\n' +
+      'This cannot be undone. New saves will continue to be logged afterward.'
+    )
+    if (!confirmed) return
+    setLoading(true)
+    setError(null)
+    try {
+      const token = getAuthToken()
+      if (!token) throw new Error('Not signed in')
+      const base = getApiBase()
+      const res = await fetch(`${base}/api/super-admin/save-audit-logs`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(typeof payload?.error === 'string' ? payload.error : `Delete failed (${res.status})`)
+      }
+      // Refetch so the table clears and the "no rows match" empty state appears — cheaper than
+      // manually zero-ing the local `rows` state and keeps the count/empty-state logic consistent.
+      await fetchRows()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete audit rows')
+      setLoading(false)
+    }
+  }, [fetchRows])
+
   // Initial load: pull the most recent 200 rows across everything so the page is useful the
   // moment you open it, before filtering to a specific clinic/provider.
   useEffect(() => {
@@ -483,6 +514,18 @@ export default function SaveAuditLog() {
             className="px-3 py-1.5 rounded border border-white/20 text-white/80 text-sm hover:bg-white/10"
           >
             Clear
+          </button>
+          {/* Destructive button. Kept visually distinct from Refresh/Clear (red border + text)
+              so a stray click reads as "danger" before you commit. The confirm() dialog inside
+              deleteAllLogs is the actual safety net. */}
+          <button
+            type="button"
+            onClick={() => void deleteAllLogs()}
+            disabled={loading}
+            className="px-3 py-1.5 rounded border border-red-400/60 text-red-200 text-sm hover:bg-red-500/20 disabled:opacity-50"
+            title="Delete every audit row across all clinics and providers"
+          >
+            Delete all logs
           </button>
           <button
             type="button"

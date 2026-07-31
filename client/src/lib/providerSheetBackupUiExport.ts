@@ -15,6 +15,10 @@ export type ProviderSheetUiExportLayout = {
   /** Third condense mode: only First Name, LI, Date of Service, then Claim Status onward.
    *  Takes precedence over `isCondensed` when true. */
   isMinimal?: boolean
+  /** Fourth condense mode (added 2026-07-31): front-office view — ID, First Name, LI, Ins,
+   *  Date of Service, PT RES, PT Paid, PT Pay Status. Takes precedence over `isMinimal` and
+   *  `isCondensed` when true. */
+  isFrontOffice?: boolean
 }
 
 /** Indices (into the visual columnTitlesFull / fullRow array, after Visit Type insert) kept in minimal mode.
@@ -25,6 +29,15 @@ function minimalVisualIndices(showVisitTypeColumn: boolean): number[] {
   const indices: number[] = [0, 1, 2, 6]
   for (let i = 9 + vtShift; i <= 18 + vtShift; i++) indices.push(i)
   return indices
+}
+
+/** Indices kept in front-office mode. Mirrors `frontOfficeVisualIndices` in ProvidersTab.tsx.
+ *  Visual positions in the full layout (with Visit Type inserted at 9 when enabled): 0=ID,
+ *  1=First Name, 2=LI, 3=Ins, 6=DOS, 13=PT RES, 14=PT Paid, 15=PT Pay Status (last three
+ *  shift +1 when Visit Type is on). */
+function frontOfficeVisualIndices(showVisitTypeColumn: boolean): number[] {
+  const vtShift = showVisitTypeColumn ? 1 : 0
+  return [0, 1, 2, 3, 6, 13 + vtShift, 14 + vtShift, 15 + vtShift]
 }
 
 /** Build a patient_id → Patient lookup. Exported so callers can memoize and reuse it across renders
@@ -55,7 +68,7 @@ function dropCopayCoinsCols<T>(arr: T[], showCopayCoinsuranceColumns: boolean): 
 
 /** Same header order as `ProvidersTab` `columnTitles` for the given layout. */
 export function providerSheetUiExportHeaders(layout: ProviderSheetUiExportLayout): string[] {
-  const { showVisitTypeColumn, showCopayCoinsuranceColumns, officeStaffView, isProviderView, providerLevel, isCondensed, isMinimal } = layout
+  const { showVisitTypeColumn, showCopayCoinsuranceColumns, officeStaffView, isProviderView, providerLevel, isCondensed, isMinimal, isFrontOffice } = layout
   const showCondenseButton = !officeStaffView && !isProviderView
 
   const columnTitlesFullBase = [
@@ -86,6 +99,9 @@ export function providerSheetUiExportHeaders(layout: ProviderSheetUiExportLayout
   const chooseLayout = (): string[] => {
     if (officeStaffView) return columnTitlesOfficeStaff
     if (isProviderView) return providerLevel === 2 ? columnTitlesFull : columnTitlesProviderView
+    if (showCondenseButton && isFrontOffice) {
+      return frontOfficeVisualIndices(showVisitTypeColumn).map((i) => columnTitlesFull[i])
+    }
     if (showCondenseButton && isMinimal) {
       return minimalVisualIndices(showVisitTypeColumn).map((i) => columnTitlesFull[i])
     }
@@ -106,7 +122,7 @@ export function sheetRowsToUiMatrix(
    *  rebuild it on every render / matrix call. Falls back to building from `patients` if omitted. */
   patientLookup?: Map<string, Patient>
 ): (string | number | boolean)[][] {
-  const { showVisitTypeColumn, officeStaffView, isProviderView, providerLevel, isCondensed, isMinimal } = layout
+  const { showVisitTypeColumn, officeStaffView, isProviderView, providerLevel, isCondensed, isMinimal, isFrontOffice } = layout
   const showCondenseButton = !officeStaffView && !isProviderView
   const coPatients = patientLookup ?? coPatientByIdKey(patients)
 
@@ -201,6 +217,9 @@ export function sheetRowsToUiMatrix(
       toDisplayValue(row.notes),
     ]
     const withVisitType = insertVisitType(fullRow) as (string | number | boolean)[]
+    if (showCondenseButton && isFrontOffice) {
+      return frontOfficeVisualIndices(showVisitTypeColumn).map((i) => withVisitType[i])
+    }
     if (showCondenseButton && isMinimal) {
       return minimalVisualIndices(showVisitTypeColumn).map((i) => withVisitType[i])
     }

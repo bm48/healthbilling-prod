@@ -99,7 +99,11 @@ export async function getBackupDownloadUrl(
   return data.signedUrl
 }
 
-const ROWS_PER_PROVIDER = 200
+/** Default number of visible rows per provider billing sheet. Bumped 200 → 300 on 2026-07-31
+ *  after Jenali reported hitting the cap (and Keana's glitch, likely related). All padding
+ *  code paths in the client (ProvidersTab, ClinicDetail, ProviderSheetPage) import this
+ *  constant so the pad target stays consistent — do not hardcode `300` elsewhere. */
+export const ROWS_PER_PROVIDER = 300
 
 function createEmptySheetRow(index: number): SheetRow {
   const iso = new Date().toISOString()
@@ -149,9 +153,11 @@ function createEmptySheetRow(index: number): SheetRow {
 }
 
 /**
- * Pad rows to ROWS_PER_PROVIDER (200) so the table displays the same height as the live view.
+ * Pad rows to ROWS_PER_PROVIDER (see constant above) so the table displays the same height as
+ * the live view. Historical name was `padSheetRowsTo200`; renamed 2026-07-31 when the target
+ * moved to 300 so callers don't inherit a misleading number in the function name.
  */
-export function padSheetRowsTo200(rows: SheetRow[]): SheetRow[] {
+export function padSheetRowsToBase(rows: SheetRow[]): SheetRow[] {
   if (rows.length >= ROWS_PER_PROVIDER) return rows
   const padding = Array.from({ length: ROWS_PER_PROVIDER - rows.length }, (_, i) =>
     createEmptySheetRow(rows.length + i)
