@@ -182,6 +182,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(null)
       setUserProfile(null)
       setLoading(false)
+    } finally {
+      // Nuclear browser-storage wipe on logout (added 2026-07-31 per Jenali). A logged-out browser
+      // should carry no billing data from the previous session — no pending-save backups, no
+      // Admin-Tracking localStorage overlays, no cached API responses, no condense-mode prefs.
+      // Runs in `finally` so it fires on both the success path (where the auth listener would
+      // otherwise clear only the token) and the failure path (already-expired session).
+      //
+      // Order matters: Supabase's signOut above needs the token from localStorage to POST the
+      // revoke; that's why the clear runs AFTER, not before. If we clear too early, the revoke
+      // request fires without auth and the session stays alive server-side.
+      //
+      // IndexedDB is NOT touched here. Supabase's client uses localStorage (not IDB) for auth by
+      // default in this project's config. If that ever changes, add `indexedDB.deleteDatabase(...)`
+      // for the relevant DB names — but don't add speculatively; wait for a concrete "session
+      // came back after logout" report.
+      try {
+        if (typeof window !== 'undefined') {
+          window.localStorage.clear()
+          window.sessionStorage.clear()
+        }
+      } catch {
+        // Storage disabled / private mode — nothing we can do, ignore.
+      }
+      // Cache Storage clear is async; best-effort. If no service worker is registered, `caches`
+      // may still exist but keys() returns []. Never throw — logout should complete regardless.
+      if (typeof caches !== 'undefined' && typeof caches.keys === 'function') {
+        void caches
+          .keys()
+          .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+          .catch(() => {
+            // ignored
+          })
+      }
     }
   }
 
