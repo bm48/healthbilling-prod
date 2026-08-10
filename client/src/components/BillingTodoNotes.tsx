@@ -21,13 +21,21 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
   const editorRef = useRef<HTMLDivElement>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [savedAt, setSavedAt] = useState<Date | null>(null)
   const contentRef = useRef<string>('')
   const lastSavedRef = useRef<string>('')
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** False until the first fetch finishes — prevents unmount/cleanup from upserting empty HTML
+   *  over real DB content when the user switches tabs mid-load. */
+  const hydratedRef = useRef(false)
+  /** Tracks whether we've painted fetched HTML into the editor after it mounts. */
+  const editorHydratedRef = useRef(false)
 
   const fetchNotes = useCallback(async () => {
     if (!clinicId) return
+    hydratedRef.current = false
+    editorHydratedRef.current = false
     try {
       const { data, error } = await apiClient
         .from('billing_todo_notes')
@@ -38,9 +46,14 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
       const html = (data?.content as string | undefined) ?? ''
       contentRef.current = html
       lastSavedRef.current = html
-      if (editorRef.current) editorRef.current.innerHTML = html
+      hydratedRef.current = true
     } catch (e) {
       console.error('[BillingTodoNotes] fetch error:', e)
+      // Still mark hydrated so subsequent edits can attempt save (and surface errors).
+      contentRef.current = ''
+      lastSavedRef.current = ''
+      hydratedRef.current = true
+      setSaveError(e instanceof Error ? e.message : 'Failed to load notes')
     } finally {
       setLoading(false)
     }
@@ -51,11 +64,29 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
     fetchNotes()
   }, [fetchNotes])
 
+  // Apply loaded HTML once the contenteditable node exists. fetchNotes used to set
+  // editorRef.innerHTML while `loading` was still true — the editor wasn't mounted yet, so
+  // notes always opened blank and looked "lost" after click-away / tab switch.
+  useEffect(() => {
+    if (loading || editorHydratedRef.current) return
+    const el = editorRef.current
+    if (!el) return
+    el.innerHTML = contentRef.current
+    editorHydratedRef.current = true
+  }, [loading])
+
+  const readEditorHtml = useCallback(() => {
+    const el = editorRef.current
+    if (el) contentRef.current = el.innerHTML
+    return contentRef.current
+  }, [])
+
   const saveNow = useCallback(async () => {
-    if (!clinicId) return
-    const html = contentRef.current
+    if (!clinicId || !hydratedRef.current) return
+    const html = readEditorHtml()
     if (html === lastSavedRef.current) return
     setSaving(true)
+    setSaveError(null)
     try {
       const { error } = await apiClient
         .from('billing_todo_notes')
@@ -73,10 +104,12 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
       setSavedAt(new Date())
     } catch (e) {
       console.error('[BillingTodoNotes] save error:', e)
+      const message = e instanceof Error ? e.message : 'Failed to save notes'
+      setSaveError(message)
     } finally {
       setSaving(false)
     }
-  }, [clinicId, userProfile])
+  }, [clinicId, userProfile, readEditorHtml])
 
   const scheduleSave = useCallback(() => {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
@@ -92,7 +125,10 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
         clearTimeout(saveTimeoutRef.current)
         saveTimeoutRef.current = null
       }
-      void saveNow()
+      // Best-effort flush; skip if we never finished loading (avoids wiping DB with '').
+      if (hydratedRef.current) {
+        void saveNow()
+      }
     }
   }, [saveNow])
 
@@ -116,11 +152,15 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
     [canEdit, handleInput],
   )
 
-  const savedLabel = savedAt
-    ? `Saved ${savedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-    : lastSavedRef.current
-      ? 'All changes saved'
-      : ''
+  const savedLabel = saveError
+    ? `Save failed: ${saveError}`
+    : saving
+      ? 'Saving…'
+      : savedAt
+        ? `Saved ${savedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+        : lastSavedRef.current
+          ? 'All changes saved'
+          : ''
 
   return (
     <div className="p-6 flex flex-col" style={{ minHeight: '650px' }}>
@@ -129,6 +169,7 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
           <button
             type="button"
             title="Bold (Ctrl+B)"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => applyFormat('bold')}
             disabled={!canEdit}
             className="p-1.5 rounded text-white/80 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:pointer-events-none"
@@ -138,6 +179,7 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
           <button
             type="button"
             title="Italic (Ctrl+I)"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => applyFormat('italic')}
             disabled={!canEdit}
             className="p-1.5 rounded text-white/80 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:pointer-events-none"
@@ -147,6 +189,7 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
           <button
             type="button"
             title="Underline (Ctrl+U)"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => applyFormat('underline')}
             disabled={!canEdit}
             className="p-1.5 rounded text-white/80 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:pointer-events-none"
@@ -157,6 +200,7 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
           <button
             type="button"
             title="Bulleted list"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => applyFormat('insertUnorderedList')}
             disabled={!canEdit}
             className="p-1.5 rounded text-white/80 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:pointer-events-none"
@@ -166,6 +210,7 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
           <button
             type="button"
             title="Numbered list"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => applyFormat('insertOrderedList')}
             disabled={!canEdit}
             className="p-1.5 rounded text-white/80 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:pointer-events-none"
@@ -173,8 +218,8 @@ export default function BillingTodoNotes({ clinicId, canEdit }: BillingTodoNotes
             <ListOrdered className="w-4 h-4" />
           </button>
         </div>
-        <div className="text-xs text-white/60">
-          {saving ? 'Saving…' : savedLabel}
+        <div className={`text-xs ${saveError ? 'text-red-300' : 'text-white/60'}`}>
+          {savedLabel}
         </div>
       </div>
 

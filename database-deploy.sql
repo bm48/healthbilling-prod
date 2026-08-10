@@ -7876,6 +7876,21 @@ INSERT INTO "public"."todo_lists" VALUES ('3cdc940d-0c52-4a8b-b4c2-075401f59fd2'
 INSERT INTO "public"."todo_lists" VALUES ('614069e3-dcd0-49f9-ae73-6f9b4726fb23', '9c542bda-d9b7-4903-9bcb-37eecca7720d', 'hrt', 'In Progress', 'ku', 'kuy', 'd16d4dfb-ee6c-47d1-aa62-5b2f26d3aa9e', '2026-04-28 01:21:05.312-07', '2026-04-28 01:21:11.33112-07', NULL);
 
 -- ----------------------------
+-- Table structure for billing_todo_notes
+-- Clinic-wide notepad for the Billing To-Do "Notes" tab (one row per clinic).
+-- ----------------------------
+DROP TABLE IF EXISTS "public"."billing_todo_notes";
+CREATE TABLE "public"."billing_todo_notes" (
+  "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "clinic_id" uuid NOT NULL,
+  "content" text COLLATE "pg_catalog"."default" NOT NULL DEFAULT ''::text,
+  "updated_by" uuid,
+  "created_at" timestamptz(6) NOT NULL DEFAULT now(),
+  "updated_at" timestamptz(6) NOT NULL DEFAULT now()
+)
+;
+
+-- ----------------------------
 -- Table structure for users
 -- ----------------------------
 DROP TABLE IF EXISTS "public"."users";
@@ -9065,6 +9080,30 @@ EXECUTE PROCEDURE "public"."update_updated_at_column"();
 ALTER TABLE "public"."todo_lists" ADD CONSTRAINT "todo_lists_pkey" PRIMARY KEY ("id");
 
 -- ----------------------------
+-- Indexes structure for table billing_todo_notes
+-- ----------------------------
+CREATE INDEX "idx_billing_todo_notes_clinic" ON "public"."billing_todo_notes" USING btree (
+  "clinic_id" "pg_catalog"."uuid_ops" ASC NULLS LAST
+);
+
+-- ----------------------------
+-- Triggers structure for table billing_todo_notes
+-- ----------------------------
+CREATE TRIGGER "update_billing_todo_notes_updated_at" BEFORE UPDATE ON "public"."billing_todo_notes"
+FOR EACH ROW
+EXECUTE PROCEDURE "public"."update_updated_at_column"();
+
+-- ----------------------------
+-- Uniques structure for table billing_todo_notes
+-- ----------------------------
+ALTER TABLE "public"."billing_todo_notes" ADD CONSTRAINT "billing_todo_notes_clinic_id_key" UNIQUE ("clinic_id");
+
+-- ----------------------------
+-- Primary Key structure for table billing_todo_notes
+-- ----------------------------
+ALTER TABLE "public"."billing_todo_notes" ADD CONSTRAINT "billing_todo_notes_pkey" PRIMARY KEY ("id");
+
+-- ----------------------------
 -- Indexes structure for table users
 -- ----------------------------
 CREATE INDEX "idx_users_clinic_ids" ON "public"."users" USING gin (
@@ -9281,6 +9320,12 @@ ALTER TABLE "public"."todo_lists" ADD CONSTRAINT "todo_lists_clinic_id_fkey" FOR
 ALTER TABLE "public"."todo_lists" ADD CONSTRAINT "todo_lists_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."users" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- ----------------------------
+-- Foreign Keys structure for table billing_todo_notes
+-- ----------------------------
+ALTER TABLE "public"."billing_todo_notes" DROP CONSTRAINT IF EXISTS "billing_todo_notes_clinic_id_fkey";
+ALTER TABLE "public"."billing_todo_notes" ADD CONSTRAINT "billing_todo_notes_clinic_id_fkey" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics" ("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+
+-- ----------------------------
 -- Foreign Keys structure for table users
 -- ----------------------------
 -- public.users.id is the sole application user identity (no FK to an external user catalog).
@@ -9320,4 +9365,5 @@ ALTER TABLE IF EXISTS "public"."server_refresh_tokens" ALTER COLUMN "id" SET DEF
 ALTER TABLE IF EXISTS "public"."status_colors" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
 ALTER TABLE IF EXISTS "public"."timecards" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
 ALTER TABLE IF EXISTS "public"."todo_lists" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+ALTER TABLE IF EXISTS "public"."billing_todo_notes" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
 ALTER TABLE IF EXISTS "public"."users" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
