@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, Fragment } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { apiClient } from '@/lib/apiClient'
 import { getApiBase, getAuthToken } from '@/lib/invoiceApi'
+import { Copy, Check } from 'lucide-react'
 
 /** Minimal shapes for the dropdown lookups. Full Clinic/Provider/ProviderSheet types live in
  *  @/types; we only pull the fields the dropdowns need. */
@@ -28,43 +29,33 @@ interface SheetOption {
 
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-/** Build the `selected_month_key` string that the server-side audit column uses (see
- *  buildMonthKey in client/src/lib/providerSheetRows.ts). Match its convention exactly:
- *  `${year}-${month}` for payroll 1, `${year}-${month}-2` for payroll 2. */
 function buildMonthKeyForSheet(s: SheetOption): string {
   return Number(s.payroll) === 2 ? `${s.year}-${s.month}-2` : `${s.year}-${s.month}`
 }
 
-/** Display label for a sheet in the dropdown, e.g. "Jul 2026" or "Jul 2026 (biweekly ½)". */
 function labelForSheet(s: SheetOption): string {
   const base = `${MONTH_ABBR[s.month - 1] ?? s.month} ${s.year}`
   return Number(s.payroll) === 2 ? `${base} (biweekly ½)` : base
 }
 
 /**
- * Super-admin viewer for `provider_sheet_save_audit`.
+ * Super-admin viewer for sheet save audit (`provider_sheet_save_audit`).
  *
- * Powers post-incident investigation for duplicate/stray-row reports. Each row here corresponds
- * to one POST /api/save-provider-sheet-rows. When a report comes in, we:
- *   1. Filter to the clinic + provider + month the report is about.
- *   2. Look for two rows for the same sheet_id within a short window → race candidate.
- *   3. Expand the row and read `actions` to see whether the loop UPDATE'd, INSERT'd, or
- *      dedupe-collapsed each incoming payload row.
- *
- * PHI note: this page never displays patient names, insurance, or free text. Only structural
- * identifiers (UUIDs, counts, timing, source labels, action summaries).
+ * One row per save batch across provider sheets, patients, AR, billing to-do, and provider pay.
+ * PHI-free: UUIDs, counts, timing, source labels, action summaries only.
  */
 
 interface AuditRow {
   id: string
   created_at: string
+  sheet_kind: string | null
   correlation_id: string | null
   user_id: string
   user_email: string | null
   clinic_id: string
-  provider_id: string
+  provider_id: string | null
   sheet_id: string | null
-  selected_month_key: string
+  selected_month_key: string | null
   source: string | null
   row_count: number | null
   lock_wait_ms: number | null
@@ -75,6 +66,7 @@ interface AuditRow {
 }
 
 interface Filters {
+  sheetKind: string
   clinicId: string
   providerId: string
   sheetId: string
@@ -87,6 +79,7 @@ interface Filters {
 }
 
 const EMPTY_FILTERS: Filters = {
+  sheetKind: '',
   clinicId: '',
   providerId: '',
   sheetId: '',
@@ -98,11 +91,17 @@ const EMPTY_FILTERS: Filters = {
   onlyWithInserts: false,
 }
 
-// The list of sources the client actually sends. Kept in sync with the `source: '...'` literals
-// passed to saveProviderSheetRows / saveSheetRows / the pagehide fetch body in ClinicDetail.tsx.
-// If you add a new call site with a new source label, add it here too so the dropdown surfaces it.
+const SHEET_KINDS = [
+  { value: 'provider_sheet', label: 'Provider billing sheet' },
+  { value: 'patients', label: 'Patient Info' },
+  { value: 'accounts_receivable', label: 'Accounts Receivable' },
+  { value: 'billing_todo', label: 'Billing To-Do' },
+  { value: 'provider_pay', label: 'Provider Pay' },
+] as const
+
 const KNOWN_SOURCES = [
   'typing-debounced-or-direct',
+  'row-leave-or-flush',
   'pagehide-keepalive',
   'deferred-drain-queued',
   'deferred-replay',
@@ -115,6 +114,7 @@ const KNOWN_SOURCES = [
   'reorder-rows',
   'sync-provider-rows-fromLegacyState',
   'provider-sheet-page',
+  'provider-pay-save',
   'month-close-provider-pay-distribution',
   'unknown',
 ] as const
@@ -136,10 +136,14 @@ function formatDateTime(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-/** Build the query string. Only appends non-empty values so the endpoint's `strParam` treats
- *  empty inputs as "no filter" instead of "match empty string." */
+function sheetKindLabel(kind: string | null | undefined): string {
+  if (!kind) return 'provider_sheet'
+  return SHEET_KINDS.find((k) => k.value === kind)?.label ?? kind
+}
+
 function buildQueryString(filters: Filters, limit: number): string {
   const params = new URLSearchParams()
+  if (filters.sheetKind.trim()) params.set('sheet_kind', filters.sheetKind.trim())
   if (filters.clinicId.trim()) params.set('clinic_id', filters.clinicId.trim())
   if (filters.providerId.trim()) params.set('provider_id', filters.providerId.trim())
   if (filters.sheetId.trim()) params.set('sheet_id', filters.sheetId.trim())
@@ -153,6 +157,148 @@ function buildQueryString(filters: Filters, limit: number): string {
   return params.toString()
 }
 
+function actionSummary(actions: Record<string, unknown>): string {
+  const inserts = Number(actions.inserts ?? 0)
+  const updates = Number(actions.updates ?? 0)
+  const collapses = Number(actions.dedupe_collapses ?? 0)
+  const rejects = Number(actions.rejected_patient_less ?? 0)
+  const deletes = Number(actions.deletes ?? 0)
+  if (actions.row_replace) return 'row_replace'
+  return `U:${updates} I:${inserts} DC:${collapses} RJ:${rejects} D:${deletes}`
+}
+
+function rowToCopyText(r: AuditRow, clinicName?: string, providerName?: string): string {
+  return [
+    `when: ${formatDateTime(r.created_at)}`,
+    `sheet_kind: ${r.sheet_kind ?? 'provider_sheet'}`,
+    `success: ${r.success}`,
+    `user: ${r.user_email ?? r.user_id}`,
+    `clinic: ${clinicName ?? r.clinic_id}`,
+    `clinic_id: ${r.clinic_id}`,
+    `provider: ${providerName ?? r.provider_id ?? '(none)'}`,
+    `provider_id: ${r.provider_id ?? '(none)'}`,
+    `sheet_id: ${r.sheet_id ?? '(none)'}`,
+    `month: ${r.selected_month_key ?? '(none)'}`,
+    `source: ${r.source ?? '(none)'}`,
+    `row_count: ${r.row_count ?? ''}`,
+    `actions: ${actionSummary(r.actions)}`,
+    `lock_wait: ${formatMs(r.lock_wait_ms)}`,
+    `elapsed: ${formatMs(r.elapsed_ms)}`,
+    `correlation_id: ${r.correlation_id ?? '(none)'}`,
+    `audit_id: ${r.id}`,
+    r.error_message ? `error: ${r.error_message}` : null,
+    `actions_json: ${JSON.stringify(r.actions)}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function rowsToTsv(rows: AuditRow[]): string {
+  const headers = [
+    'when',
+    'sheet_kind',
+    'success',
+    'user_email',
+    'clinic_id',
+    'provider_id',
+    'sheet_id',
+    'month',
+    'source',
+    'row_count',
+    'actions',
+    'lock_ms',
+    'elapsed_ms',
+    'correlation_id',
+    'audit_id',
+    'error',
+  ]
+  const escape = (v: string) => {
+    if (/[\t\n\r"]/.test(v)) return `"${v.replace(/"/g, '""')}"`
+    return v
+  }
+  const lines = [
+    headers.join('\t'),
+    ...rows.map((r) =>
+      [
+        formatDateTime(r.created_at),
+        r.sheet_kind ?? 'provider_sheet',
+        String(r.success),
+        r.user_email ?? r.user_id,
+        r.clinic_id,
+        r.provider_id ?? '',
+        r.sheet_id ?? '',
+        r.selected_month_key ?? '',
+        r.source ?? '',
+        String(r.row_count ?? ''),
+        actionSummary(r.actions),
+        String(r.lock_wait_ms ?? ''),
+        String(r.elapsed_ms ?? ''),
+        r.correlation_id ?? '',
+        r.id,
+        r.error_message ?? '',
+      ]
+        .map((c) => escape(String(c)))
+        .join('\t'),
+    ),
+  ]
+  return lines.join('\n')
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch {
+      return false
+    }
+  }
+}
+
+function CopyButton({
+  label,
+  getText,
+  className = '',
+}: {
+  label: string
+  getText: () => string
+  className?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      title={label}
+      onClick={async (e) => {
+        e.stopPropagation()
+        const ok = await copyText(getText())
+        if (ok) {
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1500)
+        }
+      }}
+      className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs ${
+        copied
+          ? 'border-emerald-400/60 text-emerald-200 bg-emerald-500/10'
+          : 'border-white/20 text-white/80 hover:bg-white/10'
+      } ${className}`}
+    >
+      {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+      {copied ? 'Copied' : label}
+    </button>
+  )
+}
+
 export default function SaveAuditLog() {
   const { userProfile, loading: authLoading } = useAuth()
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS)
@@ -162,17 +308,14 @@ export default function SaveAuditLog() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Dropdown lookups. Fetched once for clinics + providers (super-admin sees everything), and on
-  // demand for sheets whenever the user picks a clinic + provider pair. Keeping these in
-  // component state (rather than a shared cache) is fine — this page opens rarely, always by
-  // the same super-admin, and the lists change infrequently.
   const [clinics, setClinics] = useState<ClinicOption[]>([])
   const [providers, setProviders] = useState<ProviderOption[]>([])
   const [sheets, setSheets] = useState<SheetOption[]>([])
   const [lookupsError, setLookupsError] = useState<string | null>(null)
 
-  // One-shot: clinics + providers on mount. Sheets are a separate effect keyed to selected
-  // clinic+provider so we don't pull the full sheet list up front.
+  const showProviderSheetFilters =
+    !filters.sheetKind || filters.sheetKind === 'provider_sheet' || filters.sheetKind === 'provider_pay'
+
   useEffect(() => {
     if (userProfile?.role !== 'super_admin') return
     let cancelled = false
@@ -186,8 +329,6 @@ export default function SaveAuditLog() {
         if (clinicsRes.error) throw clinicsRes.error
         if (providersRes.error) throw providersRes.error
         setClinics((clinicsRes.data ?? []) as ClinicOption[])
-        // Sort providers by last name then first — dropdown scan order should match how users
-        // think about the roster. Filter out inactive so the list stays short.
         const active = ((providersRes.data ?? []) as ProviderOption[])
           .filter((p) => p.active !== false)
           .sort((a, b) => {
@@ -206,9 +347,8 @@ export default function SaveAuditLog() {
     }
   }, [userProfile])
 
-  // Sheets refetch when clinic+provider selection changes. Skips if either half is missing.
   useEffect(() => {
-    if (!filters.clinicId || !filters.providerId) {
+    if (!filters.clinicId || !filters.providerId || !showProviderSheetFilters) {
       setSheets([])
       return
     }
@@ -235,15 +375,24 @@ export default function SaveAuditLog() {
     return () => {
       cancelled = true
     }
-  }, [filters.clinicId, filters.providerId])
+  }, [filters.clinicId, filters.providerId, showProviderSheetFilters])
 
-  // Providers filtered by the currently-selected clinic. If no clinic is picked we show every
-  // provider — that's useful for correlation-ID / source-only investigations where the user
-  // doesn't remember which clinic they belong to.
   const providersForClinic = useMemo(() => {
     if (!filters.clinicId) return providers
     return providers.filter((p) => (p.clinic_ids ?? []).includes(filters.clinicId))
   }, [providers, filters.clinicId])
+
+  const clinicNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of clinics) m.set(c.id, c.name)
+    return m
+  }, [clinics])
+
+  const providerNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const p of providers) m.set(p.id, `${p.first_name} ${p.last_name}`.trim())
+    return m
+  }, [providers])
 
   const fetchRows = useCallback(async () => {
     setLoading(true)
@@ -270,13 +419,13 @@ export default function SaveAuditLog() {
     }
   }, [filters, limit])
 
-  /** Wipe every audit row. Guarded by a browser confirm() so a stray click can't destroy the
-   *  entire debug history. On success, refetches (which will render "no rows match"). */
   const deleteAllLogs = useCallback(async () => {
-    const confirmed = typeof window !== 'undefined' && window.confirm(
-      'Delete ALL save-audit rows across every clinic and provider?\n\n' +
-      'This cannot be undone. New saves will continue to be logged afterward.'
-    )
+    const confirmed =
+      typeof window !== 'undefined' &&
+      window.confirm(
+        'Delete ALL save-audit rows across every clinic and sheet?\n\n' +
+          'This cannot be undone. New saves will continue to be logged afterward.',
+      )
     if (!confirmed) return
     setLoading(true)
     setError(null)
@@ -292,8 +441,6 @@ export default function SaveAuditLog() {
       if (!res.ok) {
         throw new Error(typeof payload?.error === 'string' ? payload.error : `Delete failed (${res.status})`)
       }
-      // Refetch so the table clears and the "no rows match" empty state appears — cheaper than
-      // manually zero-ing the local `rows` state and keeps the count/empty-state logic consistent.
       await fetchRows()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete audit rows')
@@ -301,23 +448,15 @@ export default function SaveAuditLog() {
     }
   }, [fetchRows])
 
-  // Initial load: pull the most recent 200 rows across everything so the page is useful the
-  // moment you open it, before filtering to a specific clinic/provider.
   useEffect(() => {
     void fetchRows()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Group audit rows by (sheet_id, minute-bucket) to visually flag same-sheet saves that landed
-  // close together — those are the race candidates that most often produce duplicates. A group
-  // of 2+ audit rows means concurrent traffic went through the advisory lock (or slipped past it
-  // pre-fix); expand both to compare their action summaries.
   const raceCandidateGroups = useMemo(() => {
     const groups = new Map<string, AuditRow[]>()
     for (const r of rows) {
       if (!r.sheet_id) continue
-      // 60-second bucket. Coarse enough to catch debounce + pagehide overlaps (which typically
-      // happen within a few seconds of each other) without lumping unrelated traffic together.
       const bucket = Math.floor(new Date(r.created_at).getTime() / 60_000)
       const key = `${r.sheet_id}:${bucket}`
       if (!groups.has(key)) groups.set(key, [])
@@ -348,22 +487,46 @@ export default function SaveAuditLog() {
 
   return (
     <div className="p-6 space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold text-white">Save audit log</h1>
-        <p className="text-sm text-white/70 mt-1">
-          One row per POST /api/save-provider-sheet-rows. Rows highlighted amber landed on the
-          same sheet within the same minute as at least one other row — those are the race
-          candidates worth expanding when investigating a duplicate report.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">Save audit log</h1>
+          <p className="text-sm text-white/70 mt-1 max-w-3xl">
+            One row per save batch across provider billing sheets, Patient Info, Accounts Receivable,
+            Billing To-Do, and Provider Pay. Amber rows are same-sheet races within a minute.
+            Use Copy on a row (or Copy all visible) to paste into Slack / tickets.
+          </p>
+        </div>
+        <CopyButton label="Copy all visible (TSV)" getText={() => rowsToTsv(rows)} className="shrink-0" />
       </div>
 
       <div className="rounded border border-white/20 bg-slate-900/60 p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
         <label className="text-sm text-white/80">
+          Sheet type
+          <select
+            value={filters.sheetKind}
+            onChange={(e) =>
+              setFilters((f) => ({
+                ...f,
+                sheetKind: e.target.value,
+                ...(e.target.value && e.target.value !== 'provider_sheet' && e.target.value !== 'provider_pay'
+                  ? { sheetId: '', selectedMonthKey: '', providerId: e.target.value === 'patients' || e.target.value === 'billing_todo' || e.target.value === 'accounts_receivable' ? f.providerId : f.providerId }
+                  : {}),
+              }))
+            }
+            className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm"
+          >
+            <option value="">(any sheet type)</option>
+            {SHEET_KINDS.map((k) => (
+              <option key={k.value} value={k.value}>
+                {k.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm text-white/80">
           Clinic
           <select
             value={filters.clinicId}
-            // Clearing / changing clinic wipes provider + sheet + month-key so we don't leave
-            // stale downstream selections that don't match the new clinic's roster.
             onChange={(e) =>
               setFilters((f) => ({
                 ...f,
@@ -375,67 +538,66 @@ export default function SaveAuditLog() {
             }
             className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm"
           >
-            <option value="" style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>(any clinic)</option>
+            <option value="">(any clinic)</option>
             {clinics.map((c) => (
-              <option key={c.id} value={c.id} style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
+              <option key={c.id} value={c.id}>
                 {c.name}
               </option>
             ))}
           </select>
         </label>
-        <label className="text-sm text-white/80">
-          Provider
-          <select
-            value={filters.providerId}
-            // Changing provider wipes sheet + month-key for the same reason clinic does.
-            onChange={(e) =>
-              setFilters((f) => ({
-                ...f,
-                providerId: e.target.value,
-                sheetId: '',
-                selectedMonthKey: '',
-              }))
-            }
-            className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm"
-          >
-            <option value="" style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>(any provider)</option>
-            {providersForClinic.map((p) => (
-              <option key={p.id} value={p.id} style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
-                {p.first_name} {p.last_name}
+        {showProviderSheetFilters && (
+          <label className="text-sm text-white/80">
+            Provider
+            <select
+              value={filters.providerId}
+              onChange={(e) =>
+                setFilters((f) => ({
+                  ...f,
+                  providerId: e.target.value,
+                  sheetId: '',
+                  selectedMonthKey: '',
+                }))
+              }
+              className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm"
+            >
+              <option value="">(any provider)</option>
+              {providersForClinic.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.first_name} {p.last_name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {filters.sheetKind === 'provider_sheet' || !filters.sheetKind ? (
+          <label className="text-sm text-white/80">
+            Sheet
+            <select
+              value={filters.sheetId}
+              onChange={(e) => {
+                const selectedId = e.target.value
+                const matched = sheets.find((s) => s.id === selectedId)
+                setFilters((f) => ({
+                  ...f,
+                  sheetId: selectedId,
+                  selectedMonthKey: matched ? buildMonthKeyForSheet(matched) : '',
+                }))
+              }}
+              disabled={!filters.clinicId || !filters.providerId}
+              className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm disabled:opacity-50"
+            >
+              <option value="">
+                {filters.clinicId && filters.providerId ? '(any sheet)' : '(pick clinic + provider first)'}
               </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-sm text-white/80">
-          Sheet
-          <select
-            value={filters.sheetId}
-            // Selecting a sheet auto-populates selected_month_key so the two filters stay in
-            // sync — the audit endpoint honors both, and mismatched values would return zero
-            // rows in a way that looks like "the query is broken" rather than "the filter is
-            // over-constrained."
-            onChange={(e) => {
-              const selectedId = e.target.value
-              const matched = sheets.find((s) => s.id === selectedId)
-              setFilters((f) => ({
-                ...f,
-                sheetId: selectedId,
-                selectedMonthKey: matched ? buildMonthKeyForSheet(matched) : '',
-              }))
-            }}
-            disabled={!filters.clinicId || !filters.providerId}
-            className="mt-1 w-full px-2 py-1 rounded border border-white/20 bg-slate-800/80 text-white text-sm disabled:opacity-50"
-          >
-            <option value="" style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
-              {filters.clinicId && filters.providerId ? '(any sheet)' : '(pick clinic + provider first)'}
-            </option>
-            {sheets.map((s) => (
-              <option key={s.id} value={s.id} style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
-                {labelForSheet(s)}
-              </option>
-            ))}
-          </select>
-        </label>
+              {sheets.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {labelForSheet(s)}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <label className="text-sm text-white/80">
           Selected month key
           <input
@@ -465,7 +627,9 @@ export default function SaveAuditLog() {
           >
             <option value="">(any)</option>
             {KNOWN_SOURCES.map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
           </select>
         </label>
@@ -515,15 +679,12 @@ export default function SaveAuditLog() {
           >
             Clear
           </button>
-          {/* Destructive button. Kept visually distinct from Refresh/Clear (red border + text)
-              so a stray click reads as "danger" before you commit. The confirm() dialog inside
-              deleteAllLogs is the actual safety net. */}
           <button
             type="button"
             onClick={() => void deleteAllLogs()}
             disabled={loading}
             className="px-3 py-1.5 rounded border border-red-400/60 text-red-200 text-sm hover:bg-red-500/20 disabled:opacity-50"
-            title="Delete every audit row across all clinics and providers"
+            title="Delete every audit row across all clinics and sheets"
           >
             Delete all logs
           </button>
@@ -539,14 +700,11 @@ export default function SaveAuditLog() {
       </div>
 
       {error && (
-        <div className="rounded border border-red-500/40 bg-red-900/30 text-red-200 px-3 py-2 text-sm">
-          {error}
-        </div>
+        <div className="rounded border border-red-500/40 bg-red-900/30 text-red-200 px-3 py-2 text-sm">{error}</div>
       )}
       {lookupsError && (
         <div className="rounded border border-amber-500/40 bg-amber-900/30 text-amber-200 px-3 py-2 text-sm">
-          Dropdown load failed: {lookupsError}. Filter inputs will be empty; use text-only filters
-          (Correlation ID, Selected month key, dates) as a fallback.
+          Dropdown load failed: {lookupsError}. Use text filters as a fallback.
         </div>
       )}
 
@@ -555,22 +713,23 @@ export default function SaveAuditLog() {
           <thead className="bg-slate-900 text-white/70 sticky top-0 z-10">
             <tr>
               <th className="px-2 py-1.5 text-left">When</th>
+              <th className="px-2 py-1.5 text-left">Type</th>
               <th className="px-2 py-1.5 text-left">User</th>
               <th className="px-2 py-1.5 text-left">Source</th>
-              <th className="px-2 py-1.5 text-left">Sheet</th>
-              <th className="px-2 py-1.5 text-left">Month</th>
-              <th className="px-2 py-1.5 text-right">Rows in</th>
+              <th className="px-2 py-1.5 text-left">Clinic</th>
+              <th className="px-2 py-1.5 text-left">Sheet / month</th>
+              <th className="px-2 py-1.5 text-right">Rows</th>
               <th className="px-2 py-1.5 text-right">Actions</th>
-              <th className="px-2 py-1.5 text-right">Lock</th>
               <th className="px-2 py-1.5 text-right">Elapsed</th>
               <th className="px-2 py-1.5 text-left">Correlation</th>
               <th className="px-2 py-1.5 text-left">Status</th>
+              <th className="px-2 py-1.5 text-left">Copy</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && !loading && (
               <tr>
-                <td colSpan={11} className="px-3 py-6 text-center text-white/60 italic">
+                <td colSpan={12} className="px-3 py-6 text-center text-white/60 italic">
                   No audit rows match. Try clearing filters or widening the date range.
                 </td>
               </tr>
@@ -579,31 +738,34 @@ export default function SaveAuditLog() {
               const isExpanded = expandedIds.has(r.id)
               const isRaceCandidate = raceCandidateGroups.has(r.id)
               const actions = r.actions as Record<string, unknown>
-              const inserts = Number(actions.inserts ?? 0)
-              const updates = Number(actions.updates ?? 0)
-              const collapses = Number(actions.dedupe_collapses ?? 0)
-              const rejects = Number(actions.rejected_patient_less ?? 0)
-              const deletes = Number(actions.deletes ?? 0)
-              const summary = `U:${updates} I:${inserts} DC:${collapses} RJ:${rejects} D:${deletes}`
+              const clinicLabel = clinicNameById.get(r.clinic_id) ?? shortId(r.clinic_id)
+              const providerLabel = r.provider_id
+                ? providerNameById.get(r.provider_id) ?? shortId(r.provider_id)
+                : ''
               return (
-                <>
+                <Fragment key={r.id}>
                   <tr
-                    key={r.id}
                     onClick={() => toggleExpanded(r.id)}
                     className={`cursor-pointer border-t border-white/10 hover:bg-white/5 ${
                       isRaceCandidate ? 'bg-amber-500/10' : ''
                     } ${!r.success ? 'bg-red-500/10' : ''}`}
                   >
                     <td className="px-2 py-1 whitespace-nowrap font-mono text-xs">{formatDateTime(r.created_at)}</td>
+                    <td className="px-2 py-1 whitespace-nowrap text-xs">{sheetKindLabel(r.sheet_kind)}</td>
                     <td className="px-2 py-1 whitespace-nowrap">{r.user_email ?? shortId(r.user_id)}</td>
-                    <td className="px-2 py-1 whitespace-nowrap">{r.source ?? '(none)'}</td>
-                    <td className="px-2 py-1 whitespace-nowrap font-mono text-xs" title={r.sheet_id ?? ''}>{shortId(r.sheet_id)}</td>
-                    <td className="px-2 py-1 whitespace-nowrap font-mono text-xs">{r.selected_month_key}</td>
+                    <td className="px-2 py-1 whitespace-nowrap text-xs">{r.source ?? '(none)'}</td>
+                    <td className="px-2 py-1 whitespace-nowrap text-xs" title={r.clinic_id}>
+                      {clinicLabel}
+                    </td>
+                    <td className="px-2 py-1 whitespace-nowrap font-mono text-xs" title={r.sheet_id ?? ''}>
+                      {r.selected_month_key || shortId(r.sheet_id) || providerLabel || '—'}
+                    </td>
                     <td className="px-2 py-1 text-right">{r.row_count ?? ''}</td>
-                    <td className="px-2 py-1 text-right font-mono text-xs">{summary}</td>
-                    <td className="px-2 py-1 text-right">{formatMs(r.lock_wait_ms)}</td>
+                    <td className="px-2 py-1 text-right font-mono text-xs">{actionSummary(actions)}</td>
                     <td className="px-2 py-1 text-right">{formatMs(r.elapsed_ms)}</td>
-                    <td className="px-2 py-1 whitespace-nowrap font-mono text-xs" title={r.correlation_id ?? ''}>{shortId(r.correlation_id)}</td>
+                    <td className="px-2 py-1 whitespace-nowrap font-mono text-xs" title={r.correlation_id ?? ''}>
+                      {shortId(r.correlation_id)}
+                    </td>
                     <td className="px-2 py-1">
                       {r.success ? (
                         <span className="text-emerald-400 text-xs">ok</span>
@@ -611,32 +773,66 @@ export default function SaveAuditLog() {
                         <span className="text-red-300 text-xs">fail</span>
                       )}
                     </td>
+                    <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
+                      <CopyButton
+                        label="Copy"
+                        getText={() =>
+                          rowToCopyText(
+                            r,
+                            clinicNameById.get(r.clinic_id),
+                            r.provider_id ? providerNameById.get(r.provider_id) : undefined,
+                          )
+                        }
+                      />
+                    </td>
                   </tr>
                   {isExpanded && (
-                    <tr key={`${r.id}-detail`} className="bg-slate-950/60">
-                      <td colSpan={11} className="px-4 py-3">
+                    <tr className="bg-slate-950/60">
+                      <td colSpan={12} className="px-4 py-3">
+                        <div className="flex flex-wrap gap-2 mb-3">
+                          <CopyButton
+                            label="Copy row"
+                            getText={() =>
+                              rowToCopyText(
+                                r,
+                                clinicNameById.get(r.clinic_id),
+                                r.provider_id ? providerNameById.get(r.provider_id) : undefined,
+                              )
+                            }
+                          />
+                          <CopyButton
+                            label="Copy correlation ID"
+                            getText={() => r.correlation_id ?? ''}
+                          />
+                          <CopyButton label="Copy audit ID" getText={() => r.id} />
+                          <CopyButton
+                            label="Copy actions JSON"
+                            getText={() => JSON.stringify(actions, null, 2)}
+                          />
+                        </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                           <div>
                             <div className="text-white/60 uppercase tracking-wide mb-1">Identity</div>
-                            <div className="font-mono text-white/90 space-y-0.5">
+                            <div className="font-mono text-white/90 space-y-0.5 select-text">
+                              <div>sheet_kind: {r.sheet_kind ?? 'provider_sheet'}</div>
                               <div>audit_id: {r.id}</div>
                               <div>correlation_id: {r.correlation_id ?? '(none)'}</div>
                               <div>user_id: {r.user_id}</div>
                               <div>clinic_id: {r.clinic_id}</div>
-                              <div>provider_id: {r.provider_id}</div>
+                              <div>provider_id: {r.provider_id ?? '(none)'}</div>
                               <div>sheet_id: {r.sheet_id ?? '(none)'}</div>
                             </div>
                           </div>
                           <div>
                             <div className="text-white/60 uppercase tracking-wide mb-1">Actions</div>
-                            <pre className="font-mono text-white/90 whitespace-pre-wrap bg-black/40 p-2 rounded max-h-[300px] overflow-auto">
+                            <pre className="font-mono text-white/90 whitespace-pre-wrap bg-black/40 p-2 rounded max-h-[300px] overflow-auto select-text">
 {JSON.stringify(actions, null, 2)}
                             </pre>
                           </div>
                           {r.error_message && (
                             <div className="md:col-span-2">
                               <div className="text-red-300 uppercase tracking-wide mb-1">Error</div>
-                              <pre className="font-mono text-red-200 whitespace-pre-wrap bg-black/40 p-2 rounded">
+                              <pre className="font-mono text-red-200 whitespace-pre-wrap bg-black/40 p-2 rounded select-text">
 {r.error_message}
                               </pre>
                             </div>
@@ -645,7 +841,7 @@ export default function SaveAuditLog() {
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               )
             })}
           </tbody>
@@ -654,7 +850,8 @@ export default function SaveAuditLog() {
 
       <p className="text-xs text-white/50">
         Showing {rows.length} row{rows.length === 1 ? '' : 's'} (capped at {limit}). Retention: 30
-        days. PHI-free — this table stores only UUIDs, counts, timing, and source labels.
+        days. PHI-free — UUIDs, counts, timing, and source labels only. Requires DB migration
+        `20260811_sheet_save_audit_all_kinds.sql` for sheet_kind on existing databases.
       </p>
     </div>
   )

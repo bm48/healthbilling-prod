@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/apiClient'
 import { upsertClinicInvoice } from '@/lib/invoiceApi'
+import { recordSaveAudit } from '@/lib/recordSaveAudit'
 
 /**
  * Fetch Provider Pay for a given clinic, provider, and month.
@@ -136,6 +137,10 @@ export async function saveProviderPay(
   notes: string,
   payroll: number = 1
 ): Promise<void> {
+  const auditStartedMs = Date.now()
+  let auditSuccess = false
+  let auditError: string | null = null
+  try {
   const { data: existing, error: fetchError } = await apiClient
     .from('provider_pay')
     .select('id')
@@ -214,6 +219,24 @@ export async function saveProviderPay(
   upsertClinicInvoice(clinicId, month, year).catch((err) => {
     console.warn('[saveProviderPay] invoice recompute failed:', err)
   })
+  auditSuccess = true
+  } catch (err) {
+    auditError = err instanceof Error ? err.message : String(err)
+    throw err
+  } finally {
+    void recordSaveAudit({
+      sheetKind: 'provider_pay',
+      clinicId,
+      providerId,
+      selectedMonthKey: Number(payroll) === 2 ? `${year}-${month}-2` : `${year}-${month}`,
+      source: 'provider-pay-save',
+      rowCount: (tableData.length > 0 ? tableData : buildEmptyRows()).length,
+      elapsedMs: Date.now() - auditStartedMs,
+      success: auditSuccess,
+      errorMessage: auditError,
+      actions: { row_replace: true },
+    })
+  }
 }
 
 // Keep in sync with INITIAL_TABLE_DATA / PAYSTUB_ADDITIONAL_HEADER_LABEL in ProviderPayTab.tsx.

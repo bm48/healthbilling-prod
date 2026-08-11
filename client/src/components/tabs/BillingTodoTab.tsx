@@ -6,6 +6,7 @@ import HandsontableWrapper from '@/components/HandsontableWrapper'
 import Handsontable from 'handsontable'
 import { createBubbleDropdownRenderer, createColoredAutocompleteDropdown } from '@/lib/handsontableCustomRenderers'
 import BillingTodoNotes from '@/components/BillingTodoNotes'
+import { recordSaveAudit } from '@/lib/recordSaveAudit'
 
 function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
   let max = -1
@@ -68,6 +69,8 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
   const pendingRowLeaveSaveRef = useRef(false)
   const pendingRowLeaveSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const tableContainerRef = useRef<HTMLDivElement>(null)
+  /** Ignore stale fetch responses when clinicId / deps change mid-flight (Silvercrest data-loss race). */
+  const fetchGenerationRef = useRef(0)
   const [tableHeight, setTableHeight] = useState(600)
   const [structureVersion, setStructureVersion] = useState(0) // Bump on add/delete row so grid refreshes immediately
   const [highlightedCells, setHighlightedCells] = useState<Set<string>>(new Set())
@@ -88,6 +91,19 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
 
   // Use isLockBillingTodo from props directly - it will update when parent refreshes
   const lockData = isLockBillingTodo || null
+
+  /** Handsontable row index in hooks is visual when column sorting is on; displayedTodos is physical order. */
+  const physicalRowFromHot = useCallback((visualRow: number) => {
+    const hot = hotRef.current
+    if (!hot || (hot as { isDestroyed?: boolean }).isDestroyed) return visualRow
+    try {
+      const p = hot.toPhysicalRow(visualRow)
+      if (typeof p === 'number' && !Number.isNaN(p) && p >= 0) return p
+    } catch {
+      /* ignore */
+    }
+    return visualRow
+  }, [])
 
   const createEmptyTodo = useCallback((index: number): TodoItem => ({
     id: `empty-${index}`,
@@ -135,7 +151,65 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     [isBillingTodoEmptyPlaceholder]
   )
 
+  /** Display minimum + user-requested extra rows. Real rows are NEVER stripped; only trailing
+   * empty placeholders past the target are trimmed. */
+  const BILLING_TODOS_BASE_ROWS = 200
+  const BILLING_TODOS_ROWS_STEP = 50
+  const extraEmptyRowsStorageKey = clinicId ? `billing-todo-extra-rows-${clinicId}` : null
+  const [extraEmptyRows, setExtraEmptyRows] = useState(() => {
+    if (!clinicId) return 0
+    try {
+      const raw = localStorage.getItem(`billing-todo-extra-rows-${clinicId}`)
+      const n = raw == null ? 0 : parseInt(raw, 10)
+      return Number.isFinite(n) && n >= 0 ? n : 0
+    } catch {
+      return 0
+    }
+  })
+  useEffect(() => {
+    if (!extraEmptyRowsStorageKey) return
+    try {
+      localStorage.setItem(extraEmptyRowsStorageKey, String(extraEmptyRows))
+    } catch {
+      // ignore: persistence is best-effort.
+    }
+  }, [extraEmptyRowsStorageKey, extraEmptyRows])
+  // Reset per-clinic extra-row preference when switching clinics (component may not remount).
+  useEffect(() => {
+    if (!clinicId) {
+      setExtraEmptyRows(0)
+      return
+    }
+    try {
+      const raw = localStorage.getItem(`billing-todo-extra-rows-${clinicId}`)
+      const n = raw == null ? 0 : parseInt(raw, 10)
+      setExtraEmptyRows(Number.isFinite(n) && n >= 0 ? n : 0)
+    } catch {
+      setExtraEmptyRows(0)
+    }
+  }, [clinicId])
+
+  const padBillingTodosTo200 = useCallback(
+    (list: TodoItem[]) => {
+      const target = BILLING_TODOS_BASE_ROWS + extraEmptyRows
+      const result = [...list]
+      while (result.length > target) {
+        const last = result[result.length - 1]
+        if (last && isBillingTodoEmptyPlaceholder(last)) result.pop()
+        else break
+      }
+      // Pad UP to target when shorter — never truncate real rows when longer. Same bug class as
+      // PatientsTab.padPatientsTo200. Real to-do rows must be preserved at all costs.
+      while (result.length < target) {
+        result.push(createEmptyTodo(nextEmptyNumericIdSuffix(result)))
+      }
+      return result
+    },
+    [createEmptyTodo, isBillingTodoEmptyPlaceholder, extraEmptyRows]
+  )
+
   const fetchTodos = useCallback(async () => {
+    const generation = ++fetchGenerationRef.current
     try {
       const { data: todosData, error: todosError } = await apiClient
         .from('todo_lists')
@@ -144,6 +218,8 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         .order('created_at', { ascending: false })
 
       if (todosError) throw todosError
+      if (generation !== fetchGenerationRef.current) return
+
       const fetchedTodos = (todosData || []).map(normalizeTodoRow)
 
       fetchedTodos.forEach((t) => {
@@ -157,11 +233,12 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       })
 
       setTodos((currentTodos) => {
+        if (generation !== fetchGenerationRef.current) return currentTodos
+
         if (currentTodos.length === 0) {
-          const todosToUse = sortBillingTodosCompleteAtBottom(fetchedTodos.slice(0, 200))
-          const emptyRowsNeeded = 200 - todosToUse.length
-          const newEmptyRows = Array.from({ length: emptyRowsNeeded }, (_, i) => createEmptyTodo(i))
-          return [...todosToUse, ...newEmptyRows]
+          // Never slice real rows — a clinic with >200 items (Current + Archive) used to lose
+          // the oldest entries on every cold load (created_at DESC → oldest past 200 dropped).
+          return padBillingTodosTo200(sortBillingTodosCompleteAtBottom(fetchedTodos))
         }
 
         const fetchedTodosMap = new Map<string, TodoItem>()
@@ -176,6 +253,12 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
             if (freshData) {
               preservedOrder.push(normalizeTodoRow(freshData))
               fetchedTodosMap.delete(t.id)
+            } else {
+              // Keep local UUID rows missing from this response. A concurrent fetch that started
+              // before an insert finished used to drop the just-saved row from the UI (looked
+              // like random item loss). Prefer a brief ghost over silent data loss; true deletes
+              // remove the row from local state in handleDeleteTodo first.
+              preservedOrder.push(t)
             }
           }
         })
@@ -184,26 +267,28 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
 
         const nonEmpty = updated.filter((t) => !t.id.startsWith('empty-'))
         const emptyOnes = updated.filter((t) => t.id.startsWith('empty-'))
-        let result = sortBillingTodosCompleteAtBottom([...nonEmpty, ...emptyOnes])
-
-        const totalRows = result.length
-        const emptyRowsNeeded = Math.max(0, 200 - totalRows)
-        const existingEmptyCount = result.filter((t) => t.id.startsWith('empty-')).length
-        const newEmptyRows = Array.from({ length: emptyRowsNeeded }, (_, i) =>
-          createEmptyTodo(existingEmptyCount + i)
-        )
-        return [...result, ...newEmptyRows]
+        return padBillingTodosTo200(sortBillingTodosCompleteAtBottom([...nonEmpty, ...emptyOnes]))
       })
     } catch (error) {
       console.error('Error fetching todos:', error)
     } finally {
-      setLoading(false)
+      if (generation === fetchGenerationRef.current) setLoading(false)
     }
-  }, [clinicId, createEmptyTodo, normalizeTodoRow, sortBillingTodosCompleteAtBottom])
+  }, [clinicId, normalizeTodoRow, sortBillingTodosCompleteAtBottom, padBillingTodosTo200])
 
   useEffect(() => {
     todosRef.current = todos
   }, [todos])
+
+  // Clear local state when switching clinics so unsaved empty-* rows cannot be saved under the
+  // wrong clinic_id (component often stays mounted across clinic navigation).
+  useEffect(() => {
+    fetchGenerationRef.current += 1
+    setTodos([])
+    todosRef.current = []
+    lastSavedSnapshotRef.current.clear()
+    setLoading(true)
+  }, [clinicId])
 
   useEffect(() => {
     if (!clinicId) return
@@ -223,10 +308,13 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       status: (t.status === 'Open' || !t.status) ? '' : t.status,
     })
 
-    // A row counts as data if the user filled in any free-form field — including the new display_id
-    // (so a row with only a reference number still persists; otherwise the typed ID would silently
-    // disappear on the next render because the row would be filtered out as an empty placeholder).
-    const hasMeaningfulData = (t: TodoItem) => !!(t.display_id || t.issue || t.notes || t.followup_notes)
+    // A row counts as data if the user filled in any free-form field OR set a real status.
+    // Status-only rows used to be skipped here, so marking New/Waiting/Complete with no Issue
+    // never inserted — the row vanished on refresh (reported as random item loss).
+    const hasMeaningfulData = (t: TodoItem) => {
+      const status = (t.status && t.status !== 'Open') ? t.status : ''
+      return !!(t.display_id || t.issue || t.notes || t.followup_notes || status)
+    }
 
     const seenIds = new Set<string>()
     const todosToProcess = todosToSave.filter((t) => {
@@ -247,12 +335,18 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       return
     }
 
+    const auditSource = saveTriggeredByRowLeaveRef.current ? 'row-leave-or-flush' : 'typing-debounced-or-direct'
     saveInProgressRef.current = true
     let resolveSaveComplete!: () => void
     const saveCompletePromise = new Promise<void>((r) => {
       resolveSaveComplete = r
     })
     saveCompletePromiseRef.current = { promise: saveCompletePromise, resolve: resolveSaveComplete }
+    const auditStartedMs = Date.now()
+    let auditSuccess = false
+    let auditError: string | null = null
+    const auditInserts = todosToProcess.filter((t) => t.id.startsWith('empty-') || t.id.startsWith('new-')).length
+    const auditUpdates = todosToProcess.length - auditInserts
 
     try {
       const savedTodosMap = new Map<string, TodoItem>()
@@ -353,9 +447,11 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       })
 
       saveTriggeredByRowLeaveRef.current = false
+      auditSuccess = true
     } catch (error) {
       console.error('[saveTodos] Error saving todos:', error)
       const errorMessage = error instanceof Error ? error.message : String(error)
+      auditError = errorMessage
       if (
         !errorMessage.includes('todo_lists table does not exist') &&
         !errorMessage.includes('relation') &&
@@ -364,6 +460,16 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         alert(errorMessage || 'Failed to save todo. Please try again.')
       }
     } finally {
+      void recordSaveAudit({
+        sheetKind: 'billing_todo',
+        clinicId,
+        source: auditSource,
+        rowCount: todosToProcess.length,
+        elapsedMs: Date.now() - auditStartedMs,
+        success: auditSuccess,
+        errorMessage: auditError,
+        actions: { inserts: auditInserts, updates: auditUpdates },
+      })
       saveInProgressRef.current = false
       saveCompletePromiseRef.current?.resolve()
       saveCompletePromiseRef.current = null
@@ -450,51 +556,6 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       }
     },
     [fetchTodos, onDelete]
-  )
-
-  /** Display minimum + user-requested extra rows (Jenali asked for an "add 50 more" button so the
-   * grid can grow without forcing real rows to scroll into nothing). Real rows are NEVER stripped;
-   * only trailing empty placeholders past the target are trimmed.
-   * Persisted to localStorage per clinic so a refresh keeps the grid at the size the user grew it to. */
-  const BILLING_TODOS_BASE_ROWS = 200
-  const BILLING_TODOS_ROWS_STEP = 50
-  const extraEmptyRowsStorageKey = clinicId ? `billing-todo-extra-rows-${clinicId}` : null
-  const [extraEmptyRows, setExtraEmptyRows] = useState(() => {
-    if (!clinicId) return 0
-    try {
-      const raw = localStorage.getItem(`billing-todo-extra-rows-${clinicId}`)
-      const n = raw == null ? 0 : parseInt(raw, 10)
-      return Number.isFinite(n) && n >= 0 ? n : 0
-    } catch {
-      return 0
-    }
-  })
-  useEffect(() => {
-    if (!extraEmptyRowsStorageKey) return
-    try {
-      localStorage.setItem(extraEmptyRowsStorageKey, String(extraEmptyRows))
-    } catch {
-      // ignore: persistence is best-effort.
-    }
-  }, [extraEmptyRowsStorageKey, extraEmptyRows])
-  const padBillingTodosTo200 = useCallback(
-    (list: TodoItem[]) => {
-      const target = BILLING_TODOS_BASE_ROWS + extraEmptyRows
-      const result = [...list]
-      while (result.length > target) {
-        const last = result[result.length - 1]
-        if (last && isBillingTodoEmptyPlaceholder(last)) result.pop()
-        else break
-      }
-      // Pad UP to target when shorter — never truncate real rows when longer. Same bug class as
-      // PatientsTab.padPatientsTo200 (see comment there). Real to-do rows must be preserved at
-      // all costs; we'd rather show a long backlog with 350 items than silently drop 150.
-      while (result.length < target) {
-        result.push(createEmptyTodo(nextEmptyNumericIdSuffix(result)))
-      }
-      return result
-    },
-    [createEmptyTodo, isBillingTodoEmptyPlaceholder, extraEmptyRows]
   )
 
   // Re-pad whenever the user clicks "Add 50 rows". Without this effect, padBillingTodosTo200 only
@@ -945,16 +1006,14 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         'followup_notes',
       ]
 
-      // HOT's row index references the *displayed* slice (current vs. archive), not `todos`. Build
-      // a snapshot of the current visible list so we can translate each change's row → todo id →
-      // physical index in `updatedTodos`. Without this, edits in archive view would write to the
-      // wrong items (e.g. row 0 visible = first Complete todo, but updatedTodos[0] is a different
-      // item in the full list).
+      // HOT's row index is visual when column sorting is on. Map visual → physical within the
+      // *displayed* slice (current vs. archive), then to the full `todos` array by id.
       const visibleSnapshot = updatedTodos.filter((t) =>
         viewMode === 'archive' ? t.status === 'Complete' : t.status !== 'Complete'
       )
-      const resolvePhysical = (visualRow: number): number => {
-        const visible = visibleSnapshot[visualRow]
+      const resolvePhysical = (hotRow: number): number => {
+        const visualInDisplayed = physicalRowFromHot(typeof hotRow === 'number' ? hotRow : 0)
+        const visible = visibleSnapshot[visualInDisplayed]
         if (visible) {
           const idx = updatedTodos.findIndex((t) => t.id === visible.id)
           if (idx >= 0) return idx
@@ -962,16 +1021,15 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         // Fall back to extending the array for empty-row creation (only meaningful in current view
         // where placeholders are allowed). Archive view shouldn't be appending rows.
         if (viewMode === 'current') {
-          while (updatedTodos.length <= visualRow) {
-            const existingEmptyCount = updatedTodos.filter((t) => t.id.startsWith('empty-')).length
-            updatedTodos.push(createEmptyTodo(existingEmptyCount))
+          while (updatedTodos.length <= visualInDisplayed) {
+            updatedTodos.push(createEmptyTodo(nextEmptyNumericIdSuffix(updatedTodos)))
           }
-          return visualRow
+          return visualInDisplayed
         }
         return -1
       }
 
-      const rowsInChange = [...new Set(changes.map(([r]) => r))]
+      const rowsInChange = [...new Set(changes.map(([r]) => physicalRowFromHot(typeof r === 'number' ? r : 0)))]
       const primaryRow = rowsInChange[0] ?? null
       const prevRow = lastEditedRowRef.current
       const didLeaveRow = prevRow !== null && primaryRow !== null && !rowsInChange.includes(prevRow)
@@ -980,7 +1038,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
       const statusChangePhysical: Array<{ phys: number; oldVal: unknown; newVal: unknown }> = []
 
       changes.forEach(([row, col, oldValue, newValue]) => {
-        const phys = resolvePhysical(row)
+        const phys = resolvePhysical(typeof row === 'number' ? row : 0)
         if (phys < 0) return
         const todo = updatedTodos[phys]
         if (!todo) return
@@ -1023,8 +1081,7 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         }
         const reordered = [...incomplete, ...complete, ...emptyRows]
         while (reordered.length < updatedTodos.length) {
-          const existingEmptyCount = reordered.filter((t) => t.id.startsWith('empty-')).length
-          reordered.push(createEmptyTodo(existingEmptyCount))
+          reordered.push(createEmptyTodo(nextEmptyNumericIdSuffix(reordered)))
         }
         if (reordered.length > updatedTodos.length) {
           reordered.length = updatedTodos.length
@@ -1033,16 +1090,11 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         updatedTodos.push(...reordered)
       }
 
-      if (updatedTodos.length > 200) {
-        updatedTodos.length = 200
-      }
-      if (updatedTodos.length < 200) {
-        const emptyRowsNeeded = 200 - updatedTodos.length
-        const existingEmptyCount = updatedTodos.filter((t) => t.id.startsWith('empty-')).length
-        updatedTodos.push(
-          ...Array.from({ length: emptyRowsNeeded }, (_, i) => createEmptyTodo(existingEmptyCount + i))
-        )
-      }
+      // Never hard-truncate to 200 — that dropped real rows after "Add 50 rows" or when
+      // Current+Archive exceeded 200 (Jenali/Silvercrest data-loss). Pad only (same as PatientsTab).
+      const paddedTodos = padBillingTodosTo200(updatedTodos)
+      updatedTodos.length = 0
+      updatedTodos.push(...paddedTodos)
 
       lastEditedRowRef.current = primaryRow
       if (primaryRow !== null) lastSelectedRowRef.current = primaryRow
@@ -1063,6 +1115,8 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
           saveTodos(todosRef.current).catch((err) =>
             console.error('[BillingTodo→] Error flushing save on row leave:', err)
           )
+        } else {
+          savePendingRef.current = true
         }
       }
 
@@ -1081,10 +1135,13 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
           saveTodos(todosRef.current).catch((err) =>
             console.error('[BillingTodo→] Error flushing save (pending row leave):', err)
           )
+        } else {
+          savePendingRef.current = true
         }
       }
 
-      const hasMeaningfulChange = changes.some(([, col]) => col === 1 || col === 2 || col === 3 || col === 4)
+      // Include display_id (col 0) — ID-only rows must still debounce-save.
+      const hasMeaningfulChange = changes.some(([, col]) => col === 0 || col === 1 || col === 2 || col === 3 || col === 4)
       if (!hasMeaningfulChange) return
 
       if (saveTodosTimeoutRef.current) clearTimeout(saveTodosTimeoutRef.current)
@@ -1099,37 +1156,45 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
         })
       }, 500)
     },
-    [saveTodos, createEmptyTodo, todos, isBillingTodoEmptyPlaceholder, viewMode]
+    [saveTodos, createEmptyTodo, todos, isBillingTodoEmptyPlaceholder, viewMode, physicalRowFromHot, padBillingTodosTo200]
   )
 
   const handleAfterSelection = useCallback(
     (r: number, _c: number, _r2: number, _c2: number) => {
+      const physR = physicalRowFromHot(r)
       const prev = lastSelectedRowRef.current
-      if (prev !== null && r !== prev && !saveInProgressRef.current) {
-        pendingRowLeaveSaveRef.current = true
-        if (pendingRowLeaveSaveTimeoutRef.current) clearTimeout(pendingRowLeaveSaveTimeoutRef.current)
-        const FALLBACK_MS = 800
-        pendingRowLeaveSaveTimeoutRef.current = setTimeout(() => {
-          pendingRowLeaveSaveTimeoutRef.current = null
-          if (!pendingRowLeaveSaveRef.current) return
-          pendingRowLeaveSaveRef.current = false
-          saveTriggeredByRowLeaveRef.current = true
-          if (saveTodosTimeoutRef.current) {
-            clearTimeout(saveTodosTimeoutRef.current)
-            saveTodosTimeoutRef.current = null
-          }
-          saveTodos(todosRef.current).catch((err) =>
-            console.error('[BillingTodo→] Error flushing save on selection change (fallback):', err)
-          )
-        }, FALLBACK_MS)
+      if (prev !== null && physR !== prev) {
+        if (saveInProgressRef.current) {
+          savePendingRef.current = true
+        } else {
+          pendingRowLeaveSaveRef.current = true
+          if (pendingRowLeaveSaveTimeoutRef.current) clearTimeout(pendingRowLeaveSaveTimeoutRef.current)
+          const FALLBACK_MS = 800
+          pendingRowLeaveSaveTimeoutRef.current = setTimeout(() => {
+            pendingRowLeaveSaveTimeoutRef.current = null
+            if (!pendingRowLeaveSaveRef.current) return
+            pendingRowLeaveSaveRef.current = false
+            saveTriggeredByRowLeaveRef.current = true
+            if (saveTodosTimeoutRef.current) {
+              clearTimeout(saveTodosTimeoutRef.current)
+              saveTodosTimeoutRef.current = null
+            }
+            if (saveInProgressRef.current) {
+              savePendingRef.current = true
+              return
+            }
+            saveTodos(todosRef.current).catch((err) =>
+              console.error('[BillingTodo→] Error flushing save on selection change (fallback):', err)
+            )
+          }, FALLBACK_MS)
+        }
       }
-      lastSelectedRowRef.current = r
+      lastSelectedRowRef.current = physR
     },
-    [saveTodos]
+    [saveTodos, physicalRowFromHot]
   )
 
   const handleAfterDeselect = useCallback(() => {
-    if (saveInProgressRef.current) return
     if (lastSelectedRowRef.current === null) return
     if (pendingRowLeaveSaveTimeoutRef.current) {
       clearTimeout(pendingRowLeaveSaveTimeoutRef.current)
@@ -1140,6 +1205,10 @@ export default function BillingTodoTab({ clinicId, canEdit, onDelete, isLockBill
     if (saveTodosTimeoutRef.current) {
       clearTimeout(saveTodosTimeoutRef.current)
       saveTodosTimeoutRef.current = null
+    }
+    if (saveInProgressRef.current) {
+      savePendingRef.current = true
+      return
     }
     saveTodos(todosRef.current).catch((err) =>
       console.error('[BillingTodo→] Error flushing save on deselect (click outside):', err)

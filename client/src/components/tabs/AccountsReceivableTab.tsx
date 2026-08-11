@@ -8,6 +8,7 @@ import { createBubbleDropdownRenderer, createColoredAutocompleteDropdown, DateOf
 import { Lock, Unlock, Download } from 'lucide-react'
 import MonthYearTabs from '@/components/MonthYearTabs'
 import { isPastPeriodFromMonthKey } from '@/lib/monthPeriodLock'
+import { recordSaveAudit } from '@/lib/recordSaveAudit'
 import {
   toDisplayValue,
   toDisplayDate,
@@ -774,6 +775,10 @@ export default function AccountsReceivableTab({
     const saveCompletePromise = new Promise<void>((r) => { resolveSaveComplete = r })
     saveCompletePromiseRef.current = { promise: saveCompletePromise, resolve: resolveSaveComplete }
     let saveSucceeded = false
+    const auditStartedMs = Date.now()
+    let auditError: string | null = null
+    const auditInserts = arToProcess.filter((ar) => ar.id.startsWith('empty-') || ar.id.startsWith('new-')).length
+    const auditUpdates = arToProcess.length - auditInserts
     try {
       const savedARMap = new Map<string, AccountsReceivable>()
 
@@ -914,12 +919,24 @@ export default function AccountsReceivableTab({
       console.error('[saveAR] catch error=', error, 'message=', error?.message, 'code=', error?.code, 'details=', error?.details)
       if (error?.message) console.error('[saveAR] full error message:', error.message)
       if (error?.stack) console.error('[saveAR] stack:', error.stack)
+      auditError = error?.message || 'Failed to save accounts receivable'
       const msg =
         error?.code === '401' || String(error?.message ?? '').toLowerCase().includes('unauthorized')
           ? 'Your session has expired. Refresh the page or sign in again, then save your Accounts Receivable changes.'
           : error?.message || 'Failed to save accounts receivable. Please try again.'
       alert(msg)
     } finally {
+      void recordSaveAudit({
+        sheetKind: 'accounts_receivable',
+        clinicId,
+        providerId: providerId || null,
+        source: 'typing-debounced-or-direct',
+        rowCount: arToProcess.length,
+        elapsedMs: Date.now() - auditStartedMs,
+        success: saveSucceeded,
+        errorMessage: auditError,
+        actions: { inserts: auditInserts, updates: auditUpdates },
+      })
       saveInProgressRef.current = false
       saveCompletePromiseRef.current?.resolve()
       saveCompletePromiseRef.current = null

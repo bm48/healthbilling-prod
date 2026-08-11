@@ -308,14 +308,16 @@ type SaveProviderSheetResult = {
 
 /** Structural summary of one save request written to `provider_sheet_save_audit`. Never contains
  *  free-text patient data — see the PHI note on the table definition (server/sql/
- *  create_provider_sheet_save_audit_table.sql). */
+ *  create_provider_sheet_save_audit_table.sql). Generalized 2026-08 to cover patients / AR /
+ *  billing_todo / provider_pay as well as provider_sheet (see sheet_kind). */
 interface SaveAuditRow {
+  sheetKind: string
   correlationId: string | null
   userId: string
   clinicId: string
-  providerId: string
+  providerId: string | null
   sheetId: string | null
-  selectedMonthKey: string
+  selectedMonthKey: string | null
   source: string | null
   rowCount: number
   lockWaitMs: number | null
@@ -325,14 +327,23 @@ interface SaveAuditRow {
   actions: Record<string, unknown>
 }
 
+const SAVE_AUDIT_SHEET_KINDS = new Set([
+  'provider_sheet',
+  'patients',
+  'accounts_receivable',
+  'billing_todo',
+  'provider_pay',
+])
+
 async function writeSaveAuditRow(row: SaveAuditRow): Promise<void> {
   await pool.query(
     `INSERT INTO public.provider_sheet_save_audit
-      (correlation_id, user_id, clinic_id, provider_id, sheet_id, selected_month_key,
+      (sheet_kind, correlation_id, user_id, clinic_id, provider_id, sheet_id, selected_month_key,
        source, row_count, lock_wait_ms, elapsed_ms, success, error_message, actions)
      VALUES
-      ($1, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
+      ($1, $2, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)`,
     [
+      row.sheetKind,
       row.correlationId,
       row.userId,
       row.clinicId,
@@ -775,6 +786,7 @@ async function saveProviderSheetRowsCore(
     // the client. Best-effort — never let audit failure mask the original save failure.
     try {
       await writeSaveAuditRow({
+        sheetKind: 'provider_sheet',
         correlationId: auditContext?.correlationId ?? null,
         userId: callerId,
         clinicId,
@@ -809,6 +821,7 @@ async function saveProviderSheetRowsCore(
 
   try {
     await writeSaveAuditRow({
+      sheetKind: 'provider_sheet',
       correlationId: auditContext?.correlationId ?? null,
       userId: callerId,
       clinicId,
@@ -1423,6 +1436,98 @@ serviceRoutes.post('/recompute-all-invoices', async (req, res) => {
   }
 })
 
+/** POST /api/record-save-audit
+ *
+ * Client-side batch saves (Patients, AR, Billing To-Do, Provider Pay) call this once per debounce
+ * flush. Provider billing sheets still audit inside /api/save-provider-sheet-rows — do not double-
+ * write those here. PHI-free structural payload only. Auth required; clinic must be in caller's
+ * clinic_ids (or super_admin).
+ */
+serviceRoutes.post('/record-save-audit', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const body = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {}
+  const sheetKind = typeof body.sheet_kind === 'string' ? body.sheet_kind.trim() : ''
+  if (!SAVE_AUDIT_SHEET_KINDS.has(sheetKind) || sheetKind === 'provider_sheet') {
+    // provider_sheet is written by save-provider-sheet-rows; reject accidental double-logging.
+    res.status(400).json({ error: 'Invalid or disallowed sheet_kind' })
+    return
+  }
+  const clinicId = typeof body.clinic_id === 'string' ? body.clinic_id.trim() : ''
+  if (!clinicId || !isUuid(clinicId)) {
+    res.status(400).json({ error: 'clinic_id required' })
+    return
+  }
+
+  const access = await pool.query(
+    `SELECT 1 FROM public.users u
+     WHERE u.id = $1::uuid
+       AND (
+         u.role = 'super_admin'
+         OR $2::uuid = ANY (COALESCE(u.clinic_ids, '{}'::uuid[]))
+       )
+     LIMIT 1`,
+    [callerId, clinicId],
+  )
+  if (!access.rowCount) {
+    res.status(403).json({ error: 'Clinic access denied' })
+    return
+  }
+
+  const providerIdRaw = typeof body.provider_id === 'string' ? body.provider_id.trim() : ''
+  const providerId = providerIdRaw && isUuid(providerIdRaw) ? providerIdRaw : null
+  const sheetIdRaw = typeof body.sheet_id === 'string' ? body.sheet_id.trim() : ''
+  const sheetId = sheetIdRaw && isUuid(sheetIdRaw) ? sheetIdRaw : null
+  const selectedMonthKey =
+    typeof body.selected_month_key === 'string' && body.selected_month_key.trim()
+      ? body.selected_month_key.trim()
+      : null
+  const source = typeof body.source === 'string' && body.source.trim() ? body.source.trim() : null
+  const correlationId =
+    typeof body.correlation_id === 'string' && body.correlation_id.trim()
+      ? body.correlation_id.trim()
+      : null
+  const rowCount = Number(body.row_count)
+  const elapsedMs = body.elapsed_ms == null ? null : Number(body.elapsed_ms)
+  const success = body.success !== false
+  const errorMessage =
+    typeof body.error_message === 'string' && body.error_message.trim()
+      ? body.error_message.trim().slice(0, 2000)
+      : null
+  const actions =
+    body.actions && typeof body.actions === 'object' && !Array.isArray(body.actions)
+      ? (body.actions as Record<string, unknown>)
+      : {}
+
+  try {
+    await writeSaveAuditRow({
+      sheetKind,
+      correlationId,
+      userId: callerId,
+      clinicId,
+      providerId,
+      sheetId,
+      selectedMonthKey,
+      source,
+      rowCount: Number.isFinite(rowCount) ? Math.max(0, Math.floor(rowCount)) : 0,
+      lockWaitMs: null,
+      elapsedMs: elapsedMs != null && Number.isFinite(elapsedMs) ? Math.max(0, Math.floor(elapsedMs)) : 0,
+      success,
+      errorMessage,
+      actions,
+    })
+    res.json({ ok: true })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[record-save-audit] insert failed:', err)
+    res.status(500).json({ error: 'Failed to record save audit' })
+  }
+})
+
 /** GET /api/super-admin/save-audit-logs
  *
  * Powers the super-admin viewer at /super-admin/save-audit. Reads rows from
@@ -1430,6 +1535,7 @@ serviceRoutes.post('/recompute-all-invoices', async (req, res) => {
  * optional filters and a hard cap. Super-admin only — the table contains cross-clinic activity.
  *
  * Query params (all optional):
+ *   sheet_kind                        — provider_sheet | patients | accounts_receivable | …
  *   clinic_id, provider_id, sheet_id — exact UUID match
  *   selected_month_key                — exact text match ('YYYY-M' or 'YYYY-M-2')
  *   correlation_id                    — jump to a specific event
@@ -1464,6 +1570,8 @@ serviceRoutes.get('/super-admin/save-audit-logs', async (req, res) => {
     return trimmed === '' ? undefined : trimmed
   }
 
+  const sheetKind = strParam('sheet_kind')
+  if (sheetKind && SAVE_AUDIT_SHEET_KINDS.has(sheetKind)) push('a.sheet_kind = ?', sheetKind)
   const clinicId = strParam('clinic_id')
   if (clinicId && isUuid(clinicId)) push('a.clinic_id = ?::uuid', clinicId)
   const providerIdParam = strParam('provider_id')
@@ -1497,6 +1605,7 @@ serviceRoutes.get('/super-admin/save-audit-logs', async (req, res) => {
       `SELECT
          a.id,
          a.created_at,
+         a.sheet_kind,
          a.correlation_id,
          a.user_id,
          u.email AS user_email,

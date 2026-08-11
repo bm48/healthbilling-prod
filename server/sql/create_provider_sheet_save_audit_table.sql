@@ -17,10 +17,11 @@
 CREATE TABLE IF NOT EXISTS public.provider_sheet_save_audit (
   id                    uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
   created_at            timestamptz   NOT NULL DEFAULT now(),
+  sheet_kind            text          NOT NULL DEFAULT 'provider_sheet',
   correlation_id        text,
   user_id               uuid          NOT NULL,
   clinic_id             uuid          NOT NULL,
-  provider_id           uuid          NOT NULL,
+  provider_id           uuid,
   sheet_id              uuid,
   selected_month_key    text,
   source                text,
@@ -31,6 +32,9 @@ CREATE TABLE IF NOT EXISTS public.provider_sheet_save_audit (
   error_message         text,
   actions               jsonb         NOT NULL DEFAULT '{}'::jsonb
 );
+
+CREATE INDEX IF NOT EXISTS idx_provider_sheet_save_audit_kind_clinic_time
+  ON public.provider_sheet_save_audit (sheet_kind, clinic_id, created_at DESC);
 
 -- Common lookup: "show me every save for this (clinic, provider, month) in the last N hours."
 -- Ordered DESC because the viewer defaults to newest-first.

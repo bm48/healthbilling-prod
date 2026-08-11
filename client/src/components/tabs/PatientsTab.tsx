@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { Download } from 'lucide-react'
 import { copayTextCellRenderer, coinsuranceTextCellRenderer } from '@/lib/handsontableCustomRenderers'
 import { toDisplayValue, toStoredString } from '@/lib/utils'
+import { recordSaveAudit } from '@/lib/recordSaveAudit'
 
 function nextEmptyNumericIdSuffix(rows: { id: string }[]): number {
   let max = -1
@@ -298,6 +299,11 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
     let resolveSaveComplete!: () => void
     const saveCompletePromise = new Promise<void>(r => { resolveSaveComplete = r })
     saveCompletePromiseRef.current = { promise: saveCompletePromise, resolve: resolveSaveComplete }
+    const auditStartedMs = Date.now()
+    let auditSuccess = false
+    let auditError: string | null = null
+    let auditInserts = 0
+    let auditUpdates = 0
     try {
       // Store saved patients with their database responses to update in place
       const savedPatientsMap = new Map<string, Patient>() // Map old ID -> new Patient data
@@ -320,6 +326,8 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
         if (!finalPatientId) {
           continue
         }
+        if (patient.id.startsWith('empty-') || patient.id.startsWith('new-')) auditInserts += 1
+        else auditUpdates += 1
 
         // Prepare patient data (never send string "null" to DB)
         const patientData: Record<string, unknown> = {
@@ -592,10 +600,22 @@ export default function PatientsTab({ clinicId, canEdit, onDelete, isLockPatient
       } else if (saveTriggeredByRowLeaveRef.current) {
         saveTriggeredByRowLeaveRef.current = false
       }
+      auditSuccess = true
     } catch (error: any) {
       console.error('[PatientData] SAVE FAILED — error writing to database:', error)
+      auditError = error?.message || 'Failed to save patient'
       alert(error?.message || 'Failed to save patient. Please try again.')
     } finally {
+      void recordSaveAudit({
+        sheetKind: 'patients',
+        clinicId,
+        source: flushTriggered ? 'row-leave-or-flush' : 'typing-debounced-or-direct',
+        rowCount: patientsToProcess.length,
+        elapsedMs: Date.now() - auditStartedMs,
+        success: auditSuccess,
+        errorMessage: auditError,
+        actions: { inserts: auditInserts, updates: auditUpdates },
+      })
       saveInProgressRef.current = false
       saveCompletePromiseRef.current?.resolve()
       saveCompletePromiseRef.current = null
