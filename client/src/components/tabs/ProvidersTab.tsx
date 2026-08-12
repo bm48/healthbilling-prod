@@ -263,7 +263,7 @@ interface ProvidersTabProps {
   onReorderProviderRows?: (providerId: string, movedRows: number[], finalIndex: number) => void
   /** When true (e.g. official_staff), only columns ID through Date of Service are editable; rest read-only */
   restrictEditToSchedulingColumns?: boolean
-  /** When true (office_staff), show only columns ID through Appt/Note Status and Collected from PT through PT Payment AR Ref Date; office staff can edit Patient ID, First Name, LI, Date of Service, and payment columns. */
+  /** When true (office_staff), show only columns ID through Appt/Note Status and Collected from PT through PT A/R Paid Date; office staff can edit Patient ID, First Name, LI, Date of Service, and payment columns. */
   officeStaffView?: boolean
   /** When true (super_admin or office_staff), user can add/see/edit comments in the modal and "See comment" context menu is shown */
   canEditComment?: boolean
@@ -413,10 +413,11 @@ export default function ProvidersTab({
    *  - 'full'         → all columns
    *  - 'condensed'    → ID through Appt/Note Status (+ Visit Type when on) — scheduling view
    *  - 'minimal'      → First Name, LI, Date of Service, then Claim Status onward — claims view
-   *  - 'front_office' → ID, First Name, LI, Ins, Co-pay, Co-Ins, DOS + PT RES, PT Paid, PT Pay Status —
-   *    the front-desk cluster: identify the patient, see expected patient share, confirm the
-   *    visit date, and log the patient-side payment. Deliberately excludes claim /
-   *    insurance-pay columns because a front-office user doesn't act on those.
+   *  - 'front_office' → ID, First Name, LI, Ins, Co-pay, Co-Ins, DOS + PT RES, PT Paid,
+   *    PT Pay Status, PT A/R Paid Date — the front-desk cluster: identify the patient, see
+   *    expected patient share, confirm the visit date, and log the patient-side payment.
+   *    Deliberately excludes claim / insurance-pay columns because a front-office user
+   *    doesn't act on those.
    */
   type CondenseMode = 'full' | 'condensed' | 'minimal' | 'front_office'
   const [condenseMode, setCondenseMode] = useState<CondenseMode>('full')
@@ -462,17 +463,16 @@ export default function ProvidersTab({
     return indices
   }, [showVisitTypeColumn])
 
-  /** Indices kept for front-office mode (added 2026-07-31; Co-pay/Co-Ins added per Jenali 2026-08).
-   *  Per Jenali: patient info, Co-pay/Co-Ins, Date of Service, then Pt Res, Pt Paid, and Pay status.
-   *  Visual positions in the full layout (with Visit Type inserted at index 9 when enabled — that
-   *  push shifts everything at and past 9, so PT RES / PT Paid / PT Pay Status at base 13/14/15
-   *  become 14/15/16):
+  /** Indices kept for front-office mode (Co-pay/Co-Ins added 2026-08; PT A/R Paid Date 2026-08).
+   *  Per Jenali: patient info, Co-pay/Co-Ins, Date of Service, then Pt Res, Pt Paid, Pay status,
+   *  and PT A/R Paid Date. Visual positions in the full layout (Visit Type at index 9 when on —
+   *  shifts everything at/past 9, so base 13/14/15/16 become 14/15/16/17):
    *    0=ID, 1=First Name, 2=LI, 3=Ins, 4=Co-pay, 5=Co-Ins, 6=Date of Service,
-   *    13/14/15=PT RES/PT Paid/PT Pay Status.
+   *    13/14/15/16=PT RES/PT Paid/PT Pay Status/PT A/R Paid Date.
    *  When the clinic flag hides Co-pay/Co-Ins, consumers filter 4/5 out before shiftForCopayCoins. */
   const frontOfficeVisualIndices = useMemo(() => {
     const vtShift = showVisitTypeColumn ? 1 : 0
-    return [0, 1, 2, 3, 4, 5, 6, 13 + vtShift, 14 + vtShift, 15 + vtShift]
+    return [0, 1, 2, 3, 4, 5, 6, 13 + vtShift, 14 + vtShift, 15 + vtShift, 16 + vtShift]
   }, [showVisitTypeColumn])
 
   useEffect(() => {
@@ -1629,7 +1629,7 @@ export default function ProvidersTab({
         { data: 8, title: 'Appt/Note Status', type: 'dropdown' as const, width: 90, selectOptions: ['Complete', 'PP Complete', 'No Show', 'Rescheduled', 'Cancellation', 'Note Not Complete'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'appointment')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'appointment')), readOnly: getReadOnlyForColumn(8, !canEdit || getReadOnly('appointment_note_status')) },
         { data: 9 + officeStaffColOffset, title: 'Collected from PT', type: 'text' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyForColumn(9 + officeStaffColOffset, !canEdit || getReadOnly('collected_from_pt')) },
         { data: 10 + officeStaffColOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'patient_pay')), readOnly: getReadOnlyForColumn(10 + officeStaffColOffset, !canEdit || getReadOnly('pt_pay_status')) },
-        { data: 11 + officeStaffColOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, editor: createColoredAutocompleteDropdown((val) => getMonthColor(val)), readOnly: getReadOnlyForColumn(11 + officeStaffColOffset, !canEdit || getReadOnly('pt_payment_ar_ref_date')) },
+        { data: 11 + officeStaffColOffset, title: 'PT A/R Paid Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, editor: createColoredAutocompleteDropdown((val) => getMonthColor(val)), readOnly: getReadOnlyForColumn(11 + officeStaffColOffset, !canEdit || getReadOnly('pt_payment_ar_ref_date')) },
       ]
       return filterHiddenCopayCoins(base)
     }
@@ -1669,7 +1669,7 @@ export default function ProvidersTab({
         { data: 13 + pvOffset, title: 'PT RES', type: 'text' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(13 + pvOffset) || getReadOnly('pt_res') },
         { data: 14 + pvOffset, title: 'Collected from PT', type: 'text' as const, width: 120, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(14 + pvOffset) || getReadOnly('collected_from_pt') },
         { data: 15 + pvOffset, title: 'PT Pay Status', type: 'dropdown' as const, width: 120, selectOptions: ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections'], renderer: createBubbleDropdownRenderer((val) => getStatusColor(val, 'patient_pay')) as any, editor: createColoredAutocompleteDropdown((val) => getStatusColor(val, 'patient_pay')), readOnly: getReadOnlyProviderView(15 + pvOffset) || getReadOnly('pt_pay_status') },
-        { data: 16 + pvOffset, title: 'PT Payment AR Ref Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, editor: createColoredAutocompleteDropdown((val) => getMonthColor(val)), readOnly: getReadOnlyProviderView(16 + pvOffset) || getReadOnly('pt_payment_ar_ref_date') },
+        { data: 16 + pvOffset, title: 'PT A/R Paid Date', type: 'dropdown' as const, width: 120, selectOptions: months, renderer: createBubbleDropdownRenderer((val) => getMonthColor(val)) as any, editor: createColoredAutocompleteDropdown((val) => getMonthColor(val)), readOnly: getReadOnlyProviderView(16 + pvOffset) || getReadOnly('pt_payment_ar_ref_date') },
         { data: 17 + pvOffset, title: 'Total', type: 'text' as const, width: 100, renderer: currencyCellRenderer, readOnly: getReadOnlyProviderView(17 + pvOffset) || getReadOnly('total') },
         { data: 18 + pvOffset, title: 'Notes', type: 'text' as const, width: 150, readOnly: getReadOnlyProviderView(18 + pvOffset) || getReadOnly('notes') },
       ])
@@ -1809,7 +1809,7 @@ export default function ProvidersTab({
       },
       { 
         data: 16 + (showVisitTypeColumn ? 1 : 0), 
-        title: 'PT Payment AR Ref Date', 
+        title: 'PT A/R Paid Date', 
         type: 'dropdown' as const, 
         width: 120,
         selectOptions: months,
@@ -1833,12 +1833,12 @@ export default function ProvidersTab({
       },
     ])
     if (showCondenseButton && isFrontOffice) {
-      // Front-office keeps ID (data:0), First Name (1), LI (2), Ins (3), Co-pay (4), Co-Ins (5),
-      // DOS (6), PT RES (13 pre-VT shift → 14 with VT), PT Paid (14 → 15), PT Pay Status (15 → 16).
-      // Same filter-by-source-index technique as Minimal — when the clinic flag hides Co-pay/Co-Ins,
-      // those column defs are already gone from fullProviderColumns so keep.has is a no-op for 4/5.
+      // Front-office keeps ID (0), First Name (1), LI (2), Ins (3), Co-pay (4), Co-Ins (5),
+      // DOS (6), PT RES (13→14 w/ VT), PT Paid (14→15), PT Pay Status (15→16),
+      // PT A/R Paid Date (16→17). When the clinic flag hides Co-pay/Co-Ins, those column defs
+      // are already gone from fullProviderColumns so keep.has is a no-op for 4/5.
       const VToffset = showVisitTypeColumn ? 1 : 0
-      const keep = new Set<number>([0, 1, 2, 3, 4, 5, 6, 13 + VToffset, 14 + VToffset, 15 + VToffset])
+      const keep = new Set<number>([0, 1, 2, 3, 4, 5, 6, 13 + VToffset, 14 + VToffset, 15 + VToffset, 16 + VToffset])
       return fullProviderColumns.filter((c) => typeof c.data === 'number' && keep.has(c.data))
     }
     if (showCondenseButton && isMinimal) {
@@ -3000,11 +3000,10 @@ export default function ProvidersTab({
           ? ['#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#fce5cd', '#ead1dd'] // Patient info (pink), Date/CPT (orange/beige), Appt/Note Status (purple/pink)
           : showCondenseButton && isFrontOffice
             // Front office: row-number pink stripe, ID/First Name/LI/Ins[/Co-pay/Co-Ins] pink,
-            // DOS orange, then PT RES / PT Paid / PT Pay Status purple. Colors match the same
-            // fields' backgrounds in other modes so the visual mapping stays consistent.
+            // DOS orange, then PT RES / PT Paid / PT Pay Status / PT A/R Paid Date purple.
             ? (showCopayCoinsuranceColumns
-                ? [fullHeaderColors[0], '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#b191cd', '#b191cd', '#b191cd']
-                : [fullHeaderColors[0], '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#b191cd', '#b191cd', '#b191cd'])
+                ? [fullHeaderColors[0], '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#b191cd', '#b191cd', '#b191cd', '#b191cd']
+                : [fullHeaderColors[0], '#f5cbcc', '#f5cbcc', '#f5cbcc', '#f5cbcc', '#fce5cd', '#b191cd', '#b191cd', '#b191cd', '#b191cd'])
             : showCondenseButton && isMinimal
               // Minimal: First Name, LI, DOS (all pink), then claim status onward (pulled from fullHeaderColors at indices 9..18).
               ? [fullHeaderColors[0], '#f5cbcc', '#f5cbcc', '#f5cbcc', ...fullHeaderColors.slice(9)]

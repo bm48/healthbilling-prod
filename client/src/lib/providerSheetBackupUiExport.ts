@@ -16,8 +16,8 @@ export type ProviderSheetUiExportLayout = {
    *  Takes precedence over `isCondensed` when true. */
   isMinimal?: boolean
   /** Fourth condense mode (added 2026-07-31): front-office view — ID, First Name, LI, Ins,
-   *  Co-pay, Co-Ins, Date of Service, PT RES, PT Paid, PT Pay Status. Takes precedence over
-   *  `isMinimal` and `isCondensed` when true. */
+   *  Co-pay, Co-Ins, Date of Service, PT RES, PT Paid, PT Pay Status, PT A/R Paid Date. Takes
+   *  precedence over `isMinimal` and `isCondensed` when true. */
   isFrontOffice?: boolean
 }
 
@@ -33,12 +33,12 @@ function minimalVisualIndices(showVisitTypeColumn: boolean): number[] {
 
 /** Indices kept in front-office mode. Mirrors `frontOfficeVisualIndices` in ProvidersTab.tsx.
  *  Visual positions in the full layout (with Visit Type inserted at 9 when enabled): 0=ID,
- *  1=First Name, 2=LI, 3=Ins, 4=Co-pay, 5=Co-Ins, 6=DOS, 13=PT RES, 14=PT Paid, 15=PT Pay Status
- *  (last three shift +1 when Visit Type is on). Co-pay/Co-Ins are dropped afterward by
- *  `dropCopayCoinsCols` when the clinic flag is off. */
+ *  1=First Name, 2=LI, 3=Ins, 4=Co-pay, 5=Co-Ins, 6=DOS, 13=PT RES, 14=PT Paid, 15=PT Pay Status,
+ *  16=PT A/R Paid Date (last four shift +1 when Visit Type is on). Co-pay/Co-Ins are dropped
+ *  afterward by `dropCopayCoinsCols` when the clinic flag is off. */
 function frontOfficeVisualIndices(showVisitTypeColumn: boolean): number[] {
   const vtShift = showVisitTypeColumn ? 1 : 0
-  return [0, 1, 2, 3, 4, 5, 6, 13 + vtShift, 14 + vtShift, 15 + vtShift]
+  return [0, 1, 2, 3, 4, 5, 6, 13 + vtShift, 14 + vtShift, 15 + vtShift, 16 + vtShift]
 }
 
 /** Build a patient_id → Patient lookup. Exported so callers can memoize and reuse it across renders
@@ -76,7 +76,7 @@ export function providerSheetUiExportHeaders(layout: ProviderSheetUiExportLayout
     'ID', 'First Name', 'LI', 'Insurance', 'Co-pay', 'Co-Ins',
     'Date of Service', 'CPT Code', 'Appt/Note Status', 'Claim Status', 'Most Recent Submit Date',
     'Ins Pay', 'Ins Pay Date', 'PT RES', 'Collected from PT', 'PT Pay Status',
-    'PT Payment AR Ref Date', 'Total', 'Notes',
+    'PT A/R Paid Date', 'Total', 'Notes',
   ]
   const columnTitlesFull = showVisitTypeColumn
     ? [...columnTitlesFullBase.slice(0, 9), 'Visit Type', ...columnTitlesFullBase.slice(9)]
@@ -89,7 +89,7 @@ export function providerSheetUiExportHeaders(layout: ProviderSheetUiExportLayout
   const columnTitlesOfficeStaffBase = [
     'ID', 'First Name', 'LI', 'Insurance', 'Co-pay', 'Co-Ins',
     'Date of Service', 'CPT Code', 'Appt/Note Status',
-    'Collected from PT', 'PT Pay Status', 'PT Payment AR Ref Date',
+    'Collected from PT', 'PT Pay Status', 'PT A/R Paid Date',
   ]
   const columnTitlesOfficeStaff = showVisitTypeColumn
     ? [...columnTitlesOfficeStaffBase.slice(0, 9), 'Visit Type', ...columnTitlesOfficeStaffBase.slice(9)]
