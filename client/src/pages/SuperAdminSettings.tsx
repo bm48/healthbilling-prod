@@ -7,6 +7,7 @@ import { Users, Palette, FileText, Plus, Edit, Trash2, X, Unlock, Building2, Dow
 import { formatDateTime } from '@/lib/utils'
 import { fetchClinicAddressesByClinicIds } from '@/lib/clinicAddresses'
 import MonthCloseTab from '@/components/MonthCloseTab'
+import { getApiBase, getAuthToken } from '@/lib/invoiceApi'
 
 /** Convert array of objects to CSV string (header row + data rows, values escaped). */
 function toCSV(rows: Record<string, unknown>[]): string {
@@ -124,6 +125,11 @@ export default function SuperAdminSettings() {
   const [toggleActivePassword, setToggleActivePassword] = useState('')
   const [toggleActiveError, setToggleActiveError] = useState('')
   const [toggleActiveLoading, setToggleActiveLoading] = useState(false)
+  const [userToDelete, setUserToDelete] = useState<User | null>(null)
+  const [showDeleteUserModal, setShowDeleteUserModal] = useState(false)
+  const [deleteUserPassword, setDeleteUserPassword] = useState('')
+  const [deleteUserError, setDeleteUserError] = useState('')
+  const [deleteUserLoading, setDeleteUserLoading] = useState(false)
   const [changePasswordUserId, setChangePasswordUserId] = useState<string>('')
   const [changePasswordUserList, setChangePasswordUserList] = useState<User[]>([])
   const [changePasswordNew, setChangePasswordNew] = useState('')
@@ -640,6 +646,73 @@ export default function SuperAdminSettings() {
     setToggleActiveError('')
   }
 
+  const openDeleteUserModal = (user: User) => {
+    if (variant !== 'super_admin') return
+    if (user.id === userProfile?.id) return
+    setUserToDelete(user)
+    setShowDeleteUserModal(true)
+    setDeleteUserPassword('')
+    setDeleteUserError('')
+  }
+
+  const closeDeleteUserModal = () => {
+    setShowDeleteUserModal(false)
+    setUserToDelete(null)
+    setDeleteUserPassword('')
+    setDeleteUserError('')
+  }
+
+  const handleConfirmDeleteUser = async () => {
+    if (!userToDelete || !userProfile?.email) return
+    if (!deleteUserPassword.trim()) {
+      setDeleteUserError('Please enter your password.')
+      return
+    }
+    setDeleteUserError('')
+    setDeleteUserLoading(true)
+    try {
+      const tempClient = createApiClientWithStorageKey('health-billing-auth-verify-password')
+      const { error: signInError } = await tempClient.auth.signInWithPassword({
+        email: userProfile.email,
+        password: deleteUserPassword,
+      })
+      await tempClient.auth.signOut()
+      if (signInError) {
+        setDeleteUserError('Incorrect password.')
+        setDeleteUserLoading(false)
+        return
+      }
+      const token = getAuthToken()
+      if (!token) {
+        setDeleteUserError('Not signed in.')
+        setDeleteUserLoading(false)
+        return
+      }
+      const res = await fetch(`${getApiBase()}/api/super-admin/delete-user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ userId: userToDelete.id }),
+      })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setDeleteUserError(typeof payload?.error === 'string' ? payload.error : 'Failed to delete user.')
+        setDeleteUserLoading(false)
+        return
+      }
+      closeDeleteUserModal()
+      await fetchUsers()
+      if (variant === 'super_admin') await fetchClinics()
+    } catch (error) {
+      console.error('Error deleting user:', error)
+      setDeleteUserError('Failed to delete user. Please try again.')
+    } finally {
+      setDeleteUserLoading(false)
+    }
+  }
+
   const handleToggleShowVisitType = async (user: User) => {
     if (user.role !== 'provider' || !user.email) return
     const providersForEmail = providers.filter(p => p.email === user.email)
@@ -1008,7 +1081,7 @@ export default function SuperAdminSettings() {
                           {variant === 'super_admin' && <th>Highlight Color</th>}
                           <th>Clinics</th>
                           <th>Assign Clinics</th>
-                          <th style={{ width: '80px' }}>Actions</th>
+                          <th style={{ width: '120px' }}>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1132,14 +1205,24 @@ export default function SuperAdminSettings() {
                                     <Edit size={16} />
                                   </button>
                                   {variant === 'super_admin' && user.id !== userProfile?.id && (
-                                    <button
-                                      onClick={() => openToggleActiveModal(user)}
-                                      className={user.active !== false ? 'text-amber-400 hover:text-amber-300' : 'text-emerald-400 hover:text-emerald-300'}
-                                      style={{ padding: '4px' }}
-                                      title={user.active !== false ? 'Archive user' : 'Restore user'}
-                                    >
-                                      {user.active !== false ? <Archive size={16} /> : <ArchiveRestore size={16} />}
-                                    </button>
+                                    <>
+                                      <button
+                                        onClick={() => openToggleActiveModal(user)}
+                                        className={user.active !== false ? 'text-amber-400 hover:text-amber-300' : 'text-emerald-400 hover:text-emerald-300'}
+                                        style={{ padding: '4px' }}
+                                        title={user.active !== false ? 'Archive user' : 'Restore user'}
+                                      >
+                                        {user.active !== false ? <Archive size={16} /> : <ArchiveRestore size={16} />}
+                                      </button>
+                                      <button
+                                        onClick={() => openDeleteUserModal(user)}
+                                        className="text-red-400 hover:text-red-300"
+                                        style={{ padding: '4px' }}
+                                        title="Permanently delete user"
+                                      >
+                                        <Trash2 size={16} />
+                                      </button>
+                                    </>
                                   )}
                                 </div>
                               </td>
@@ -1774,6 +1857,65 @@ export default function SuperAdminSettings() {
                   disabled={toggleActiveLoading}
                 >
                   {toggleActiveLoading ? 'Updating...' : 'Confirm'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteUserModal && userToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+            <div className="flex justify-between items-center p-6 border-b border-gray-200">
+              <h2 className="text-xl font-semibold text-gray-900">Delete user</h2>
+              <button
+                onClick={closeDeleteUserModal}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-gray-700">
+                Permanently delete <strong>{userToDelete.full_name || userToDelete.email}</strong>
+                {userToDelete.email ? ` (${userToDelete.email})` : ''}? This removes their login.
+                Billing sheets for a provider with the same email are kept and marked inactive.
+                This cannot be undone. Enter your password to confirm.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Your password (super admin)</label>
+                <input
+                  type="password"
+                  value={deleteUserPassword}
+                  onChange={(e) => {
+                    setDeleteUserPassword(e.target.value)
+                    setDeleteUserError('')
+                  }}
+                  placeholder="Enter your password"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-black"
+                  disabled={deleteUserLoading}
+                />
+                {deleteUserError && (
+                  <p className="text-sm text-red-600 mt-1">{deleteUserError}</p>
+                )}
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={closeDeleteUserModal}
+                  className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                  disabled={deleteUserLoading}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmDeleteUser()}
+                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+                  disabled={deleteUserLoading}
+                >
+                  {deleteUserLoading ? 'Deleting...' : 'Delete user'}
                 </button>
               </div>
             </div>

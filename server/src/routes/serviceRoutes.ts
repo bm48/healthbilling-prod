@@ -1667,3 +1667,95 @@ serviceRoutes.delete('/super-admin/save-audit-logs', async (req, res) => {
     res.status(500).json({ error: 'Failed to delete audit log' })
   }
 })
+
+/** POST /api/super-admin/delete-user  { userId }
+ *
+ * Permanently deletes a login from public.users. Super-admin only. Cannot delete yourself or
+ * the last remaining super_admin. Clears FK blockers (column_locks.locked_by, notes updated_by,
+ * save-audit rows) so the delete isn't rejected with a vague constraint error — that's why
+ * Jenali couldn't remove leftover test accounts after archive replaced delete.
+ *
+ * Does NOT delete provider billing sheets; if the user was a provider, the providers row stays
+ * (history intact) and is marked inactive.
+ */
+serviceRoutes.post('/super-admin/delete-user', async (req, res) => {
+  const callerId = getUserIdFromBearer(req.headers.authorization)
+  if (!callerId) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  if (!(await requireSuperAdmin(callerId))) {
+    res.status(403).json({ error: 'Super admin only' })
+    return
+  }
+
+  const userId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : ''
+  if (!userId || !isUuid(userId)) {
+    res.status(400).json({ error: 'userId required' })
+    return
+  }
+  if (userId === callerId) {
+    res.status(400).json({ error: 'You cannot delete your own account.' })
+    return
+  }
+
+  const target = await pool.query<{ id: string; email: string | null; role: string }>(
+    `SELECT id, email, role FROM public.users WHERE id = $1::uuid LIMIT 1`,
+    [userId],
+  )
+  if (!target.rowCount) {
+    res.status(404).json({ error: 'User not found' })
+    return
+  }
+  const row = target.rows[0]
+  if (row.role === 'super_admin') {
+    const remaining = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM public.users WHERE role = 'super_admin' AND id <> $1::uuid`,
+      [userId],
+    )
+    if (Number(remaining.rows[0]?.n ?? 0) < 1) {
+      res.status(400).json({ error: 'Cannot delete the last super admin.' })
+      return
+    }
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query(`UPDATE public.column_locks SET locked_by = NULL WHERE locked_by = $1::uuid`, [userId])
+    try {
+      await client.query(`UPDATE public.billing_todo_notes SET updated_by = NULL WHERE updated_by = $1::uuid`, [userId])
+    } catch (e: unknown) {
+      const code = e && typeof e === 'object' && 'code' in e ? String((e as { code?: string }).code) : ''
+      if (code !== '42P01' && code !== '42703') throw e
+    }
+    try {
+      await client.query(`DELETE FROM public.provider_sheet_save_audit WHERE user_id = $1::uuid`, [userId])
+    } catch (e: unknown) {
+      const code = e && typeof e === 'object' && 'code' in e ? String((e as { code?: string }).code) : ''
+      if (code !== '42P01') throw e
+    }
+    if (row.email) {
+      await client.query(
+        `UPDATE public.providers SET active = false, updated_at = now() WHERE lower(email) = lower($1)`,
+        [row.email],
+      )
+    }
+    await client.query(`DELETE FROM public.users WHERE id = $1::uuid`, [userId])
+    await client.query('COMMIT')
+    res.json({ ok: true })
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK')
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line no-console
+    console.error('[delete-user] failed:', err)
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to delete user',
+    })
+  } finally {
+    client.release()
+  }
+})
