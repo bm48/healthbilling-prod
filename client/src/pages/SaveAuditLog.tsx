@@ -193,63 +193,22 @@ function rowToCopyText(r: AuditRow, clinicName?: string, providerName?: string):
     .join('\n')
 }
 
-function rowsToTsv(
+/** Same payload as the per-row "Copy row" button, joined for every filtered row. */
+function filteredRowsToCopyText(
   rows: AuditRow[],
   clinicNameById?: Map<string, string>,
   providerNameById?: Map<string, string>,
 ): string {
-  const headers = [
-    'when',
-    'sheet_kind',
-    'success',
-    'user_email',
-    'clinic',
-    'clinic_id',
-    'provider',
-    'provider_id',
-    'sheet_id',
-    'month',
-    'source',
-    'row_count',
-    'actions',
-    'lock_ms',
-    'elapsed_ms',
-    'correlation_id',
-    'audit_id',
-    'error',
-  ]
-  const escape = (v: string) => {
-    if (/[\t\n\r"]/.test(v)) return `"${v.replace(/"/g, '""')}"`
-    return v
-  }
-  const lines = [
-    headers.join('\t'),
-    ...rows.map((r) =>
-      [
-        formatDateTime(r.created_at),
-        r.sheet_kind ?? 'provider_sheet',
-        String(r.success),
-        r.user_email ?? r.user_id,
-        clinicNameById?.get(r.clinic_id) ?? '',
-        r.clinic_id,
-        r.provider_id ? (providerNameById?.get(r.provider_id) ?? '') : '',
-        r.provider_id ?? '',
-        r.sheet_id ?? '',
-        r.selected_month_key ?? '',
-        r.source ?? '',
-        String(r.row_count ?? ''),
-        actionSummary(r.actions),
-        String(r.lock_wait_ms ?? ''),
-        String(r.elapsed_ms ?? ''),
-        r.correlation_id ?? '',
-        r.id,
-        r.error_message ?? '',
-      ]
-        .map((c) => escape(String(c)))
-        .join('\t'),
-    ),
-  ]
-  return lines.join('\n')
+  if (rows.length === 0) return ''
+  return rows
+    .map((r) =>
+      rowToCopyText(
+        r,
+        clinicNameById?.get(r.clinic_id),
+        r.provider_id ? providerNameById?.get(r.provider_id) : undefined,
+      ),
+    )
+    .join('\n\n----------\n\n')
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -442,10 +401,10 @@ export default function SaveAuditLog() {
     }
   }, [filters, limit])
 
-  /** Re-applies the current filters, then copies every returned row as TSV (paste into Excel/Sheets). */
+  /** Re-applies filters, then copies every row using the same text as the per-row Copy button. */
   const copyFilteredResults = useCallback(async () => {
     const next = await fetchRows()
-    return rowsToTsv(next, clinicNameById, providerNameById)
+    return filteredRowsToCopyText(next, clinicNameById, providerNameById)
   }, [fetchRows, clinicNameById, providerNameById])
 
   const deleteAllLogs = useCallback(async () => {
@@ -522,8 +481,8 @@ export default function SaveAuditLog() {
           <p className="text-sm text-white/70 mt-1 max-w-3xl">
             One row per save batch across provider billing sheets, Patient Info, Accounts Receivable,
             Billing To-Do, and Provider Pay. Amber rows are same-sheet races within a minute.
-            Filter, then use <span className="text-white/90">Copy filtered results</span> to copy
-            every matching row (TSV — pastes into Excel / Sheets / Slack).
+            Filter, then use <span className="text-white/90">Copy all rows</span> to copy every
+            matching row in the same format as the per-row Copy button.
           </p>
         </div>
       </div>
@@ -726,7 +685,7 @@ export default function SaveAuditLog() {
             {loading ? 'Loading…' : 'Refresh'}
           </button>
           <CopyButton
-            label={rows.length ? `Copy filtered results (${rows.length})` : 'Copy filtered results'}
+            label={rows.length ? `Copy all rows (${rows.length})` : 'Copy all rows'}
             getText={copyFilteredResults}
             disabled={loading}
             className="!px-3 !py-1.5 !text-sm bg-white/10"
@@ -749,7 +708,7 @@ export default function SaveAuditLog() {
           {rows.length >= limit ? ` (capped at ${limit})` : ''}
         </p>
         <CopyButton
-          label={rows.length ? `Copy filtered results (${rows.length} rows)` : 'Copy filtered results'}
+          label={rows.length ? `Copy all rows (${rows.length})` : 'Copy all rows'}
           getText={copyFilteredResults}
           disabled={loading}
           className="!px-3 !py-1.5 !text-sm bg-white/10"
@@ -897,8 +856,8 @@ export default function SaveAuditLog() {
       </div>
 
       <p className="text-xs text-white/50">
-        Showing {rows.length} row{rows.length === 1 ? '' : 's'} (capped at {limit}). Copy filtered
-        results copies every currently loaded row as TSV. Retention: 30 days. PHI-free — UUIDs,
+        Showing {rows.length} row{rows.length === 1 ? '' : 's'} (capped at {limit}). Copy all rows
+        uses the same text as each row’s Copy button. Retention: 30 days. PHI-free — UUIDs,
         counts, timing, and source labels only. Requires DB migration
         `20260811_sheet_save_audit_all_kinds.sql` for sheet_kind on existing databases.
       </p>
