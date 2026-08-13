@@ -193,13 +193,19 @@ function rowToCopyText(r: AuditRow, clinicName?: string, providerName?: string):
     .join('\n')
 }
 
-function rowsToTsv(rows: AuditRow[]): string {
+function rowsToTsv(
+  rows: AuditRow[],
+  clinicNameById?: Map<string, string>,
+  providerNameById?: Map<string, string>,
+): string {
   const headers = [
     'when',
     'sheet_kind',
     'success',
     'user_email',
+    'clinic',
     'clinic_id',
+    'provider',
     'provider_id',
     'sheet_id',
     'month',
@@ -224,7 +230,9 @@ function rowsToTsv(rows: AuditRow[]): string {
         r.sheet_kind ?? 'provider_sheet',
         String(r.success),
         r.user_email ?? r.user_id,
+        clinicNameById?.get(r.clinic_id) ?? '',
         r.clinic_id,
+        r.provider_id ? (providerNameById?.get(r.provider_id) ?? '') : '',
         r.provider_id ?? '',
         r.sheet_id ?? '',
         r.selected_month_key ?? '',
@@ -269,32 +277,44 @@ function CopyButton({
   label,
   getText,
   className = '',
+  disabled = false,
 }: {
   label: string
-  getText: () => string
+  getText: () => string | Promise<string>
   className?: string
+  disabled?: boolean
 }) {
   const [copied, setCopied] = useState(false)
+  const [busy, setBusy] = useState(false)
   return (
     <button
       type="button"
       title={label}
+      disabled={disabled || busy}
       onClick={async (e) => {
         e.stopPropagation()
-        const ok = await copyText(getText())
-        if (ok) {
-          setCopied(true)
-          window.setTimeout(() => setCopied(false), 1500)
+        if (disabled || busy) return
+        setBusy(true)
+        try {
+          const text = await getText()
+          if (!text) return
+          const ok = await copyText(text)
+          if (ok) {
+            setCopied(true)
+            window.setTimeout(() => setCopied(false), 1500)
+          }
+        } finally {
+          setBusy(false)
         }
       }}
-      className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs ${
+      className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs disabled:opacity-50 disabled:pointer-events-none ${
         copied
           ? 'border-emerald-400/60 text-emerald-200 bg-emerald-500/10'
           : 'border-white/20 text-white/80 hover:bg-white/10'
       } ${className}`}
     >
       {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-      {copied ? 'Copied' : label}
+      {busy ? 'Copying…' : copied ? 'Copied' : label}
     </button>
   )
 }
@@ -394,7 +414,7 @@ export default function SaveAuditLog() {
     return m
   }, [providers])
 
-  const fetchRows = useCallback(async () => {
+  const fetchRows = useCallback(async (): Promise<AuditRow[]> => {
     setLoading(true)
     setError(null)
     try {
@@ -409,15 +429,24 @@ export default function SaveAuditLog() {
       if (!res.ok) {
         throw new Error(typeof payload?.error === 'string' ? payload.error : `Load failed (${res.status})`)
       }
-      setRows(Array.isArray(payload?.rows) ? (payload.rows as AuditRow[]) : [])
+      const next = Array.isArray(payload?.rows) ? (payload.rows as AuditRow[]) : []
+      setRows(next)
       setExpandedIds(new Set())
+      return next
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load audit rows')
       setRows([])
+      return []
     } finally {
       setLoading(false)
     }
   }, [filters, limit])
+
+  /** Re-applies the current filters, then copies every returned row as TSV (paste into Excel/Sheets). */
+  const copyFilteredResults = useCallback(async () => {
+    const next = await fetchRows()
+    return rowsToTsv(next, clinicNameById, providerNameById)
+  }, [fetchRows, clinicNameById, providerNameById])
 
   const deleteAllLogs = useCallback(async () => {
     const confirmed =
@@ -493,10 +522,10 @@ export default function SaveAuditLog() {
           <p className="text-sm text-white/70 mt-1 max-w-3xl">
             One row per save batch across provider billing sheets, Patient Info, Accounts Receivable,
             Billing To-Do, and Provider Pay. Amber rows are same-sheet races within a minute.
-            Use Copy on a row (or Copy all visible) to paste into Slack / tickets.
+            Filter, then use <span className="text-white/90">Copy filtered results</span> to copy
+            every matching row (TSV — pastes into Excel / Sheets / Slack).
           </p>
         </div>
-        <CopyButton label="Copy all visible (TSV)" getText={() => rowsToTsv(rows)} className="shrink-0" />
       </div>
 
       <div className="rounded border border-white/20 bg-slate-900/60 p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -671,7 +700,7 @@ export default function SaveAuditLog() {
           />
           Only show saves that INSERTed at least one row
         </label>
-        <div className="md:col-span-1 flex items-end justify-end gap-2 mt-2">
+        <div className="md:col-span-1 flex flex-wrap items-end justify-end gap-2 mt-2">
           <button
             type="button"
             onClick={() => setFilters(EMPTY_FILTERS)}
@@ -696,6 +725,12 @@ export default function SaveAuditLog() {
           >
             {loading ? 'Loading…' : 'Refresh'}
           </button>
+          <CopyButton
+            label={rows.length ? `Copy filtered results (${rows.length})` : 'Copy filtered results'}
+            getText={copyFilteredResults}
+            disabled={loading}
+            className="!px-3 !py-1.5 !text-sm bg-white/10"
+          />
         </div>
       </div>
 
@@ -707,6 +742,19 @@ export default function SaveAuditLog() {
           Dropdown load failed: {lookupsError}. Use text filters as a fallback.
         </div>
       )}
+
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm text-white/70">
+          {loading ? 'Loading…' : `${rows.length} filtered row${rows.length === 1 ? '' : 's'}`}
+          {rows.length >= limit ? ` (capped at ${limit})` : ''}
+        </p>
+        <CopyButton
+          label={rows.length ? `Copy filtered results (${rows.length} rows)` : 'Copy filtered results'}
+          getText={copyFilteredResults}
+          disabled={loading}
+          className="!px-3 !py-1.5 !text-sm bg-white/10"
+        />
+      </div>
 
       <div className="rounded border border-white/20 overflow-auto" style={{ maxHeight: 'calc(100vh - 380px)' }}>
         <table className="min-w-full text-sm text-white/90">
@@ -849,8 +897,9 @@ export default function SaveAuditLog() {
       </div>
 
       <p className="text-xs text-white/50">
-        Showing {rows.length} row{rows.length === 1 ? '' : 's'} (capped at {limit}). Retention: 30
-        days. PHI-free — UUIDs, counts, timing, and source labels only. Requires DB migration
+        Showing {rows.length} row{rows.length === 1 ? '' : 's'} (capped at {limit}). Copy filtered
+        results copies every currently loaded row as TSV. Retention: 30 days. PHI-free — UUIDs,
+        counts, timing, and source labels only. Requires DB migration
         `20260811_sheet_save_audit_all_kinds.sql` for sheet_kind on existing databases.
       </p>
     </div>
