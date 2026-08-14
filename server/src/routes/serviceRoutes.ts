@@ -648,14 +648,14 @@ async function saveProviderSheetRowsCore(
       // same edit. Multiply by every tab-switch during a workday and you get Jenali's Morgan/
       // Spencer/Keana pattern (same patient row repeated 5-7 times, sometimes with mixed states).
       //
-      // Rule: if an incoming INSERT carries a real identity (patient_id AND appointment_date both
-      // non-null) that matches an existing row on this sheet, treat it as an UPDATE of the
-      // existing row instead of creating a new one. Use COALESCE on EVERY column (not just the
-      // usual PROTECTED_FROM_NULL set) so a stale payload with fewer fields can never null out
-      // data that arrived from another (concurrent or earlier) save. Net effect: identical
-      // duplicates collapse into a single row; enriching data merges into the existing row;
-      // legitimately distinct rows (different date, different patient, or a truly new visit) go
-      // through the normal INSERT path.
+      // Rule: if an incoming INSERT carries a real identity (patient_id, with or without date)
+      // that matches an existing row on this sheet, treat it as an UPDATE of the existing row
+      // instead of creating a new one. Use COALESCE on EVERY column (not just the usual
+      // PROTECTED_FROM_NULL set) so a stale payload with fewer fields can never null out data
+      // that arrived from another (concurrent or earlier) save. Net effect: identical duplicates
+      // collapse into a single row; enriching data merges into the existing row; legitimately
+      // distinct rows (different date, different patient, or a truly new visit) go through the
+      // normal INSERT path.
       //
       // Match key is (sheet_id, patient_id, appointment_date). We intentionally do NOT include
       // cpt_code / appointment_status in the match because the race often catches a row before
@@ -674,16 +674,41 @@ async function saveProviderSheetRowsCore(
       // both cases. Rows without patient_id go straight to INSERT (no meaningful identity to
       // dedupe on); those either carry other data (fine to have multiple) or are date-only
       // strays already dropped by the guard above.
+      //
+      // Cross-null date (2026-08): overlapping client saves often land 1s apart as (P, D) then
+      // (P, NULL) or the reverse — exact date match misses, and a second UUID row is born. Once
+      // both have UUIDs, later typing only UPDATEs them (Elena ×3 on Morgan Huls Aug 2026).
+      // Fallback: same patient where one side of appointment_date is empty. Incoming dated +
+      // existing undated = complete the in-progress row (always). Incoming undated + existing
+      // dated = only if that existing row is recent (15 min), so we do not glue a new undated
+      // visit onto last week's appointment.
       const incomingPatientId = payload.patient_id
-      const incomingApptDate = payload.appointment_date ?? null
+      const incomingApptDateRaw = payload.appointment_date
+      const incomingApptDate =
+        incomingApptDateRaw != null && String(incomingApptDateRaw).trim() !== ''
+          ? incomingApptDateRaw
+          : null
       let idempotentUpdateApplied = false
       if (incomingPatientId != null && incomingPatientId !== '') {
         const dupCheck = await client.query<{ id: string }>(
           `SELECT id FROM public.provider_sheet_rows
            WHERE sheet_id = $1::uuid
              AND patient_id = $2
-             AND appointment_date IS NOT DISTINCT FROM $3
-           ORDER BY created_at ASC
+             AND (
+               NULLIF(BTRIM(appointment_date::text), '') IS NOT DISTINCT FROM $3
+               OR (
+                 $3 IS NOT NULL
+                 AND NULLIF(BTRIM(appointment_date::text), '') IS NULL
+               )
+               OR (
+                 $3 IS NULL
+                 AND NULLIF(BTRIM(appointment_date::text), '') IS NOT NULL
+                 AND created_at > now() - interval '15 minutes'
+               )
+             )
+           ORDER BY
+             CASE WHEN NULLIF(BTRIM(appointment_date::text), '') IS NOT DISTINCT FROM $3 THEN 0 ELSE 1 END,
+             created_at ASC
            LIMIT 1`,
           [sheetId, incomingPatientId, incomingApptDate],
         )

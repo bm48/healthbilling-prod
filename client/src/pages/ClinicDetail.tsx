@@ -2,7 +2,17 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
-import { fetchSheetRows, fetchSheetRowsForSheetIds, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
+import {
+  fetchSheetRows,
+  fetchSheetRowsForSheetIds,
+  saveSheetRows,
+  isUuid,
+  applyTempIdPromotions,
+  collectTempIdPromotions,
+  getTempIdPromotions,
+  mergeTempIdPromotions,
+  sheetTempIdPromotionKey,
+} from '@/lib/providerSheetRows'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
 import { fetchBackupCsvAsSheetRows, padSheetRowsToBase, ROWS_PER_PROVIDER } from '@/lib/providerSheetBackups'
 import { sheetRowsToUiCsv, type ProviderSheetUiExportLayout } from '@/lib/providerSheetBackupUiExport'
@@ -2592,8 +2602,13 @@ export default function ClinicDetail() {
       return false
     }
 
+    // Remap any temp ids this tab already promoted to UUIDs (prior save / queued replay /
+    // remount). Without this, a second POST still carrying `new-*` INSERTs a duplicate row.
+    const promotionKey = sheetTempIdPromotionKey(clinicId, providerId, monthKey)
+    const rowsForThisSave = applyTempIdPromotions(rowsToSave, getTempIdPromotions(promotionKey))
+
     // Filter out only truly empty rows (empty- rows with no data)
-    const rowsToProcess = rowsToSave.filter(r => {
+    const rowsToProcess = rowsForThisSave.filter(r => {
       if (r.id.startsWith('empty-')) {
         const hasData = r.patient_id ||
                        r.patient_first_name || r.last_initial || r.patient_insurance ||
@@ -2614,7 +2629,7 @@ export default function ClinicDetail() {
       return new Promise<boolean>((resolve, reject) => {
         const existing = pendingProviderSheetSaveRef.current[providerId]
         if (existing) {
-          existing.rows = rowsToSave
+          existing.rows = rowsForThisSave
           existing.monthKey = monthKey
           if (incomingDeletes.length > 0) {
             const seen = new Set(existing.deletedDbIds)
@@ -2628,7 +2643,7 @@ export default function ClinicDetail() {
           existing.resolvers.push({ resolve, reject })
         } else {
           pendingProviderSheetSaveRef.current[providerId] = {
-            rows: rowsToSave,
+            rows: rowsForThisSave,
             deletedDbIds: incomingDeletes,
             resolvers: [{ resolve, reject }],
             monthKey,
@@ -2647,7 +2662,7 @@ export default function ClinicDetail() {
     // Optimistic update: apply full rows to state immediately so the row (e.g. patient fill) appears right away.
     // Use the captured `monthKey` so a deferred save replayed for the original month writes to that month's
     // slot in state — never to whatever month the user happens to be viewing right now.
-    setProviderSheetRowsByMonth(prev => ({ ...prev, [monthKey]: { ...(prev[monthKey] ?? {}), [providerId]: rowsToSave } }))
+    setProviderSheetRowsByMonth(prev => ({ ...prev, [monthKey]: { ...(prev[monthKey] ?? {}), [providerId]: rowsForThisSave } }))
 
     // Tracks whether saveSheetRows actually persisted to the DB. Returned to the caller so the
     // localStorage restore effect can tell the difference between a real save and a swallowed error;
@@ -2683,7 +2698,8 @@ export default function ClinicDetail() {
         localStorage.removeItem(pendingKey)
       } catch (_) {}
       // Populate the synchronous id map right after the network response — before any React state update.
-      savedTempIdToUuidMap = new Map<string, string>()
+      savedTempIdToUuidMap = collectTempIdPromotions(rowsToProcess, savedRows)
+      mergeTempIdPromotions(promotionKey, savedTempIdToUuidMap)
       const savedRowsByOldId = new Map<string, SheetRow>()
       const savedRowsByAnyId = new Map<string, SheetRow>()
       rowsToProcess.forEach((row, i) => {
@@ -2692,10 +2708,6 @@ export default function ClinicDetail() {
         savedRowsByOldId.set(row.id, saved)
         savedRowsByAnyId.set(row.id, saved)
         savedRowsByAnyId.set(saved.id, saved)
-        // Track temp→UUID promotions for the queued pending reconciliation
-        if (!isUuid(row.id) && isUuid(saved.id)) {
-          savedTempIdToUuidMap!.set(row.id, saved.id)
-        }
       })
 
       // Merge saved row ids, then apply co-patient demographics to all providers for this month (last-write-wins from DB).
@@ -2799,19 +2811,8 @@ export default function ClinicDetail() {
       const pending = pendingProviderSheetSaveRef.current[providerId]
       if (pending) {
         delete pendingProviderSheetSaveRef.current[providerId]
-        const idMap = savedTempIdToUuidMap
-        let toSave = pending.rows
-        if (idMap && idMap.size > 0) {
-          toSave = pending.rows.map((row) => {
-            if (!isUuid(row.id)) {
-              const newId = idMap.get(row.id)
-              if (newId) {
-                return { ...row, id: newId, updated_at: new Date().toISOString() }
-              }
-            }
-            return row
-          })
-        }
+        const idMap = mergeTempIdPromotions(promotionKey, savedTempIdToUuidMap ?? new Map())
+        const toSave = applyTempIdPromotions(pending.rows, idMap)
         const pendingDeletes = pending.deletedDbIds.length > 0 ? pending.deletedDbIds : undefined
         // Forward queued knownDeletedIds + settle the promises that every queued caller awaits.
         // Propagate the eventual `persisted` boolean so the localStorage restore path can tell whether
@@ -3116,10 +3117,14 @@ export default function ClinicDetail() {
           return
         }
         restoredPendingKeysRef.current.add(key)
+        const promotedRows = applyTempIdPromotions(
+          data.rows,
+          getTempIdPromotions(sheetTempIdPromotionKey(clinicId, providerId, selectedMonthKey)),
+        )
         // Only delete the localStorage backup if saveProviderSheetRows actually persisted to DB.
         // A silently-dropped save (guard fail, missing sheet, not yet hydrated) resolves to `false`;
         // keeping the key gives the next mount / pagehide keepalive another chance to land the data.
-        saveProviderSheetRows(providerId, data.rows, undefined, undefined, 'localstorage-restore-on-mount').then((persisted) => {
+        saveProviderSheetRows(providerId, promotedRows, undefined, undefined, 'localstorage-restore-on-mount').then((persisted) => {
           if (persisted) {
             try { localStorage.removeItem(key) } catch (_) {}
           } else {
@@ -3146,7 +3151,7 @@ export default function ClinicDetail() {
     const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
     const savePendingUrl = apiBase ? `${apiBase}/api/save-provider-sheet-rows` : '/api/save-provider-sheet-rows'
 
-    const onPageHide = () => {
+    const onPageHide = (fromVisibility = false) => {
       let token: string | null = null
       try {
         const raw = localStorage.getItem('health-billing-auth')
@@ -3203,6 +3208,15 @@ export default function ClinicDetail() {
           })
           if (!hasMeaningfulRow) return
 
+          // Tab-switch keepalive must not race an in-flight debounced save with the same `new-*`
+          // ids. Real `pagehide` (unload) still sends so a closing tab can finish the write.
+          if (fromVisibility && saveProviderSheetInProgressRef.current.has(entryProviderId)) return
+
+          const rowsToSend = applyTempIdPromotions(
+            rows,
+            getTempIdPromotions(sheetTempIdPromotionKey(entryClinicId, entryProviderId, entryMonthKey)),
+          )
+
           // correlationId + source populate the server audit table so the pagehide-keepalive path
           // shows up distinctly in the save-audit viewer. Every pagehide fire gets a fresh ID —
           // this POST is fire-and-forget with no matching debounced-save to correlate against.
@@ -3214,7 +3228,7 @@ export default function ClinicDetail() {
             clinicId: entryClinicId,
             providerId: entryProviderId,
             selectedMonthKey: entryMonthKey,
-            rows,
+            rows: rowsToSend,
             correlationId,
             source: 'pagehide-keepalive',
           })
@@ -3235,12 +3249,13 @@ export default function ClinicDetail() {
     // page. Catches cases where the user moves away mid-edit without actually closing the tab —
     // pagehide doesn't fire then but the unsaved data could still be lost if the browser is killed.
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') onPageHide()
+      if (document.visibilityState === 'hidden') onPageHide(true)
     }
-    window.addEventListener('pagehide', onPageHide)
+    const onUnload = () => onPageHide(false)
+    window.addEventListener('pagehide', onUnload)
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
-      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pagehide', onUnload)
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [clinicId])

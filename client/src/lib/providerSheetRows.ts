@@ -94,6 +94,81 @@ export function isUuid(id: string): boolean {
   return UUID_REGEX.test(id)
 }
 
+/** sessionStorage key for temp-id → UUID promotions within this browser tab. */
+const TEMP_ID_PROMOTIONS_STORAGE_KEY = 'provider_sheet_temp_id_promotions'
+
+export function sheetTempIdPromotionKey(clinicId: string, providerId: string, monthKey: string): string {
+  return `${clinicId}|${providerId}|${monthKey}`
+}
+
+function readTempIdPromotionStore(): Record<string, Record<string, string>> {
+  try {
+    const raw = sessionStorage.getItem(TEMP_ID_PROMOTIONS_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') return {}
+    return parsed as Record<string, Record<string, string>>
+  } catch {
+    return {}
+  }
+}
+
+function writeTempIdPromotionStore(store: Record<string, Record<string, string>>): void {
+  try {
+    sessionStorage.setItem(TEMP_ID_PROMOTIONS_STORAGE_KEY, JSON.stringify(store))
+  } catch {
+    // Quota / private mode: in-memory callers still have the Map for this save.
+  }
+}
+
+/** Load known `new-*` / `empty-*` → UUID remaps for this sheet (same tab, survives remount). */
+export function getTempIdPromotions(sheetKey: string): Map<string, string> {
+  const bucket = readTempIdPromotionStore()[sheetKey] ?? {}
+  return new Map(Object.entries(bucket))
+}
+
+/** Merge newly returned promotions and persist them for later saves / pagehide / restore. */
+export function mergeTempIdPromotions(sheetKey: string, additions: Map<string, string>): Map<string, string> {
+  if (additions.size === 0) return getTempIdPromotions(sheetKey)
+  const store = readTempIdPromotionStore()
+  const merged = { ...(store[sheetKey] ?? {}) }
+  for (const [tempId, uuid] of additions) {
+    if (tempId && uuid && !isUuid(tempId) && isUuid(uuid)) merged[tempId] = uuid
+  }
+  store[sheetKey] = merged
+  writeTempIdPromotionStore(store)
+  return new Map(Object.entries(merged))
+}
+
+/** Replace temp ids that the server already assigned so a later POST UPDATEs instead of INSERTing. */
+export function applyTempIdPromotions<T extends { id: string }>(rows: T[], promotions: Map<string, string>): T[] {
+  if (promotions.size === 0) return rows
+  let changed = false
+  const next = rows.map((row) => {
+    const uuid = promotions.get(row.id)
+    if (uuid && uuid !== row.id) {
+      changed = true
+      return { ...row, id: uuid }
+    }
+    return row
+  })
+  return changed ? next : rows
+}
+
+export function collectTempIdPromotions(
+  sentRows: Array<{ id: string }>,
+  savedRows: Array<{ id: string } | undefined | null>,
+): Map<string, string> {
+  const out = new Map<string, string>()
+  for (let i = 0; i < sentRows.length; i++) {
+    const sent = sentRows[i]
+    const saved = savedRows[i]
+    if (!sent || !saved) continue
+    if (!isUuid(sent.id) && isUuid(saved.id)) out.set(sent.id, saved.id)
+  }
+  return out
+}
+
 /** Aligns with server `rowHasData` so API save indices match returned rows. */
 export function rowHasDataForSave(row: SheetRow): boolean {
   if (!row.id.startsWith('empty-')) return true

@@ -2,7 +2,16 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiClient } from '@/lib/apiClient'
-import { fetchSheetRows, saveSheetRows, isUuid } from '@/lib/providerSheetRows'
+import {
+  fetchSheetRows,
+  saveSheetRows,
+  isUuid,
+  applyTempIdPromotions,
+  collectTempIdPromotions,
+  getTempIdPromotions,
+  mergeTempIdPromotions,
+  sheetTempIdPromotionKey,
+} from '@/lib/providerSheetRows'
 import { ROWS_PER_PROVIDER } from '@/lib/providerSheetBackups'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
 import { dedupeProvidersByUser, fetchActiveProviderUserEmails } from '@/lib/providerUserFilter'
@@ -567,8 +576,12 @@ export default function ProviderSheetPage() {
         return false
       }
 
+      // Remap any temp ids this tab already promoted to UUIDs so a later POST UPDATEs, not INSERTs.
+      const promotionKey = sheetTempIdPromotionKey(clinicId, providerId, selectedMonthKey ?? `${targetYear}-${targetMonth}`)
+      const rowsForThisSave = applyTempIdPromotions(rowsToSave, getTempIdPromotions(promotionKey))
+
       // Step 1 — Filter empty-* placeholder rows with no data (mirrors ClinicDetail line 2462).
-      const rowsToProcess = rowsToSave.filter(r => {
+      const rowsToProcess = rowsForThisSave.filter(r => {
         if (r.id.startsWith('empty-')) {
           const hasData = r.patient_id ||
                          r.patient_first_name || r.last_initial || r.patient_insurance ||
@@ -588,7 +601,7 @@ export default function ProviderSheetPage() {
         return new Promise<boolean>((resolve, reject) => {
           const existing = pendingProviderSheetSaveRef.current[providerId]
           if (existing) {
-            existing.rows = rowsToSave
+            existing.rows = rowsForThisSave
             if (incomingDeletes.length > 0) {
               const seen = new Set(existing.deletedDbIds)
               for (const id of incomingDeletes) {
@@ -601,7 +614,7 @@ export default function ProviderSheetPage() {
             existing.resolvers.push({ resolve, reject })
           } else {
             pendingProviderSheetSaveRef.current[providerId] = {
-              rows: rowsToSave,
+              rows: rowsForThisSave,
               deletedDbIds: incomingDeletes,
               resolvers: [{ resolve, reject }],
             }
@@ -617,7 +630,7 @@ export default function ProviderSheetPage() {
       let savedTempIdToUuidMap: Map<string, string> | null = null
 
       // Step 3 — Optimistic state update so the row appears immediately (mirrors ClinicDetail line 2512).
-      setProviderSheetRows(prev => ({ ...prev, [providerId]: rowsToSave }))
+      setProviderSheetRows(prev => ({ ...prev, [providerId]: rowsForThisSave }))
 
       // Tracks whether saveSheetRows actually persisted to the DB. Returned to the caller so the
       // localStorage restore effect can tell the difference between a real save and a swallowed error.
@@ -643,7 +656,8 @@ export default function ProviderSheetPage() {
         // Step 7 — Build savedRowsByOldId AND savedRowsByAnyId so the merge survives the case where
         // a row's id was already promoted to its UUID in state by a concurrent code path (mirrors
         // ClinicDetail line 2532). Also populate savedTempIdToUuidMap for queue replay.
-        savedTempIdToUuidMap = new Map<string, string>()
+        savedTempIdToUuidMap = collectTempIdPromotions(rowsToProcess, savedRows)
+        mergeTempIdPromotions(promotionKey, savedTempIdToUuidMap)
         const savedRowsByOldId = new Map<string, SheetRow>()
         const savedRowsByAnyId = new Map<string, SheetRow>()
         rowsToProcess.forEach((row, i) => {
@@ -652,9 +666,6 @@ export default function ProviderSheetPage() {
           savedRowsByOldId.set(row.id, saved)
           savedRowsByAnyId.set(row.id, saved)
           savedRowsByAnyId.set(saved.id, saved)
-          if (!isUuid(row.id) && isUuid(saved.id)) {
-            savedTempIdToUuidMap!.set(row.id, saved.id)
-          }
         })
 
         // Step 8 — Single state update that combines: id promotion + padding-back-to-base + co-patient
@@ -728,19 +739,8 @@ export default function ProviderSheetPage() {
         const pending = pendingProviderSheetSaveRef.current[providerId]
         if (pending) {
           delete pendingProviderSheetSaveRef.current[providerId]
-          const idMap = savedTempIdToUuidMap
-          let toSave = pending.rows
-          if (idMap && idMap.size > 0) {
-            toSave = pending.rows.map((row) => {
-              if (!isUuid(row.id)) {
-                const newId = idMap.get(row.id)
-                if (newId) {
-                  return { ...row, id: newId, updated_at: new Date().toISOString() }
-                }
-              }
-              return row
-            })
-          }
+          const idMap = mergeTempIdPromotions(promotionKey, savedTempIdToUuidMap ?? new Map())
+          const toSave = applyTempIdPromotions(pending.rows, idMap)
           const pendingDeletes = pending.deletedDbIds.length > 0 ? pending.deletedDbIds : undefined
           // Forward queued knownDeletedIds + settle the promises that every queued caller awaits.
           // Propagate the eventual `persisted` boolean so the localStorage restore path can tell
@@ -833,10 +833,14 @@ export default function ProviderSheetPage() {
         return
       }
       restoredPendingKeysRef.current.add(key)
+      const promotedRows = applyTempIdPromotions(
+        data.rows,
+        getTempIdPromotions(sheetTempIdPromotionKey(clinicId, provider.id, selectedMonthKey)),
+      )
       // Only delete the localStorage backup if saveProviderSheetRows actually persisted to DB.
       // A deferred or guard-dropped save resolves to `false`; keeping the key gives the deferred-save
       // drain effect (or the next mount / pagehide keepalive) another chance to land the data.
-      saveProviderSheetRows(provider.id, data.rows)
+      saveProviderSheetRows(provider.id, promotedRows)
         .then((persisted) => {
           if (persisted) {
             try { localStorage.removeItem(key) } catch (_) {}
@@ -867,7 +871,7 @@ export default function ProviderSheetPage() {
     const currentClinicId = clinicId
     const currentProviderId = provider?.id
 
-    const onPageHide = () => {
+    const onPageHide = (fromVisibility = false) => {
       let token: string | null = null
       try {
         const raw = localStorage.getItem('health-billing-auth')
@@ -921,7 +925,26 @@ export default function ProviderSheetPage() {
           })
           if (!hasMeaningfulRow) return
 
-          const body = JSON.stringify({ clinicId: cid, providerId: pid, selectedMonthKey: mk, rows })
+          // Tab-switch keepalive must not race an in-flight save with the same `new-*` ids.
+          // Real unload (`pagehide`) still sends so a closing tab can finish the write.
+          if (fromVisibility && saveProviderSheetInProgressRef.current.has(pid)) return
+
+          const rowsToSend = applyTempIdPromotions(
+            rows,
+            getTempIdPromotions(sheetTempIdPromotionKey(cid, pid, mk)),
+          )
+          const correlationId =
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `corr-pagehide-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+          const body = JSON.stringify({
+            clinicId: cid,
+            providerId: pid,
+            selectedMonthKey: mk,
+            rows: rowsToSend,
+            correlationId,
+            source: 'pagehide-keepalive',
+          })
           fetch(savePendingUrl, {
             method: 'POST',
             body,
@@ -938,12 +961,13 @@ export default function ProviderSheetPage() {
     // visibilitychange catches tab-switch / window-minimize where pagehide doesn't fire — flushes the
     // per-edit localStorage backup to the server so the data is durable before any potential close.
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') onPageHide()
+      if (document.visibilityState === 'hidden') onPageHide(true)
     }
-    window.addEventListener('pagehide', onPageHide)
+    const onUnload = () => onPageHide(false)
+    window.addEventListener('pagehide', onUnload)
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
-      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pagehide', onUnload)
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [clinicId, provider?.id])
