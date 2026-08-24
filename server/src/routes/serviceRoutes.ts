@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import nodemailer from 'nodemailer'
+import type { PoolClient } from 'pg'
 import { pool } from '../db.js'
 import { env } from '../config.js'
 import { getUserIdFromBearer } from '../accessToken.js'
@@ -78,6 +79,87 @@ function parseMonthKey(selectedMonthKey: string): { year: number; month: number;
   const month = parts[1]
   const payroll = parts.length >= 3 && Number.isFinite(parts[2]) ? parts[2] : 1
   return { year, month, payroll }
+}
+
+function normalizeApptDateForDedupe(raw: unknown): string | null {
+  if (raw == null || String(raw).trim() === '') return null
+  return String(raw).trim()
+}
+
+type BatchIdentityRow = {
+  id: string
+  patientId: string
+  appointmentDate: string | null
+}
+
+/** Mirrors the DB dedupe SELECT in saveProviderSheetRowsCore (exact date, dated→undated, recent undated→dated). */
+function providerSheetIdentityMatches(
+  incomingPatientId: string,
+  incomingApptDate: string | null,
+  existingPatientId: string,
+  existingApptDate: string | null,
+  existingIsRecent: boolean,
+): boolean {
+  if (incomingPatientId !== existingPatientId) return false
+  if (incomingApptDate === existingApptDate) return true
+  if (incomingApptDate != null && existingApptDate == null) return true
+  if (incomingApptDate == null && existingApptDate != null && existingIsRecent) return true
+  return false
+}
+
+function findBatchIdentityMatch(
+  batchRows: BatchIdentityRow[],
+  incomingPatientId: string,
+  incomingApptDate: string | null,
+): BatchIdentityRow | undefined {
+  for (const row of batchRows) {
+    if (
+      providerSheetIdentityMatches(
+        incomingPatientId,
+        incomingApptDate,
+        row.patientId,
+        row.appointmentDate,
+        true,
+      )
+    ) {
+      return row
+    }
+  }
+  return undefined
+}
+
+function trackBatchIdentityRow(batchRows: BatchIdentityRow[], savedRow: Record<string, unknown>): void {
+  const patientId = savedRow.patient_id
+  if (patientId == null || patientId === '') return
+  const id = String(savedRow.id)
+  const entry: BatchIdentityRow = {
+    id,
+    patientId: String(patientId),
+    appointmentDate: normalizeApptDateForDedupe(savedRow.appointment_date),
+  }
+  const existingIdx = batchRows.findIndex((r) => r.id === id)
+  if (existingIdx >= 0) batchRows[existingIdx] = entry
+  else batchRows.push(entry)
+}
+
+async function collapseInsertIntoExistingRow(
+  client: PoolClient,
+  sheetId: string,
+  existingId: string,
+  payload: Record<string, unknown>,
+  cols: readonly string[],
+): Promise<Record<string, unknown> | null> {
+  const dedupCols = cols.filter((c) => c !== 'sheet_id')
+  const dedupSetParts = dedupCols.map((c, idx) => `"${c}" = COALESCE($${idx + 1}, "${c}")`)
+  const dedupSetParams = dedupCols.map((c) => payload[c])
+  const uq = await client.query<Record<string, unknown>>(
+    `UPDATE public.provider_sheet_rows
+     SET ${dedupSetParts.join(', ')}, "updated_at" = now()
+     WHERE id = $${dedupSetParams.length + 1}::uuid AND sheet_id = $${dedupSetParams.length + 2}::uuid
+     RETURNING *`,
+    [...dedupSetParams, existingId, sheetId],
+  )
+  return uq.rows[0] ?? null
 }
 
 function rowToDbPayload(
@@ -490,6 +572,9 @@ async function saveProviderSheetRowsCore(
     // Timestamp after the lock returns so `lock_wait_ms` (audit column) reflects contention.
     lockAcquiredMs = Date.now()
 
+    // Rows INSERTed earlier in this same request (Spencer Aug 2026: I:2 with DC:0 in one batch).
+    const batchIdentityRows: BatchIdentityRow[] = []
+
   for (let i = 0; i < rowsToProcess.length; i++) {
     const row = rowsToProcess[i]
     const id = String(row.id ?? '')
@@ -683,11 +768,7 @@ async function saveProviderSheetRowsCore(
       // dated = only if that existing row is recent (15 min), so we do not glue a new undated
       // visit onto last week's appointment.
       const incomingPatientId = payload.patient_id
-      const incomingApptDateRaw = payload.appointment_date
-      const incomingApptDate =
-        incomingApptDateRaw != null && String(incomingApptDateRaw).trim() !== ''
-          ? incomingApptDateRaw
-          : null
+      const incomingApptDate = normalizeApptDateForDedupe(payload.appointment_date)
       let idempotentUpdateApplied = false
       if (incomingPatientId != null && incomingPatientId !== '') {
         const dupCheck = await client.query<{ id: string }>(
@@ -712,34 +793,35 @@ async function saveProviderSheetRowsCore(
            LIMIT 1`,
           [sheetId, incomingPatientId, incomingApptDate],
         )
-        if (dupCheck.rowCount && dupCheck.rows[0]) {
-          const existingId = dupCheck.rows[0].id
-          // COALESCE on every column: incoming NULL never overwrites existing data. Incoming non-
-          // null does overwrite (so enrichment — adding CPT to a row that only had patient/date —
-          // still works). This mirrors PROTECTED_FROM_NULL's semantics but applied universally.
-          const dedupCols = cols.filter((c) => c !== 'sheet_id')
-          const dedupSetParts = dedupCols.map(
-            (c, idx) => `"${c}" = COALESCE($${idx + 1}, "${c}")`,
+        let collapseIntoId = dupCheck.rowCount && dupCheck.rows[0] ? dupCheck.rows[0].id : null
+        if (!collapseIntoId) {
+          const batchMatch = findBatchIdentityMatch(
+            batchIdentityRows,
+            String(incomingPatientId),
+            incomingApptDate,
           )
-          const dedupSetParams = dedupCols.map((c) => payload[c])
-          const uq = await client.query<Record<string, unknown>>(
-            `UPDATE public.provider_sheet_rows
-             SET ${dedupSetParts.join(', ')}, "updated_at" = now()
-             WHERE id = $${dedupSetParams.length + 1}::uuid AND sheet_id = $${dedupSetParams.length + 2}::uuid
-             RETURNING *`,
-            [...dedupSetParams, existingId, sheetId],
+          if (batchMatch) collapseIntoId = batchMatch.id
+        }
+        if (collapseIntoId) {
+          const merged = await collapseInsertIntoExistingRow(
+            client,
+            sheetId,
+            collapseIntoId,
+            payload,
+            cols,
           )
-          if (uq.rows[0]) {
-            savedIds.push(String(uq.rows[0].id))
-            savedRows.push(uq.rows[0])
+          if (merged) {
+            savedIds.push(String(merged.id))
+            savedRows.push(merged)
             idempotentUpdateApplied = true
             actionCounts.dedupe_collapses += 1
-            actionRefs.collapsed_pairs.push({ temp: id, into: String(uq.rows[0].id) })
+            actionRefs.collapsed_pairs.push({ temp: id, into: String(merged.id) })
+            trackBatchIdentityRow(batchIdentityRows, merged)
             // eslint-disable-next-line no-console
             console.warn('[provider_sheet_rows] collapsed duplicate INSERT into existing row', {
               sheetId,
               incomingTempId: id,
-              collapsedIntoRowId: existingId,
+              collapsedIntoRowId: collapseIntoId,
               patientId: incomingPatientId,
               appointmentDate: incomingApptDate,
               callerId,
@@ -763,6 +845,7 @@ async function saveProviderSheetRowsCore(
           savedRows.push(iq.rows[0])
           actionCounts.inserts += 1
           actionRefs.insert_row_ids.push(String(iq.rows[0].id))
+          trackBatchIdentityRow(batchIdentityRows, iq.rows[0])
         }
       }
     }

@@ -10,6 +10,8 @@ import {
   collectTempIdPromotions,
   getTempIdPromotions,
   mergeTempIdPromotions,
+  ensureStableNewRowId,
+  rowHasDataForSave,
   sheetTempIdPromotionKey,
 } from '@/lib/providerSheetRows'
 import { ROWS_PER_PROVIDER } from '@/lib/providerSheetBackups'
@@ -471,7 +473,7 @@ export default function ProviderSheetPage() {
         const updatedRows = rows.map(row => {
           if (row.id !== rowId) return row
           if (row.id.startsWith('empty-')) {
-            const newId = `new-${Date.now()}-${Math.random()}`
+            const newId = ensureStableNewRowId(row.id)
             const updated: SheetRow = {
               ...row,
               id: newId,
@@ -536,14 +538,8 @@ export default function ProviderSheetPage() {
   const handleReplaceProviderSheetRows = useCallback((providerId: string, rows: SheetRow[]) => {
     setProviderSheetRows(prev => {
       const normalized = rows.map((row) => {
-        const rowId = row.id.startsWith('empty-') && (
-          row.patient_id || row.patient_first_name || row.last_initial || row.patient_insurance ||
-          row.patient_copay != null || row.patient_coinsurance != null || row.appointment_date ||
-          row.cpt_code || row.appointment_status || row.claim_status || row.submit_date ||
-          row.insurance_payment || row.payment_date || row.insurance_adjustment ||
-          row.collected_from_patient || row.patient_pay_status || row.ar_date ||
-          row.total !== null || row.notes
-        ) ? `new-${Date.now()}-${Math.random()}` : row.id
+        const rowId =
+          row.id.startsWith('empty-') && rowHasDataForSave(row) ? ensureStableNewRowId(row.id) : row.id
         return applyProviderRowDerivedFields({
           ...row,
           id: rowId,

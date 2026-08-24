@@ -94,6 +94,21 @@ export function isUuid(id: string): boolean {
   return UUID_REGEX.test(id)
 }
 
+/** True for client-side temp row ids that the server treats as INSERT candidates. */
+export function isProviderSheetTempRowId(id: string): boolean {
+  return id.startsWith('empty-') || id.startsWith('new-')
+}
+
+/**
+ * Promote `empty-*` to a stable `new-*` id derived from the empty slot (not Date.now).
+ * Keeps the same temp id across debounced saves / queue replays until the server assigns a UUID.
+ */
+export function ensureStableNewRowId(rowId: string): string {
+  if (isUuid(rowId) || rowId.startsWith('new-')) return rowId
+  if (rowId.startsWith('empty-')) return `new-${rowId.slice('empty-'.length)}`
+  return rowId
+}
+
 /** sessionStorage key for temp-id → UUID promotions within this browser tab. */
 const TEMP_ID_PROMOTIONS_STORAGE_KEY = 'provider_sheet_temp_id_promotions'
 

@@ -12,6 +12,7 @@ import { parseDateOfServiceInput, toStoredString } from '@/lib/utils'
 import { computeBillingMetrics } from '@/lib/billingMetrics'
 import { isAccountsReceivableRowInMonth } from '@/lib/accountsReceivableInMonth'
 import { ROWS_PER_PROVIDER } from '@/lib/providerSheetBackups'
+import { ensureStableNewRowId } from '@/lib/providerSheetRows'
 import {
   sheetRowsToUiMatrix,
   providerSheetUiExportHeaders,
@@ -196,7 +197,7 @@ function mergeProviderRowFromGridRowForSync(
 }
 
 function buildSheetRowWithPatientIdMerge(baseRow: SheetRow, patientId: string, db: Patient | null): SheetRow {
-  const newId = baseRow.id.startsWith('empty-') ? `new-${Date.now()}-${Math.random()}` : baseRow.id
+  const newId = ensureStableNewRowId(baseRow.id)
   const merged: SheetRow = {
     ...baseRow,
     id: newId,
@@ -2083,7 +2084,6 @@ export default function ProvidersTab({
     }
 
     const updatedRows = [...baseRows]
-    let idCounter = 0
     let hadPatientIdMerge = false
     let hadPatientIdClear = false
     let hadDateColumnEdit = false
@@ -2165,9 +2165,9 @@ export default function ProvidersTab({
       
       const sheetRow = updatedRows[row]
       if (sheetRow) {
-        // Generate unique ID for empty rows
+        // Stable temp id per empty slot until the server assigns a UUID (not Date.now per keystroke).
         const needsNewId = sheetRow.id.startsWith('empty-')
-        const newId = needsNewId ? `new-${Date.now()}-${idCounter++}-${Math.random()}` : sheetRow.id
+        const newId = needsNewId ? ensureStableNewRowId(sheetRow.id) : sheetRow.id
         
         if (field === 'patient_id') {
           // Extract patient_id from dropdown value (format: "patient_id - first_name last_name") or raw input
