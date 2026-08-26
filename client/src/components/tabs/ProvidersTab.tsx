@@ -2029,13 +2029,6 @@ export default function ProvidersTab({
     const fieldsFull = showVisitTypeColumn
       ? ([...fieldsFullBase.slice(0, 9), 'visit_type', ...fieldsFullBase.slice(9)] as Array<keyof SheetRow>)
       : fieldsFullBase
-    const fieldsProviderViewBase: Array<keyof SheetRow> = [
-      'patient_id', 'patient_first_name', 'last_initial', 'patient_insurance', 'patient_copay', 'patient_coinsurance',
-      'appointment_date', 'cpt_code', 'appointment_status'
-    ]
-    const fieldsProviderView = showVisitTypeColumn
-      ? ([...fieldsProviderViewBase, 'visit_type'] as Array<keyof SheetRow>)
-      : fieldsProviderViewBase
     const fieldsOfficeStaffBase: Array<keyof SheetRow> = [
       'patient_id', 'patient_first_name', 'last_initial', 'patient_insurance', 'patient_copay', 'patient_coinsurance',
       'appointment_date', 'cpt_code', 'appointment_status', 'collected_from_patient', 'patient_pay_status', 'ar_date'
