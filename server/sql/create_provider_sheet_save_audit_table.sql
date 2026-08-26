@@ -6,8 +6,9 @@
 -- a save that succeeds always leaves a trace, and a save that failed leaves one with success=false.
 --
 -- PHI: this table intentionally stores ONLY structural fields — UUIDs, counts, timing, action
--- summary. No patient names, no insurance strings, no notes text. patient_id (an internal
--- identifier) is fine to reference indirectly via action.collapsed_pairs but never as a name.
+-- summary. No patient names, no insurance strings, no notes text. patient_id is never stored
+-- raw; when needed for duplication diagnosis, actions.insert_decisions uses a short SHA-256
+-- identity_hash of (sheet_id|patient_id|appointment_date) plus has_patient/has_date booleans.
 --
 -- Retention: 30 days is enough for the debug loop we care about (client reports usually surface
 -- within a day or two of the incident). Run the retention query at the bottom on a schedule.

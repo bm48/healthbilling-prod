@@ -1,3 +1,4 @@
+import { createHash } from 'crypto'
 import { Router } from 'express'
 import nodemailer from 'nodemailer'
 import type { PoolClient } from 'pg'
@@ -92,10 +93,88 @@ function normalizePatientIdForDedupe(raw: unknown): string | null {
   return s === '' ? null : s
 }
 
+/** PHI-safe fingerprint of (sheet, patient, date). Same visit → same hash across requests; never stores raw patient_id. */
+function providerSheetIdentityHash(
+  sheetId: string,
+  patientId: string | null,
+  apptDate: string | null,
+): string | null {
+  if (!patientId) return null
+  return createHash('sha256')
+    .update(`${sheetId}|${patientId}|${apptDate ?? ''}`)
+    .digest('hex')
+    .slice(0, 16)
+}
+
+function classifyCollapseReason(
+  incomingApptDate: string | null,
+  existingApptDate: string | null,
+  via: 'db' | 'batch',
+): string {
+  if (incomingApptDate === existingApptDate) {
+    return via === 'batch' ? 'batch_exact_date' : 'exact_date'
+  }
+  if (incomingApptDate != null && existingApptDate == null) {
+    return via === 'batch' ? 'batch_dated_onto_undated' : 'dated_onto_undated'
+  }
+  if (incomingApptDate == null && existingApptDate != null) {
+    return via === 'batch' ? 'batch_undated_onto_dated' : 'undated_onto_recent_dated'
+  }
+  return via === 'batch' ? 'batch_match' : 'identity_match'
+}
+
+/** One decision for an incoming non-UUID (temp) row — written into audit `actions.insert_decisions`. */
+type InsertDecision = {
+  temp_id: string
+  outcome: 'insert' | 'collapse' | 'reject'
+  into_id: string | null
+  reason: string
+  has_patient: boolean
+  has_date: boolean
+  identity_hash: string | null
+  match_via: 'db' | 'batch' | null
+}
+
 type BatchIdentityRow = {
   id: string
   patientId: string
   appointmentDate: string | null
+}
+
+function buildPayloadDiag(
+  sheetId: string,
+  rows: Record<string, unknown>[],
+): Record<string, unknown> {
+  let tempIdCount = 0
+  let uuidCount = 0
+  const tempIdSeen = new Map<string, number>()
+  const identityHashCounts = new Map<string, number>()
+  for (const row of rows) {
+    const id = String(row.id ?? '')
+    if (isUuid(id)) {
+      uuidCount += 1
+    } else {
+      tempIdCount += 1
+      tempIdSeen.set(id, (tempIdSeen.get(id) ?? 0) + 1)
+      const patientId = normalizePatientIdForDedupe(row.patient_id)
+      const apptDate = normalizeApptDateForDedupe(row.appointment_date)
+      const hash = providerSheetIdentityHash(sheetId, patientId, apptDate)
+      if (hash) identityHashCounts.set(hash, (identityHashCounts.get(hash) ?? 0) + 1)
+    }
+  }
+  const duplicateTempIds = [...tempIdSeen.entries()]
+    .filter(([, n]) => n > 1)
+    .map(([id, count]) => ({ temp_id: id, count }))
+  const identityHashDupes = [...identityHashCounts.entries()]
+    .filter(([, n]) => n > 1)
+    .map(([hash, count]) => ({ identity_hash: hash, count }))
+  return {
+    temp_id_count: tempIdCount,
+    uuid_count: uuidCount,
+    unique_identity_hashes_among_temps: identityHashCounts.size,
+    duplicate_temp_ids: duplicateTempIds,
+    identity_hash_dupes_among_temps: identityHashDupes,
+  }
 }
 
 /** Mirrors the DB dedupe SELECT in saveProviderSheetRowsCore (exact date, dated→undated, recent undated→dated). */
@@ -459,6 +538,14 @@ interface SaveAuditContext {
   /** Client-provided hint for what triggered the save: 'debounced', 'pagehide-keepalive',
    *  'restore', 'manual', etc. Used to filter the audit viewer by trigger. */
   source?: string
+  /** Stable per-tab session id for (clinic, provider, month) — groups debounce + queue + pagehide. */
+  editSessionId?: string
+  /** Monotonic save counter in this browser tab (helps order overlapping requests). */
+  clientSaveSeq?: number
+  /** How many provider-sheet saves were already in flight when this request left the client. */
+  inFlightAtSend?: number
+  /** How many temp ids were remapped to UUIDs via the client promotion map before POST. */
+  promotionsAppliedCount?: number
 }
 
 /** Saves provider sheet rows and awaits invoice recompute for the clinic/month/year. */
@@ -491,6 +578,11 @@ async function saveProviderSheetRowsCore(
     collapsed_pairs: [] as { temp: string; into: string }[],
     /** UUIDs the caller asked to delete (only ones actually deleted after the same-batch guard). */
     deleted_row_ids: [] as string[],
+    /**
+     * Per temp-row decision (PHI-free). After a duplication incident, filter for I>0 and read
+     * reasons: no_match vs patient_less_stray vs exact_date collapses explain the cause.
+     */
+    insert_decisions: [] as InsertDecision[],
   }
   let lockAcquiredMs: number | null = null
   let sheetIdForAudit: string | null = null
@@ -546,6 +638,22 @@ async function saveProviderSheetRowsCore(
   const rowsToProcess = rows
     .filter((r: unknown) => typeof r === 'object' && r !== null && rowHasData(r as Record<string, unknown>))
     .map((r: unknown) => r as Record<string, unknown>)
+
+  const buildActionsPayload = (): Record<string, unknown> => {
+    const clientDiag: Record<string, unknown> = {}
+    if (auditContext?.editSessionId) clientDiag.edit_session_id = auditContext.editSessionId
+    if (auditContext?.clientSaveSeq != null) clientDiag.client_save_seq = auditContext.clientSaveSeq
+    if (auditContext?.inFlightAtSend != null) clientDiag.in_flight_at_send = auditContext.inFlightAtSend
+    if (auditContext?.promotionsAppliedCount != null) {
+      clientDiag.promotions_applied_count = auditContext.promotionsAppliedCount
+    }
+    return {
+      ...actionCounts,
+      ...actionRefs,
+      payload_diag: buildPayloadDiag(sheetId, rowsToProcess),
+      client_diag: Object.keys(clientDiag).length > 0 ? clientDiag : null,
+    }
+  }
 
   const cols = PROVIDER_SHEET_ROW_COLS
   const savedIds: string[] = []
@@ -733,6 +841,16 @@ async function saveProviderSheetRowsCore(
           selectedMonthKey,
         })
         actionCounts.rejected_patient_less += 1
+        actionRefs.insert_decisions.push({
+          temp_id: id,
+          outcome: 'reject',
+          into_id: null,
+          reason: 'patient_less_stray',
+          has_patient: false,
+          has_date: normalizeApptDateForDedupe(payload.appointment_date) != null,
+          identity_hash: null,
+          match_via: null,
+        })
         continue
       }
       // Server-side idempotency dedupe (mitigation for the client-side pagehide/debounce race —
@@ -782,10 +900,16 @@ async function saveProviderSheetRowsCore(
       // visit onto last week's appointment.
       const incomingPatientId = normalizePatientIdForDedupe(payload.patient_id)
       const incomingApptDate = normalizeApptDateForDedupe(payload.appointment_date)
+      const decisionBase = {
+        temp_id: id,
+        has_patient: incomingPatientId != null,
+        has_date: incomingApptDate != null,
+        identity_hash: providerSheetIdentityHash(sheetId, incomingPatientId, incomingApptDate),
+      }
       let idempotentUpdateApplied = false
       if (incomingPatientId != null) {
-        const dupCheck = await client.query<{ id: string }>(
-          `SELECT id FROM public.provider_sheet_rows
+        const dupCheck = await client.query<{ id: string; appointment_date: string | null }>(
+          `SELECT id, appointment_date FROM public.provider_sheet_rows
            WHERE sheet_id = $1::uuid
              AND BTRIM(patient_id::text) = $2
              AND (
@@ -807,13 +931,22 @@ async function saveProviderSheetRowsCore(
           [sheetId, incomingPatientId, incomingApptDate],
         )
         let collapseIntoId = dupCheck.rowCount && dupCheck.rows[0] ? dupCheck.rows[0].id : null
+        let existingApptDateForReason: string | null =
+          dupCheck.rowCount && dupCheck.rows[0]
+            ? normalizeApptDateForDedupe(dupCheck.rows[0].appointment_date)
+            : null
+        let matchVia: 'db' | 'batch' | null = collapseIntoId ? 'db' : null
         if (!collapseIntoId) {
           const batchMatch = findBatchIdentityMatch(
             batchIdentityRows,
             incomingPatientId,
             incomingApptDate,
           )
-          if (batchMatch) collapseIntoId = batchMatch.id
+          if (batchMatch) {
+            collapseIntoId = batchMatch.id
+            existingApptDateForReason = batchMatch.appointmentDate
+            matchVia = 'batch'
+          }
         }
         if (collapseIntoId) {
           const merged = await collapseInsertIntoExistingRow(
@@ -829,6 +962,17 @@ async function saveProviderSheetRowsCore(
             idempotentUpdateApplied = true
             actionCounts.dedupe_collapses += 1
             actionRefs.collapsed_pairs.push({ temp: id, into: String(merged.id) })
+            actionRefs.insert_decisions.push({
+              ...decisionBase,
+              outcome: 'collapse',
+              into_id: String(merged.id),
+              reason: classifyCollapseReason(
+                incomingApptDate,
+                existingApptDateForReason,
+                matchVia ?? 'db',
+              ),
+              match_via: matchVia,
+            })
             trackBatchIdentityRow(batchIdentityRows, merged)
             // eslint-disable-next-line no-console
             console.warn('[provider_sheet_rows] collapsed duplicate INSERT into existing row', {
@@ -858,6 +1002,13 @@ async function saveProviderSheetRowsCore(
           savedRows.push(iq.rows[0])
           actionCounts.inserts += 1
           actionRefs.insert_row_ids.push(String(iq.rows[0].id))
+          actionRefs.insert_decisions.push({
+            ...decisionBase,
+            outcome: 'insert',
+            into_id: String(iq.rows[0].id),
+            reason: incomingPatientId == null ? 'no_patient_money_or_notes' : 'no_match',
+            match_via: null,
+          })
           trackBatchIdentityRow(batchIdentityRows, iq.rows[0])
         }
       }
@@ -920,7 +1071,7 @@ async function saveProviderSheetRowsCore(
         elapsedMs: Date.now() - requestStartMs,
         success: successForAudit,
         errorMessage: errorMessageForAudit,
-        actions: { ...actionCounts, ...actionRefs },
+        actions: buildActionsPayload(),
       })
     } catch (auditErr) {
       // eslint-disable-next-line no-console
@@ -955,7 +1106,7 @@ async function saveProviderSheetRowsCore(
       elapsedMs: Date.now() - requestStartMs,
       success: true,
       errorMessage: null,
-      actions: { ...actionCounts, ...actionRefs },
+      actions: buildActionsPayload(),
     })
   } catch (auditErr) {
     // eslint-disable-next-line no-console
@@ -1006,6 +1157,27 @@ async function handleSaveProviderSheetRows(req: import('express').Request, res: 
   // Length-capped so a malformed client can't blow up the audit row.
   const correlationId = typeof req.body?.correlationId === 'string' ? req.body.correlationId.trim().slice(0, 128) : undefined
   const source = typeof req.body?.source === 'string' ? req.body.source.trim().slice(0, 64) : undefined
+  const editSessionId =
+    typeof req.body?.editSessionId === 'string' ? req.body.editSessionId.trim().slice(0, 128) : undefined
+  const clientSaveSeq =
+    typeof req.body?.clientSaveSeq === 'number' && Number.isFinite(req.body.clientSaveSeq)
+      ? Math.floor(req.body.clientSaveSeq)
+      : typeof req.body?.clientSaveSeq === 'string' && /^\d+$/.test(req.body.clientSaveSeq.trim())
+        ? parseInt(req.body.clientSaveSeq.trim(), 10)
+        : undefined
+  const inFlightAtSend =
+    typeof req.body?.inFlightAtSend === 'number' && Number.isFinite(req.body.inFlightAtSend)
+      ? Math.max(0, Math.floor(req.body.inFlightAtSend))
+      : typeof req.body?.inFlightAtSend === 'string' && /^\d+$/.test(req.body.inFlightAtSend.trim())
+        ? parseInt(req.body.inFlightAtSend.trim(), 10)
+        : undefined
+  const promotionsAppliedCount =
+    typeof req.body?.promotionsAppliedCount === 'number' && Number.isFinite(req.body.promotionsAppliedCount)
+      ? Math.max(0, Math.floor(req.body.promotionsAppliedCount))
+      : typeof req.body?.promotionsAppliedCount === 'string' &&
+          /^\d+$/.test(req.body.promotionsAppliedCount.trim())
+        ? parseInt(req.body.promotionsAppliedCount.trim(), 10)
+        : undefined
 
   if (!clinicId || !providerId || !selectedMonthKey) {
     res.status(400).json({ error: 'Missing clinicId, providerId, or selectedMonthKey' })
@@ -1020,7 +1192,14 @@ async function handleSaveProviderSheetRows(req: import('express').Request, res: 
       selectedMonthKey,
       rows,
       knownDeletedIds,
-      { correlationId, source },
+      {
+        correlationId,
+        source,
+        editSessionId,
+        clientSaveSeq,
+        inFlightAtSend,
+        promotionsAppliedCount,
+      },
     )
     res.json({ success: true, saved: result.saved, rows: result.rows, invoiceRecomputed: result.invoiceRecomputed })
   } catch (err) {

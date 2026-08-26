@@ -14,6 +14,8 @@ import {
   ensureStableNewRowId,
   rowHasDataForSave,
   sheetTempIdPromotionKey,
+  countTempIdPromotionsApplied,
+  buildProviderSheetSaveAuditFields,
 } from '@/lib/providerSheetRows'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
 import { fetchBackupCsvAsSheetRows, padSheetRowsToBase, ROWS_PER_PROVIDER } from '@/lib/providerSheetBackups'
@@ -2608,6 +2610,7 @@ export default function ClinicDetail() {
     // remount). Without this, a second POST still carrying `new-*` INSERTs a duplicate row.
     const promotionKey = sheetTempIdPromotionKey(clinicId, providerId, monthKey)
     const rowsForThisSave = applyTempIdPromotions(rowsToSave, getTempIdPromotions(promotionKey))
+    const promotionsAppliedCount = countTempIdPromotionsApplied(rowsToSave, rowsForThisSave)
 
     // Filter out only truly empty rows (empty- rows with no data)
     const rowsToProcess = rowsForThisSave.filter(r => {
@@ -2682,6 +2685,7 @@ export default function ClinicDetail() {
         // (pagehide-drain / restore / delete / add-row / debounced / etc.) so the audit viewer
         // can filter "which client trigger caused this save?" without guessing from timing.
         source: source ?? 'unknown',
+        promotionsAppliedCount,
       })
       didPersist = true
       // Record the successful-save timestamp BEFORE any post-save state work so the drain effect's
@@ -3214,25 +3218,25 @@ export default function ClinicDetail() {
           // ids. Real `pagehide` (unload) still sends so a closing tab can finish the write.
           if (fromVisibility && saveProviderSheetInProgressRef.current.has(entryProviderId)) return
 
-          const rowsToSend = applyTempIdPromotions(
-            rows,
-            getTempIdPromotions(sheetTempIdPromotionKey(entryClinicId, entryProviderId, entryMonthKey)),
-          )
+          const promotionKey = sheetTempIdPromotionKey(entryClinicId, entryProviderId, entryMonthKey)
+          const rowsToSend = applyTempIdPromotions(rows, getTempIdPromotions(promotionKey))
+          const promotionsAppliedCount = countTempIdPromotionsApplied(rows, rowsToSend)
 
-          // correlationId + source populate the server audit table so the pagehide-keepalive path
-          // shows up distinctly in the save-audit viewer. Every pagehide fire gets a fresh ID —
-          // this POST is fire-and-forget with no matching debounced-save to correlate against.
-          const correlationId =
-            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-              ? crypto.randomUUID()
-              : `corr-pagehide-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+          // Audit fields (correlation + edit session + race counters) so pagehide races are
+          // diagnosable from a copied save-audit export. Fire-and-forget — no response to apply.
           const body = JSON.stringify({
             clinicId: entryClinicId,
             providerId: entryProviderId,
             selectedMonthKey: entryMonthKey,
             rows: rowsToSend,
-            correlationId,
-            source: 'pagehide-keepalive',
+            ...buildProviderSheetSaveAuditFields(
+              {
+                clinicId: entryClinicId,
+                providerId: entryProviderId,
+                selectedMonthKey: entryMonthKey,
+              },
+              { source: 'pagehide-keepalive', promotionsAppliedCount },
+            ),
           })
           fetch(savePendingUrl, {
             method: 'POST',

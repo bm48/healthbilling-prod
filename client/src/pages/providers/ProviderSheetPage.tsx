@@ -13,6 +13,8 @@ import {
   ensureStableNewRowId,
   rowHasDataForSave,
   sheetTempIdPromotionKey,
+  countTempIdPromotionsApplied,
+  buildProviderSheetSaveAuditFields,
 } from '@/lib/providerSheetRows'
 import { ROWS_PER_PROVIDER } from '@/lib/providerSheetBackups'
 import { enrichSheetRowsFromPatients, applyCoPatientSnapshotToSheetRows } from '@/lib/enrichProviderSheetRowsFromPatients'
@@ -575,6 +577,7 @@ export default function ProviderSheetPage() {
       // Remap any temp ids this tab already promoted to UUIDs so a later POST UPDATEs, not INSERTs.
       const promotionKey = sheetTempIdPromotionKey(clinicId, providerId, selectedMonthKey ?? `${targetYear}-${targetMonth}`)
       const rowsForThisSave = applyTempIdPromotions(rowsToSave, getTempIdPromotions(promotionKey))
+      const promotionsAppliedCount = countTempIdPromotionsApplied(rowsToSave, rowsForThisSave)
 
       // Step 1 — Filter empty-* placeholder rows with no data (mirrors ClinicDetail line 2462).
       const rowsToProcess = rowsForThisSave.filter(r => {
@@ -637,7 +640,7 @@ export default function ProviderSheetPage() {
           clinicId,
           providerId,
           selectedMonthKey: selectedMonthKey ?? `${targetYear}-${targetMonth}`,
-        }, { source: 'provider-sheet-page' })
+        }, { source: 'provider-sheet-page', promotionsAppliedCount })
         didPersist = true
 
         // Step 5 — Fetch fresh patients BEFORE the state merge (mirrors ClinicDetail line 2523).
@@ -925,21 +928,18 @@ export default function ProviderSheetPage() {
           // Real unload (`pagehide`) still sends so a closing tab can finish the write.
           if (fromVisibility && saveProviderSheetInProgressRef.current.has(pid)) return
 
-          const rowsToSend = applyTempIdPromotions(
-            rows,
-            getTempIdPromotions(sheetTempIdPromotionKey(cid, pid, mk)),
-          )
-          const correlationId =
-            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-              ? crypto.randomUUID()
-              : `corr-pagehide-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+          const promotionKey = sheetTempIdPromotionKey(cid, pid, mk)
+          const rowsToSend = applyTempIdPromotions(rows, getTempIdPromotions(promotionKey))
+          const promotionsAppliedCount = countTempIdPromotionsApplied(rows, rowsToSend)
           const body = JSON.stringify({
             clinicId: cid,
             providerId: pid,
             selectedMonthKey: mk,
             rows: rowsToSend,
-            correlationId,
-            source: 'pagehide-keepalive',
+            ...buildProviderSheetSaveAuditFields(
+              { clinicId: cid, providerId: pid, selectedMonthKey: mk },
+              { source: 'pagehide-keepalive', promotionsAppliedCount },
+            ),
           })
           fetch(savePendingUrl, {
             method: 'POST',

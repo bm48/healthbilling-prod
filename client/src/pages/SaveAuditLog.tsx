@@ -164,7 +164,20 @@ function actionSummary(actions: Record<string, unknown>): string {
   const rejects = Number(actions.rejected_patient_less ?? 0)
   const deletes = Number(actions.deletes ?? 0)
   if (actions.row_replace) return 'row_replace'
-  return `U:${updates} I:${inserts} DC:${collapses} RJ:${rejects} D:${deletes}`
+  const base = `U:${updates} I:${inserts} DC:${collapses} RJ:${rejects} D:${deletes}`
+  const decisions = Array.isArray(actions.insert_decisions) ? actions.insert_decisions : null
+  if (!decisions || decisions.length === 0) return base
+  const reasons = new Map<string, number>()
+  for (const d of decisions) {
+    if (!d || typeof d !== 'object') continue
+    const reason = String((d as { reason?: unknown }).reason ?? 'unknown')
+    reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
+  }
+  const reasonBits = [...reasons.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([r, n]) => `${r}×${n}`)
+    .join(',')
+  return reasonBits ? `${base} [${reasonBits}]` : base
 }
 
 function rowToCopyText(r: AuditRow, clinicName?: string, providerName?: string): string {
@@ -481,6 +494,9 @@ export default function SaveAuditLog() {
           <p className="text-sm text-white/70 mt-1 max-w-3xl">
             One row per save batch across provider billing sheets, Patient Info, Accounts Receivable,
             Billing To-Do, and Provider Pay. Amber rows are same-sheet races within a minute.
+            Provider-sheet actions include <span className="text-white/90">insert_decisions</span>{' '}
+            (reason per temp insert), <span className="text-white/90">payload_diag</span>, and{' '}
+            <span className="text-white/90">client_diag</span> for duplication post-mortems.
             Filter, then use <span className="text-white/90">Copy all rows</span> to copy every
             matching row in the same format as the per-row Copy button.
           </p>

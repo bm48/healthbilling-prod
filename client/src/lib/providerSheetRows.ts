@@ -245,6 +245,14 @@ export interface SaveObservability {
    *  crypto.randomUUID(). Only pass an override if you're threading a correlation ID from a
    *  larger flow that already has one (e.g., restore → save → post-restore fetch). */
   correlationId?: string
+  /** Per-tab session id for (clinic, provider, month). Auto-filled if omitted. */
+  editSessionId?: string
+  /** Monotonic save counter in this tab. Auto-filled if omitted. */
+  clientSaveSeq?: number
+  /** Saves already in flight when this request is sent. Auto-filled if omitted. */
+  inFlightAtSend?: number
+  /** How many temp→UUID remaps applyTempIdPromotions performed before this POST. */
+  promotionsAppliedCount?: number
 }
 
 /** UUID for `correlationId` when the browser exposes crypto.randomUUID (all modern browsers +
@@ -257,6 +265,102 @@ function generateCorrelationId(): string {
   return `corr-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
 }
 
+/** Tab-local counters so overlapping saves are visible in the audit log after the fact. */
+let providerSheetSaveInFlight = 0
+let providerSheetSaveSeq = 0
+
+/** Stable edit-session id for one browser tab + clinic/provider/month (survives remounts in-tab). */
+export function getProviderSheetEditSessionId(
+  clinicId: string,
+  providerId: string,
+  monthKey: string,
+): string {
+  const key = `ps_edit_session_${clinicId}_${providerId}_${monthKey}`
+  try {
+    const existing = sessionStorage.getItem(key)
+    if (existing && existing.length > 0) return existing
+    const id = generateCorrelationId().replace(/^corr-/, 'sess-')
+    sessionStorage.setItem(key, id)
+    return id
+  } catch {
+    return `sess-nosession-${clinicId.slice(0, 8)}-${providerId.slice(0, 8)}-${monthKey}`
+  }
+}
+
+/**
+ * Race/context fields for provider sheet saves (API body + pagehide keepalive).
+ * Call `end()` in a finally after the request finishes so in-flight counting stays accurate.
+ */
+export function beginProviderSheetSaveClientDiag(context: {
+  clinicId: string
+  providerId: string
+  selectedMonthKey: string
+}): {
+  editSessionId: string
+  clientSaveSeq: number
+  inFlightAtSend: number
+  end: () => void
+} {
+  const inFlightAtSend = providerSheetSaveInFlight
+  providerSheetSaveInFlight += 1
+  providerSheetSaveSeq += 1
+  return {
+    editSessionId: getProviderSheetEditSessionId(
+      context.clinicId,
+      context.providerId,
+      context.selectedMonthKey,
+    ),
+    clientSaveSeq: providerSheetSaveSeq,
+    inFlightAtSend,
+    end: () => {
+      providerSheetSaveInFlight = Math.max(0, providerSheetSaveInFlight - 1)
+    },
+  }
+}
+
+/** Count how many row ids changed when applying temp→UUID promotions (for audit only). */
+export function countTempIdPromotionsApplied(
+  before: { id: string }[],
+  after: { id: string }[],
+): number {
+  const n = Math.min(before.length, after.length)
+  let count = 0
+  for (let i = 0; i < n; i++) {
+    if (before[i]?.id !== after[i]?.id) count += 1
+  }
+  return count
+}
+
+/**
+ * Fields to merge into a save POST body for duplication post-mortems (pagehide keepalive).
+ * Safe / PHI-free. Bumps save_seq but does not mark in-flight (request is fire-and-forget).
+ */
+export function buildProviderSheetSaveAuditFields(
+  context: { clinicId: string; providerId: string; selectedMonthKey: string },
+  extras?: {
+    correlationId?: string
+    source?: string
+    promotionsAppliedCount?: number
+  },
+): Record<string, unknown> {
+  providerSheetSaveSeq += 1
+  const fields: Record<string, unknown> = {
+    correlationId: extras?.correlationId ?? generateCorrelationId(),
+    source: extras?.source ?? 'unknown',
+    editSessionId: getProviderSheetEditSessionId(
+      context.clinicId,
+      context.providerId,
+      context.selectedMonthKey,
+    ),
+    clientSaveSeq: providerSheetSaveSeq,
+    inFlightAtSend: providerSheetSaveInFlight,
+  }
+  if (extras?.promotionsAppliedCount != null) {
+    fields.promotionsAppliedCount = extras.promotionsAppliedCount
+  }
+  return fields
+}
+
 async function saveSheetRowsViaApi(
   rows: SheetRow[],
   context: SaveSheetRowsContext,
@@ -266,40 +370,51 @@ async function saveSheetRowsViaApi(
   const token = getAuthToken()
   if (!token) throw new Error('Not signed in')
 
-  const body: Record<string, unknown> = {
-    clinicId: context.clinicId,
-    providerId: context.providerId,
-    selectedMonthKey: context.selectedMonthKey,
-    rows,
-    correlationId: observability?.correlationId ?? generateCorrelationId(),
-    source: observability?.source ?? 'unknown',
-  }
-  if (knownDeletedIds !== undefined) {
-    body.knownDeletedIds = knownDeletedIds.filter((id) => isUuid(id))
-  }
+  const diag = beginProviderSheetSaveClientDiag(context)
+  try {
+    const body: Record<string, unknown> = {
+      clinicId: context.clinicId,
+      providerId: context.providerId,
+      selectedMonthKey: context.selectedMonthKey,
+      rows,
+      correlationId: observability?.correlationId ?? generateCorrelationId(),
+      source: observability?.source ?? 'unknown',
+      editSessionId: observability?.editSessionId ?? diag.editSessionId,
+      clientSaveSeq: observability?.clientSaveSeq ?? diag.clientSaveSeq,
+      inFlightAtSend: observability?.inFlightAtSend ?? diag.inFlightAtSend,
+    }
+    if (observability?.promotionsAppliedCount != null) {
+      body.promotionsAppliedCount = observability.promotionsAppliedCount
+    }
+    if (knownDeletedIds !== undefined) {
+      body.knownDeletedIds = knownDeletedIds.filter((id) => isUuid(id))
+    }
 
-  const base = getApiBase()
-  const res = await fetch(`${base}/api/save-provider-sheet-rows`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-  })
-  const payload = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    throw new Error(typeof payload?.error === 'string' ? payload.error : `Save failed (${res.status})`)
-  }
+    const base = getApiBase()
+    const res = await fetch(`${base}/api/save-provider-sheet-rows`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    })
+    const payload = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      throw new Error(typeof payload?.error === 'string' ? payload.error : `Save failed (${res.status})`)
+    }
 
-  const apiRows = (payload?.rows ?? []) as ProviderSheetRowDb[]
-  let apiIdx = 0
-  return rows.map((row) => {
-    if (!rowHasDataForSave(row)) return row
-    const dbRow = apiRows[apiIdx++]
-    if (!dbRow) return row
-    return dbToSheetRow(dbRow)
-  })
+    const apiRows = (payload?.rows ?? []) as ProviderSheetRowDb[]
+    let apiIdx = 0
+    return rows.map((row) => {
+      if (!rowHasDataForSave(row)) return row
+      const dbRow = apiRows[apiIdx++]
+      if (!dbRow) return row
+      return dbToSheetRow(dbRow)
+    })
+  } finally {
+    diag.end()
+  }
 }
 
 /**
