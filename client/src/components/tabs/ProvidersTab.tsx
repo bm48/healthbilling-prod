@@ -2048,11 +2048,11 @@ export default function ProvidersTab({
     // reference ORIGINAL row positions (data:11 for Ins Pay, data:6 for DOS, etc.). A compacted
     // fields array would map data:11 → wrong field (ar_date instead of insurance_payment), which
     // is the bug that surfaced when editing Ins Pay in minimal mode cleared DOS/Claim/MostRecent.
+    // Provider level-1 columns also use full-layout data indices (0,1,2,6,7,8) even though fewer
+    // columns are visible — keep fieldsFull so col=6 always means appointment_date.
     const fields: Array<keyof SheetRow> = officeStaffView
       ? fieldsOfficeStaff
-      : isProviderView
-        ? (providerLevel === 2 ? fieldsFull : fieldsProviderView)
-        : fieldsFull
+      : fieldsFull
     
     const dateFields: (keyof SheetRow)[] = ['appointment_date', 'submit_date', 'payment_date', 'ar_date']
     // Start from latest ref when same provider so rapid edits accumulate (parent state may not have updated yet).

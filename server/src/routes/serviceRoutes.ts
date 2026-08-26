@@ -86,6 +86,12 @@ function normalizeApptDateForDedupe(raw: unknown): string | null {
   return String(raw).trim()
 }
 
+function normalizePatientIdForDedupe(raw: unknown): string | null {
+  if (raw == null) return null
+  const s = String(raw).trim()
+  return s === '' ? null : s
+}
+
 type BatchIdentityRow = {
   id: string
   patientId: string
@@ -129,12 +135,12 @@ function findBatchIdentityMatch(
 }
 
 function trackBatchIdentityRow(batchRows: BatchIdentityRow[], savedRow: Record<string, unknown>): void {
-  const patientId = savedRow.patient_id
-  if (patientId == null || patientId === '') return
+  const patientId = normalizePatientIdForDedupe(savedRow.patient_id)
+  if (!patientId) return
   const id = String(savedRow.id)
   const entry: BatchIdentityRow = {
     id,
-    patientId: String(patientId),
+    patientId,
     appointmentDate: normalizeApptDateForDedupe(savedRow.appointment_date),
   }
   const existingIdx = batchRows.findIndex((r) => r.id === id)
@@ -642,6 +648,13 @@ async function saveProviderSheetRowsCore(
         'patient_insurance',
         'patient_copay',
         'patient_coinsurance',
+        // Pay / claim workflow status (2026-08-26). Jenali: rows with Ins Pay lost their green
+        // "Paid" badge after overlapping saves. claim_status was already protected; patient_pay_status
+        // was not — a stale null payload from My Sheet / debounce / pagehide wiped Paid while
+        // COALESCE kept insurance_payment. Colors travel with the status badges.
+        'patient_pay_status',
+        'patient_pay_status_color',
+        'claim_status_color',
       ])
       const rawClearCols = (row as Record<string, unknown>)._clearColumns
       const clearCols = new Set(
@@ -767,14 +780,14 @@ async function saveProviderSheetRowsCore(
       // existing undated = complete the in-progress row (always). Incoming undated + existing
       // dated = only if that existing row is recent (15 min), so we do not glue a new undated
       // visit onto last week's appointment.
-      const incomingPatientId = payload.patient_id
+      const incomingPatientId = normalizePatientIdForDedupe(payload.patient_id)
       const incomingApptDate = normalizeApptDateForDedupe(payload.appointment_date)
       let idempotentUpdateApplied = false
-      if (incomingPatientId != null && incomingPatientId !== '') {
+      if (incomingPatientId != null) {
         const dupCheck = await client.query<{ id: string }>(
           `SELECT id FROM public.provider_sheet_rows
            WHERE sheet_id = $1::uuid
-             AND patient_id = $2
+             AND BTRIM(patient_id::text) = $2
              AND (
                NULLIF(BTRIM(appointment_date::text), '') IS NOT DISTINCT FROM $3
                OR (
@@ -797,7 +810,7 @@ async function saveProviderSheetRowsCore(
         if (!collapseIntoId) {
           const batchMatch = findBatchIdentityMatch(
             batchIdentityRows,
-            String(incomingPatientId),
+            incomingPatientId,
             incomingApptDate,
           )
           if (batchMatch) collapseIntoId = batchMatch.id
