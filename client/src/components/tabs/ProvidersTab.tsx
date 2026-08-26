@@ -2351,7 +2351,14 @@ export default function ProvidersTab({
             const raw = String(newValue).trim()
             strVal = validStatuses.find((s) => s.toLowerCase() === raw.toLowerCase()) ?? raw
           }
-          updatedRows[row] = { ...sheetRow, id: newId, [field]: strVal, updated_at: new Date().toISOString() } as SheetRow
+          const status = statusColors.find((s) => s.status === strVal && s.type === 'appointment')
+          updatedRows[row] = {
+            ...sheetRow,
+            id: newId,
+            appointment_status: strVal,
+            appointment_status_color: status?.color || null,
+            updated_at: new Date().toISOString(),
+          } as SheetRow
         } else if (field === 'visit_type') {
           // Accept the value from any path: checkbox toggles deliver a boolean, fill-down / paste
           // may deliver the underlying string ('Telehealth' / 'In-person'), and clears come through
@@ -2402,9 +2409,6 @@ export default function ProvidersTab({
                 'claim_status_color',
               ]
             }
-          } else if (field === 'appointment_status') {
-            const status = statusColors.find((s) => s.status === value && s.type === 'appointment')
-            updated.appointment_status_color = status?.color || null
           } else if (field === 'payment_date') {
             const monthName = (value ?? '').replace(/^(1st|2nd)\s+/i, '').trim()
             const month = statusColors.find((s) => s.status === monthName && s.type === 'month')
