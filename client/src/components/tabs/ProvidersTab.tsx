@@ -2369,7 +2369,52 @@ export default function ProvidersTab({
             const s = (value ?? '').trim()
             if (s !== '' && /^-?\d*\.?\d*$/.test(s)) value = sheetRow.submit_date ?? null
           }
-          updatedRows[row] = { ...sheetRow, id: newId, [field]: value, updated_at: new Date().toISOString() } as SheetRow
+          // Canonicalize known dropdown statuses (trim + match official spelling) so paste/fill
+          // with stray whitespace still persists and color lookup succeeds.
+          if (field === 'patient_pay_status' && value != null) {
+            const valid = ['Paid', 'CC declined', 'Secondary', 'Refunded', 'Payment Plan', 'Waiting on Claim', 'Collections']
+            const raw = value.trim()
+            value = valid.find((s) => s.toLowerCase() === raw.toLowerCase()) ?? raw
+          } else if (field === 'claim_status' && value != null) {
+            const valid = ['Claim Sent', 'N/A', 'Paid', 'Deductible', 'RS', 'IP', 'Pending Pay', 'Denial', 'Rejected', 'No Coverage']
+            const raw = value.trim()
+            value = valid.find((s) => s.toLowerCase() === raw.toLowerCase()) ?? raw
+          }
+          const updated = { ...sheetRow, id: newId, [field]: value, updated_at: new Date().toISOString() } as SheetRow
+          // Keep *_color in sync with ClinicDetail so badges survive refresh and Admin Tracking
+          // can use stored colors. Also tag intentional clears so the server COALESCE guard
+          // (PROTECTED_FROM_NULL) does not silently ignore a user-cleared Pt Pay / Claim status.
+          if (field === 'patient_pay_status') {
+            const status = statusColors.find((s) => s.status === value && s.type === 'patient_pay')
+            updated.patient_pay_status_color = status?.color || null
+            if (value == null) {
+              ;(updated as unknown as { _clearColumns: string[] })._clearColumns = [
+                'patient_pay_status',
+                'patient_pay_status_color',
+              ]
+            }
+          } else if (field === 'claim_status') {
+            const status = statusColors.find((s) => s.status === value && s.type === 'claim')
+            updated.claim_status_color = status?.color || null
+            if (value == null) {
+              ;(updated as unknown as { _clearColumns: string[] })._clearColumns = [
+                'claim_status',
+                'claim_status_color',
+              ]
+            }
+          } else if (field === 'appointment_status') {
+            const status = statusColors.find((s) => s.status === value && s.type === 'appointment')
+            updated.appointment_status_color = status?.color || null
+          } else if (field === 'payment_date') {
+            const monthName = (value ?? '').replace(/^(1st|2nd)\s+/i, '').trim()
+            const month = statusColors.find((s) => s.status === monthName && s.type === 'month')
+            updated.payment_date_color = month?.color || null
+          } else if (field === 'ar_date') {
+            const monthName = (value ?? '').replace(/^(1st|2nd)\s+/i, '').trim()
+            const month = statusColors.find((s) => s.status === monthName && s.type === 'month')
+            updated.ar_date_color = month?.color || null
+          }
+          updatedRows[row] = updated
           if (field === 'patient_first_name' || field === 'patient_insurance') {
             setDraftFromRow(updatedRows[row] as SheetRow)
           }
@@ -2637,7 +2682,7 @@ export default function ProvidersTab({
     if (hadPatientIdMerge || hadPatientIdClear || hadDateColumnEdit || hadTotalAutoUpdate || uniqueDeleteIds.length > 0) {
       setStructureVersion((v) => v + 1)
     }
-  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRows, runWithDeleteToast, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, isFrontOffice, minimalVisualIndices, frontOfficeVisualIndices, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation])
+  }, [activeProvider, activeProviderRows, onUpdateProviderSheetRow, onReplaceProviderSheetRows, onSaveProviderSheetRowsDirect, onDeleteRows, runWithDeleteToast, isProviderView, providerLevel, officeStaffView, showCondenseButton, isCondensed, isMinimal, isFrontOffice, minimalVisualIndices, frontOfficeVisualIndices, showVisitTypeColumn, patients, getTableDataFromRows, clinicId, userHighlightColor, userProfile?.id, resolvePatientsListForValidation, statusColors, padTargetRows])
 
   const createEmptySheetRowForSync = useCallback(
     (providerId: string, emptySuffix: number): SheetRow => ({
