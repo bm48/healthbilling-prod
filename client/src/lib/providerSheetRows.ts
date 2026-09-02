@@ -173,8 +173,16 @@ export function applyTempIdPromotions<T extends { id: string }>(rows: T[], promo
 export function collectTempIdPromotions(
   sentRows: Array<{ id: string }>,
   savedRows: Array<{ id: string } | undefined | null>,
+  apiPromotions?: Array<{ temp_id: string; uuid: string }>,
 ): Map<string, string> {
   const out = new Map<string, string>()
+  if (apiPromotions) {
+    for (const p of apiPromotions) {
+      if (p.temp_id && p.uuid && !isUuid(p.temp_id) && isUuid(p.uuid)) {
+        out.set(p.temp_id, p.uuid)
+      }
+    }
+  }
   for (let i = 0; i < sentRows.length; i++) {
     const sent = sentRows[i]
     const saved = savedRows[i]
@@ -182,6 +190,52 @@ export function collectTempIdPromotions(
     if (!isUuid(sent.id) && isUuid(saved.id)) out.set(sent.id, saved.id)
   }
   return out
+}
+
+/**
+ * Drop or merge temp `new-*` rows that duplicate a UUID row already in the same save payload.
+ * Prevents stale deferred/pagehide snapshots from INSERTing a second row for the same visit.
+ */
+export function coalesceRedundantTempInsertsBeforeSave(rows: SheetRow[]): SheetRow[] {
+  const next = rows.map((r) => ({ ...r }))
+  const drop = new Set<number>()
+
+  const rowInProgress = (row: SheetRow): boolean =>
+    !(row.claim_status?.trim()) && !(row.insurance_payment?.trim()) && !(row.collected_from_patient?.trim())
+
+  for (let i = 0; i < next.length; i++) {
+    const row = next[i]
+    if (drop.has(i) || isUuid(row.id) || row.id.startsWith('empty-') || !row.id.startsWith('new-')) continue
+    const pid = String(row.patient_id ?? '').trim()
+    if (!pid) continue
+    const appt = row.appointment_date?.trim() || null
+
+    for (let j = 0; j < next.length; j++) {
+      if (i === j || drop.has(j)) continue
+      const existing = next[j]
+      if (!isUuid(existing.id)) continue
+      if (String(existing.patient_id ?? '').trim() !== pid) continue
+      const existingAppt = existing.appointment_date?.trim() || null
+      const sameIdentity =
+        appt === existingAppt ||
+        (appt == null && existingAppt == null) ||
+        (appt == null && existingAppt != null && rowInProgress(existing))
+      if (!sameIdentity) continue
+      next[j] = {
+        ...existing,
+        ...Object.fromEntries(
+          Object.entries(row).filter(([, v]) => v != null && v !== ''),
+        ),
+        id: existing.id,
+        created_at: existing.created_at,
+        updated_at: row.updated_at ?? existing.updated_at,
+      }
+      drop.add(i)
+      break
+    }
+  }
+
+  return drop.size > 0 ? next.filter((_, idx) => !drop.has(idx)) : rows
 }
 
 /** Aligns with server `rowHasData` so API save indices match returned rows. */
@@ -366,7 +420,7 @@ async function saveSheetRowsViaApi(
   context: SaveSheetRowsContext,
   knownDeletedIds?: string[],
   observability?: SaveObservability,
-): Promise<SheetRow[]> {
+): Promise<{ rows: SheetRow[]; tempIdPromotions: Array<{ temp_id: string; uuid: string }> }> {
   const token = getAuthToken()
   if (!token) throw new Error('Not signed in')
 
@@ -404,14 +458,20 @@ async function saveSheetRowsViaApi(
       throw new Error(typeof payload?.error === 'string' ? payload.error : `Save failed (${res.status})`)
     }
 
-    const apiRows = (payload?.rows ?? []) as ProviderSheetRowDb[]
-    let apiIdx = 0
-    return rows.map((row) => {
+    const apiRows = (payload?.rows ?? []) as (ProviderSheetRowDb | null)[]
+    const apiPromotions = (payload?.tempIdPromotions ?? []) as Array<{ temp_id: string; uuid: string }>
+    const mappedRows = rows.map((row, i) => {
       if (!rowHasDataForSave(row)) return row
-      const dbRow = apiRows[apiIdx++]
-      if (!dbRow) return row
-      return dbToSheetRow(dbRow)
+      const dbRow = apiRows[i]
+      if (dbRow) return dbToSheetRow(dbRow)
+      for (const p of apiPromotions) {
+        if (p.temp_id === row.id && isUuid(p.uuid)) {
+          return { ...row, id: p.uuid }
+        }
+      }
+      return row
     })
+    return { rows: mappedRows, tempIdPromotions: apiPromotions }
   } finally {
     diag.end()
   }
@@ -478,7 +538,7 @@ export async function fetchSheetRowsForSheetIds(
  *   (DELETE everything not in the batch when knownDeletedIds was omitted) destroyed months of provider
  *   data when a stale or partial batch was saved and has been removed.
  *
- * Returns saved rows with real UUIDs in the same order as `rows`.
+ * Returns saved rows with real UUIDs in the same order as `rows`, plus explicit temp-id promotions.
  */
 export async function saveSheetRows(
   db: NativeClient,
@@ -487,7 +547,7 @@ export async function saveSheetRows(
   knownDeletedIds?: string[],
   saveContext?: SaveSheetRowsContext,
   observability?: SaveObservability,
-): Promise<SheetRow[]> {
+): Promise<{ rows: SheetRow[]; tempIdPromotions: Array<{ temp_id: string; uuid: string }> }> {
   const context = await resolveSaveContext(db, sheetId, saveContext)
   if (!context) {
     throw new Error('saveSheetRows: unable to resolve save context (sheet not found or not accessible)')

@@ -82,9 +82,66 @@ function parseMonthKey(selectedMonthKey: string): { year: number; month: number;
   return { year, month, payroll }
 }
 
+function isValidCalendarYmd(y: number, mo: number, d: number): boolean {
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false
+  const dt = new Date(y, mo - 1, d)
+  return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d
+}
+
+/** Canonical YYYY-MM-DD — mirrors client parseDateOfServiceInput so dedupe matches across formats. */
 function normalizeApptDateForDedupe(raw: unknown): string | null {
   if (raw == null || String(raw).trim() === '') return null
-  return String(raw).trim()
+  let s = String(raw).trim().replace(/[\/.]/g, '-')
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[Tt ].*)?$/.exec(s)
+  if (iso) {
+    const y = parseInt(iso[1]!, 10)
+    const mo = parseInt(iso[2]!, 10)
+    const d = parseInt(iso[3]!, 10)
+    if (!isValidCalendarYmd(y, mo, d)) return null
+    return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+  }
+  const us = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2}|\d{4})$/)
+  if (us) {
+    const month = parseInt(us[1]!, 10)
+    const day = parseInt(us[2]!, 10)
+    const yyPart = us[3]!
+    const year = yyPart.length === 2 ? 2000 + parseInt(yyPart, 10) : parseInt(yyPart, 10)
+    if (!isValidCalendarYmd(year, month, day)) return null
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+  const digits = s.replace(/\D/g, '')
+  if (digits.length === 6) {
+    const month = parseInt(digits.slice(0, 2), 10)
+    const day = parseInt(digits.slice(2, 4), 10)
+    const year = 2000 + parseInt(digits.slice(4, 6), 10)
+    if (!isValidCalendarYmd(year, month, day)) return null
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+  if (digits.length === 8) {
+    const year = parseInt(digits.slice(0, 4), 10)
+    const month = parseInt(digits.slice(4, 6), 10)
+    const day = parseInt(digits.slice(6, 8), 10)
+    if (!isValidCalendarYmd(year, month, day)) return null
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+  return s
+}
+
+function apptDatesEqual(a: string | null, b: string | null): boolean {
+  if (a === b) return true
+  if (a == null || b == null) return false
+  return normalizeApptDateForDedupe(a) === normalizeApptDateForDedupe(b)
+}
+
+function rowLooksInProgress(row: {
+  claim_status?: unknown
+  insurance_payment?: unknown
+  collected_from_patient?: unknown
+}): boolean {
+  const claim = row.claim_status == null ? '' : String(row.claim_status).trim()
+  const insPay = row.insurance_payment == null ? '' : String(row.insurance_payment).trim()
+  const collected = row.collected_from_patient == null ? '' : String(row.collected_from_patient).trim()
+  return claim === '' && insPay === '' && collected === ''
 }
 
 function normalizePatientIdForDedupe(raw: unknown): string | null {
@@ -118,9 +175,20 @@ function classifyCollapseReason(
     return via === 'batch' ? 'batch_dated_onto_undated' : 'dated_onto_undated'
   }
   if (incomingApptDate == null && existingApptDate != null) {
-    return via === 'batch' ? 'batch_undated_onto_dated' : 'undated_onto_recent_dated'
+    return via === 'batch' ? 'batch_undated_onto_dated' : 'undated_onto_dated'
   }
   return via === 'batch' ? 'batch_match' : 'identity_match'
+}
+
+function identityMatchScore(
+  incomingApptDate: string | null,
+  existingApptDate: string | null,
+): number {
+  if (apptDatesEqual(incomingApptDate, existingApptDate)) return 0
+  if (incomingApptDate != null && existingApptDate == null) return 1
+  if (incomingApptDate == null && existingApptDate == null) return 2
+  if (incomingApptDate == null && existingApptDate != null) return 3
+  return 99
 }
 
 /** One decision for an incoming non-UUID (temp) row — written into audit `actions.insert_decisions`. */
@@ -139,6 +207,15 @@ type BatchIdentityRow = {
   id: string
   patientId: string
   appointmentDate: string | null
+  inProgress: boolean
+}
+
+type DbIdentityCandidate = {
+  id: string
+  appointmentDate: string | null
+  inProgress: boolean
+  updatedAtMs: number
+  createdAtMs: number
 }
 
 function buildPayloadDiag(
@@ -177,19 +254,68 @@ function buildPayloadDiag(
   }
 }
 
-/** Mirrors the DB dedupe SELECT in saveProviderSheetRowsCore (exact date, dated→undated, recent undated→dated). */
+/** Mirrors DB dedupe (exact/canonical date, dated→undated, undated→dated when recent or in-progress). */
 function providerSheetIdentityMatches(
   incomingPatientId: string,
   incomingApptDate: string | null,
   existingPatientId: string,
   existingApptDate: string | null,
   existingIsRecent: boolean,
+  existingInProgress: boolean,
 ): boolean {
   if (incomingPatientId !== existingPatientId) return false
-  if (incomingApptDate === existingApptDate) return true
+  if (apptDatesEqual(incomingApptDate, existingApptDate)) return true
   if (incomingApptDate != null && existingApptDate == null) return true
-  if (incomingApptDate == null && existingApptDate != null && existingIsRecent) return true
+  if (incomingApptDate == null && existingApptDate != null) {
+    return existingInProgress && existingIsRecent
+  }
   return false
+}
+
+function pickBestIdentityMatch<T extends { appointmentDate: string | null; inProgress: boolean; updatedAtMs?: number; createdAtMs?: number }>(
+  candidates: T[],
+  incomingPatientId: string,
+  incomingApptDate: string | null,
+  existingIsRecentForAll: boolean,
+  getRow: (c: T) => {
+    patientId: string
+    appointmentDate: string | null
+    inProgress: boolean
+    updatedAtMs: number
+    createdAtMs: number
+  },
+): T | undefined {
+  let best: T | undefined
+  let bestScore = 99
+  let bestUpdated = -1
+  let bestCreated = Number.MAX_SAFE_INTEGER
+  for (const cand of candidates) {
+    const row = getRow(cand)
+    if (
+      !providerSheetIdentityMatches(
+        incomingPatientId,
+        incomingApptDate,
+        row.patientId,
+        row.appointmentDate,
+        existingIsRecentForAll || row.updatedAtMs > Date.now() - 24 * 60 * 60 * 1000 || row.createdAtMs > Date.now() - 24 * 60 * 60 * 1000,
+        row.inProgress,
+      )
+    ) {
+      continue
+    }
+    const score = identityMatchScore(incomingApptDate, row.appointmentDate)
+    if (
+      score < bestScore ||
+      (score === bestScore && row.updatedAtMs > bestUpdated) ||
+      (score === bestScore && row.updatedAtMs === bestUpdated && row.createdAtMs < bestCreated)
+    ) {
+      best = cand
+      bestScore = score
+      bestUpdated = row.updatedAtMs
+      bestCreated = row.createdAtMs
+    }
+  }
+  return best
 }
 
 function findBatchIdentityMatch(
@@ -197,20 +323,13 @@ function findBatchIdentityMatch(
   incomingPatientId: string,
   incomingApptDate: string | null,
 ): BatchIdentityRow | undefined {
-  for (const row of batchRows) {
-    if (
-      providerSheetIdentityMatches(
-        incomingPatientId,
-        incomingApptDate,
-        row.patientId,
-        row.appointmentDate,
-        true,
-      )
-    ) {
-      return row
-    }
-  }
-  return undefined
+  return pickBestIdentityMatch(batchRows, incomingPatientId, incomingApptDate, true, (row) => ({
+    patientId: row.patientId,
+    appointmentDate: row.appointmentDate,
+    inProgress: row.inProgress,
+    updatedAtMs: Date.now(),
+    createdAtMs: Date.now(),
+  }))
 }
 
 function trackBatchIdentityRow(batchRows: BatchIdentityRow[], savedRow: Record<string, unknown>): void {
@@ -221,6 +340,7 @@ function trackBatchIdentityRow(batchRows: BatchIdentityRow[], savedRow: Record<s
     id,
     patientId,
     appointmentDate: normalizeApptDateForDedupe(savedRow.appointment_date),
+    inProgress: rowLooksInProgress(savedRow),
   }
   const existingIdx = batchRows.findIndex((r) => r.id === id)
   if (existingIdx >= 0) batchRows[existingIdx] = entry
@@ -469,7 +589,8 @@ const PROVIDER_SHEET_ROW_COLS = [
 
 type SaveProviderSheetResult = {
   saved: number
-  rows: Record<string, unknown>[]
+  rows: (Record<string, unknown> | null)[]
+  tempIdPromotions: Array<{ temp_id: string; uuid: string }>
   invoiceRecomputed: boolean
 }
 
@@ -583,6 +704,8 @@ async function saveProviderSheetRowsCore(
      * reasons: no_match vs patient_less_stray vs exact_date collapses explain the cause.
      */
     insert_decisions: [] as InsertDecision[],
+    /** Temp id → UUID for client promotion map (index-aligned saves + explicit remaps). */
+    temp_id_promotions: [] as Array<{ temp_id: string; uuid: string }>,
   }
   let lockAcquiredMs: number | null = null
   let sheetIdForAudit: string | null = null
@@ -657,7 +780,7 @@ async function saveProviderSheetRowsCore(
 
   const cols = PROVIDER_SHEET_ROW_COLS
   const savedIds: string[] = []
-  const savedRows: Record<string, unknown>[] = []
+  const savedRows: (Record<string, unknown> | null)[] = []
 
   // Serialize concurrent saves against the same sheet inside a transaction with an advisory lock.
   // Without this, two overlapping requests — the classic being the 400ms debounced save colliding
@@ -793,6 +916,7 @@ async function saveProviderSheetRowsCore(
         actionRefs.update_row_ids.push(String(uq.rows[0].id))
       } else {
         savedIds.push(id)
+        savedRows.push(null)
       }
     } else {
       // Patient-less stray guard: reject INSERTs that have NO patient_id AND no money/notes
@@ -851,6 +975,7 @@ async function saveProviderSheetRowsCore(
           identity_hash: null,
           match_via: null,
         })
+        savedRows.push(null)
         continue
       }
       // Server-side idempotency dedupe (mitigation for the client-side pagehide/debounce race —
@@ -896,8 +1021,9 @@ async function saveProviderSheetRowsCore(
       // both have UUIDs, later typing only UPDATEs them (Elena ×3 on Morgan Huls Aug 2026).
       // Fallback: same patient where one side of appointment_date is empty. Incoming dated +
       // existing undated = complete the in-progress row (always). Incoming undated + existing
-      // dated = only if that existing row is recent (15 min), so we do not glue a new undated
-      // visit onto last week's appointment.
+      // dated = when that row was updated recently, looks in-progress (no claim/money yet), or
+      // is another undated slot for the same patient (NULL=NULL). Dates are canonicalized to
+      // YYYY-MM-DD before compare so 08-28-26 matches 2026-08-28.
       const incomingPatientId = normalizePatientIdForDedupe(payload.patient_id)
       const incomingApptDate = normalizeApptDateForDedupe(payload.appointment_date)
       const decisionBase = {
@@ -908,33 +1034,45 @@ async function saveProviderSheetRowsCore(
       }
       let idempotentUpdateApplied = false
       if (incomingPatientId != null) {
-        const dupCheck = await client.query<{ id: string; appointment_date: string | null }>(
-          `SELECT id, appointment_date FROM public.provider_sheet_rows
+        const dupCheck = await client.query<{
+          id: string
+          appointment_date: string | null
+          claim_status: string | null
+          insurance_payment: string | null
+          collected_from_patient: string | null
+          created_at: Date | string
+          updated_at: Date | string
+        }>(
+          `SELECT id, appointment_date, claim_status, insurance_payment, collected_from_patient,
+                  created_at, updated_at
+           FROM public.provider_sheet_rows
            WHERE sheet_id = $1::uuid
              AND BTRIM(patient_id::text) = $2
-             AND (
-               NULLIF(BTRIM(appointment_date::text), '') IS NOT DISTINCT FROM $3
-               OR (
-                 $3 IS NOT NULL
-                 AND NULLIF(BTRIM(appointment_date::text), '') IS NULL
-               )
-               OR (
-                 $3 IS NULL
-                 AND NULLIF(BTRIM(appointment_date::text), '') IS NOT NULL
-                 AND created_at > now() - interval '15 minutes'
-               )
-             )
-           ORDER BY
-             CASE WHEN NULLIF(BTRIM(appointment_date::text), '') IS NOT DISTINCT FROM $3 THEN 0 ELSE 1 END,
-             created_at ASC
-           LIMIT 1`,
-          [sheetId, incomingPatientId, incomingApptDate],
+           ORDER BY updated_at DESC, created_at ASC`,
+          [sheetId, incomingPatientId],
         )
-        let collapseIntoId = dupCheck.rowCount && dupCheck.rows[0] ? dupCheck.rows[0].id : null
-        let existingApptDateForReason: string | null =
-          dupCheck.rowCount && dupCheck.rows[0]
-            ? normalizeApptDateForDedupe(dupCheck.rows[0].appointment_date)
-            : null
+        const dbCandidates: DbIdentityCandidate[] = dupCheck.rows.map((row) => ({
+          id: row.id,
+          appointmentDate: normalizeApptDateForDedupe(row.appointment_date),
+          inProgress: rowLooksInProgress(row),
+          updatedAtMs: new Date(row.updated_at).getTime(),
+          createdAtMs: new Date(row.created_at).getTime(),
+        }))
+        const dbMatch = pickBestIdentityMatch(
+          dbCandidates,
+          incomingPatientId,
+          incomingApptDate,
+          false,
+          (row) => ({
+            patientId: incomingPatientId,
+            appointmentDate: row.appointmentDate,
+            inProgress: row.inProgress,
+            updatedAtMs: row.updatedAtMs,
+            createdAtMs: row.createdAtMs,
+          }),
+        )
+        let collapseIntoId = dbMatch?.id ?? null
+        let existingApptDateForReason: string | null = dbMatch?.appointmentDate ?? null
         let matchVia: 'db' | 'batch' | null = collapseIntoId ? 'db' : null
         if (!collapseIntoId) {
           const batchMatch = findBatchIdentityMatch(
@@ -973,6 +1111,7 @@ async function saveProviderSheetRowsCore(
               ),
               match_via: matchVia,
             })
+            actionRefs.temp_id_promotions.push({ temp_id: id, uuid: String(merged.id) })
             trackBatchIdentityRow(batchIdentityRows, merged)
             // eslint-disable-next-line no-console
             console.warn('[provider_sheet_rows] collapsed duplicate INSERT into existing row', {
@@ -1009,6 +1148,7 @@ async function saveProviderSheetRowsCore(
             reason: incomingPatientId == null ? 'no_patient_money_or_notes' : 'no_match',
             match_via: null,
           })
+          actionRefs.temp_id_promotions.push({ temp_id: id, uuid: String(iq.rows[0].id) })
           trackBatchIdentityRow(batchIdentityRows, iq.rows[0])
         }
       }
@@ -1135,6 +1275,7 @@ async function saveProviderSheetRowsCore(
   return {
     saved: savedIds.length,
     rows: savedRows,
+    tempIdPromotions: actionRefs.temp_id_promotions,
     invoiceRecomputed,
   }
 }
@@ -1201,7 +1342,13 @@ async function handleSaveProviderSheetRows(req: import('express').Request, res: 
         promotionsAppliedCount,
       },
     )
-    res.json({ success: true, saved: result.saved, rows: result.rows, invoiceRecomputed: result.invoiceRecomputed })
+    res.json({
+      success: true,
+      saved: result.saved,
+      rows: result.rows,
+      tempIdPromotions: result.tempIdPromotions,
+      invoiceRecomputed: result.invoiceRecomputed,
+    })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Save failed'
     const status = msg.includes('not found') || msg.includes('denied') ? 404 : msg.includes('Invalid') ? 400 : 500

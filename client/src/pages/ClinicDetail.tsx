@@ -9,6 +9,7 @@ import {
   isUuid,
   applyTempIdPromotions,
   collectTempIdPromotions,
+  coalesceRedundantTempInsertsBeforeSave,
   getTempIdPromotions,
   mergeTempIdPromotions,
   ensureStableNewRowId,
@@ -2217,7 +2218,7 @@ export default function ClinicDetail() {
       })
       existingRowsMap.forEach(row => updatedRowData.push(row))
 
-      await saveSheetRows(apiClient, currentSheet.id, updatedRowData, undefined, undefined, { source: 'sync-provider-rows-fromLegacyState' })
+      await saveSheetRows(apiClient, currentSheet.id, updatedRowData, undefined, undefined, { source: 'sync-provider-rows-fromLegacyState' }).then(() => {})
       await fetchProviderSheetData()
     } catch (error) {
       console.error('Error saving provider rows:', error)
@@ -2609,7 +2610,8 @@ export default function ClinicDetail() {
     // Remap any temp ids this tab already promoted to UUIDs (prior save / queued replay /
     // remount). Without this, a second POST still carrying `new-*` INSERTs a duplicate row.
     const promotionKey = sheetTempIdPromotionKey(clinicId, providerId, monthKey)
-    const rowsForThisSave = applyTempIdPromotions(rowsToSave, getTempIdPromotions(promotionKey))
+    const promotedRows = applyTempIdPromotions(rowsToSave, getTempIdPromotions(promotionKey))
+    const rowsForThisSave = coalesceRedundantTempInsertsBeforeSave(promotedRows)
     const promotionsAppliedCount = countTempIdPromotionsApplied(rowsToSave, rowsForThisSave)
 
     // Filter out only truly empty rows (empty- rows with no data)
@@ -2676,7 +2678,7 @@ export default function ClinicDetail() {
     try {
       // Do not coerce omitted arg to [] — [] skips deletes and skips orphan SELECT (saveSheetRows treats [] as explicit).
       // Pending replays omit knownDeletedIds so orphans are cleaned via SELECT path.
-      const savedRows = await saveSheetRows(apiClient, sheet.id, rowsToProcess, knownDeletedIds, {
+      const { rows: savedRows, tempIdPromotions } = await saveSheetRows(apiClient, sheet.id, rowsToProcess, knownDeletedIds, {
         clinicId,
         providerId,
         selectedMonthKey: monthKey,
@@ -2704,7 +2706,7 @@ export default function ClinicDetail() {
         localStorage.removeItem(pendingKey)
       } catch (_) {}
       // Populate the synchronous id map right after the network response — before any React state update.
-      savedTempIdToUuidMap = collectTempIdPromotions(rowsToProcess, savedRows)
+      savedTempIdToUuidMap = collectTempIdPromotions(rowsToProcess, savedRows, tempIdPromotions)
       mergeTempIdPromotions(promotionKey, savedTempIdToUuidMap)
       const savedRowsByOldId = new Map<string, SheetRow>()
       const savedRowsByAnyId = new Map<string, SheetRow>()

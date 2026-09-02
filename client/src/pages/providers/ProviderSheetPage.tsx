@@ -8,6 +8,7 @@ import {
   isUuid,
   applyTempIdPromotions,
   collectTempIdPromotions,
+  coalesceRedundantTempInsertsBeforeSave,
   getTempIdPromotions,
   mergeTempIdPromotions,
   ensureStableNewRowId,
@@ -576,7 +577,8 @@ export default function ProviderSheetPage() {
 
       // Remap any temp ids this tab already promoted to UUIDs so a later POST UPDATEs, not INSERTs.
       const promotionKey = sheetTempIdPromotionKey(clinicId, providerId, selectedMonthKey ?? `${targetYear}-${targetMonth}`)
-      const rowsForThisSave = applyTempIdPromotions(rowsToSave, getTempIdPromotions(promotionKey))
+      const promotedRows = applyTempIdPromotions(rowsToSave, getTempIdPromotions(promotionKey))
+      const rowsForThisSave = coalesceRedundantTempInsertsBeforeSave(promotedRows)
       const promotionsAppliedCount = countTempIdPromotionsApplied(rowsToSave, rowsForThisSave)
 
       // Step 1 — Filter empty-* placeholder rows with no data (mirrors ClinicDetail line 2462).
@@ -636,7 +638,7 @@ export default function ProviderSheetPage() {
       let didPersist = false
       try {
         // Step 4 — API save call.
-        const savedRows = await saveSheetRows(apiClient, currentSheet.id, rowsToProcess, knownDeletedIds, {
+        const { rows: savedRows, tempIdPromotions } = await saveSheetRows(apiClient, currentSheet.id, rowsToProcess, knownDeletedIds, {
           clinicId,
           providerId,
           selectedMonthKey: selectedMonthKey ?? `${targetYear}-${targetMonth}`,
@@ -655,7 +657,7 @@ export default function ProviderSheetPage() {
         // Step 7 — Build savedRowsByOldId AND savedRowsByAnyId so the merge survives the case where
         // a row's id was already promoted to its UUID in state by a concurrent code path (mirrors
         // ClinicDetail line 2532). Also populate savedTempIdToUuidMap for queue replay.
-        savedTempIdToUuidMap = collectTempIdPromotions(rowsToProcess, savedRows)
+        savedTempIdToUuidMap = collectTempIdPromotions(rowsToProcess, savedRows, tempIdPromotions)
         mergeTempIdPromotions(promotionKey, savedTempIdToUuidMap)
         const savedRowsByOldId = new Map<string, SheetRow>()
         const savedRowsByAnyId = new Map<string, SheetRow>()
