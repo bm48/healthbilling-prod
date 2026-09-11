@@ -974,7 +974,7 @@ export default function ProvidersTab({
     return fieldsFull
   }, [officeStaffView, isProviderView, providerLevel, showVisitTypeColumn])
 
-  // Sum of Ins Pay, Collected from PT, AR, Total (computed from current rows; not stored in DB)
+  // Sum of Ins Pay, Collected from PT, AR; Total = Ins Pay + Collected from PT (live, not stored row.total)
   // For provider level 2 (full) we show full tally; for admin/billing we show insPay, collectedFromPt, total; AR only for provider level 2
   const providerSums = useMemo(() => {
     const parse = (v: unknown): number => {
@@ -985,14 +985,12 @@ export default function ProvidersTab({
     let insPay = 0
     let collectedFromPt = 0
     let arTotal = 0
-    let total = 0
     activeProviderRows.forEach((row) => {
       insPay += parse(row.insurance_payment)
       collectedFromPt += parse(row.collected_from_patient)
       arTotal += parse(row.ar_amount)
-      total += parse(row.total)
     })
-    return { insPay, collectedFromPt, arTotal, total }
+    return { insPay, collectedFromPt, arTotal, total: insPay + collectedFromPt }
   }, [activeProviderRows])
 
   // AR total: same rows/amounts as Accounts Receivable tab (month + payroll), not date_recorded-only range query.
