@@ -71,7 +71,15 @@ export default function AutoBackupsBar({ sheetId, onRestore, refreshKey }: AutoB
     return () => clearInterval(id)
   }, [modalOpen, refresh])
 
-  const handleRestoreClick = async (backupId: string) => {
+  const handleRestoreClick = async (backupId: string, createdAt: string) => {
+    const when = formatAbsolute(createdAt)
+    const ok = window.confirm(
+      `Restore sheet to the snapshot from ${when}?\n\n` +
+        `Rows that existed at backup time are replaced from the snapshot.\n` +
+        `Rows added AFTER this backup are kept (not deleted).\n\n` +
+        `Anyone else editing this sheet should refresh after restore.`,
+    )
+    if (!ok) return
     setRestoringId(backupId)
     setError(null)
     try {
@@ -111,6 +119,7 @@ export default function AutoBackupsBar({ sheetId, onRestore, refreshKey }: AutoB
                 <h3 className="text-lg font-semibold text-white">Auto-backups</h3>
                 <p className="text-white/60 text-xs mt-0.5">
                   Snapshots saved each time you leave this sheet. Last 7 days, newest first.
+                  Restore keeps rows added after the chosen snapshot.
                 </p>
               </div>
               <button
@@ -153,7 +162,7 @@ export default function AutoBackupsBar({ sheetId, onRestore, refreshKey }: AutoB
                       <button
                         type="button"
                         disabled={restoringId !== null}
-                        onClick={() => handleRestoreClick(v.id)}
+                        onClick={() => handleRestoreClick(v.id, v.created_at)}
                         className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium disabled:opacity-50 disabled:pointer-events-none"
                       >
                         {restoringId === v.id ? (

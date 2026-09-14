@@ -678,6 +678,8 @@ async function saveProviderSheetRowsCore(
   rows: unknown[],
   knownDeletedIds?: string[],
   auditContext?: SaveAuditContext,
+  /** When set, DELETE skips rows whose created_at is strictly after this ISO timestamp. */
+  doNotDeleteCreatedAfter?: string,
 ): Promise<SaveProviderSheetResult> {
   const requestStartMs = Date.now()
   // Running counts of what the loop did — copied into the audit row's `actions` JSON at the end
@@ -1168,9 +1170,34 @@ async function saveProviderSheetRowsCore(
     // implementation of "wipe stale rows, apply backup") ends up UPDATE-ing then DELETE-ing every
     // row — the sheet goes blank. Filter the intersection out before the DELETE.
     const savedIdSet = new Set(savedIds.map(String))
-    const toDelete = knownDeletedIds
+    let toDelete = knownDeletedIds
       .filter((id) => isUuid(String(id)))
       .filter((id) => !savedIdSet.has(String(id)))
+    // Restore safeguard: never delete rows created after the backup snapshot time, even if the
+    // client mistakenly listed them in knownDeletedIds (wipe-all restore bug / stale multi-restore).
+    const preserveAfterMs = doNotDeleteCreatedAfter
+      ? new Date(doNotDeleteCreatedAfter).getTime()
+      : NaN
+    if (toDelete.length > 0 && Number.isFinite(preserveAfterMs)) {
+      const ageCheck = await client.query<{ id: string }>(
+        `SELECT id::text AS id
+           FROM public.provider_sheet_rows
+          WHERE sheet_id = $1::uuid
+            AND id = ANY($2::uuid[])
+            AND created_at > $3::timestamptz`,
+        [sheetId, toDelete, new Date(preserveAfterMs).toISOString()],
+      )
+      if (ageCheck.rows.length > 0) {
+        const protectedIds = new Set(ageCheck.rows.map((r) => String(r.id)))
+        // eslint-disable-next-line no-console
+        console.warn('[provider_sheet_rows] refused delete of post-backup rows', {
+          sheetId,
+          doNotDeleteCreatedAfter,
+          protectedCount: protectedIds.size,
+        })
+        toDelete = toDelete.filter((id) => !protectedIds.has(String(id)))
+      }
+    }
     if (toDelete.length > 0) {
       await client.query(
         `DELETE FROM public.provider_sheet_rows WHERE id = ANY($1::uuid[]) AND sheet_id = $2::uuid`,
@@ -1319,6 +1346,13 @@ async function handleSaveProviderSheetRows(req: import('express').Request, res: 
           /^\d+$/.test(req.body.promotionsAppliedCount.trim())
         ? parseInt(req.body.promotionsAppliedCount.trim(), 10)
         : undefined
+  // Write safeguard (not audit-only): restore passes backup.created_at so deletes cannot wipe newer rows.
+  const doNotDeleteCreatedAfterRaw =
+    typeof req.body?.doNotDeleteCreatedAfter === 'string' ? req.body.doNotDeleteCreatedAfter.trim() : ''
+  const doNotDeleteCreatedAfter =
+    doNotDeleteCreatedAfterRaw && Number.isFinite(new Date(doNotDeleteCreatedAfterRaw).getTime())
+      ? doNotDeleteCreatedAfterRaw
+      : undefined
 
   if (!clinicId || !providerId || !selectedMonthKey) {
     res.status(400).json({ error: 'Missing clinicId, providerId, or selectedMonthKey' })
@@ -1341,6 +1375,7 @@ async function handleSaveProviderSheetRows(req: import('express').Request, res: 
         inFlightAtSend,
         promotionsAppliedCount,
       },
+      doNotDeleteCreatedAfter,
     )
     res.json({
       success: true,

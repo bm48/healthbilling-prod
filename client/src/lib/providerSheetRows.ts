@@ -289,7 +289,7 @@ async function resolveSaveContext(
   }
 }
 
-/** Optional observability hints supplied to the server audit log. Never affect the write. */
+/** Optional hints on the save POST. Most are audit-only; `doNotDeleteCreatedAfter` is a write safeguard. */
 export interface SaveObservability {
   /** Human-readable trigger for the save. Enum-ish; the audit viewer groups by this. Examples:
    *  'debounced' (400ms after typing), 'pagehide-keepalive' (tab hidden mid-edit),
@@ -307,6 +307,11 @@ export interface SaveObservability {
   inFlightAtSend?: number
   /** How many temp→UUID remaps applyTempIdPromotions performed before this POST. */
   promotionsAppliedCount?: number
+  /**
+   * ISO timestamp: server will refuse to DELETE any knownDeletedId whose created_at is strictly
+   * after this instant. Used by auto-backup restore so a buggy client cannot wipe post-backup work.
+   */
+  doNotDeleteCreatedAfter?: string
 }
 
 /** UUID for `correlationId` when the browser exposes crypto.randomUUID (all modern browsers +
@@ -442,6 +447,9 @@ async function saveSheetRowsViaApi(
     }
     if (knownDeletedIds !== undefined) {
       body.knownDeletedIds = knownDeletedIds.filter((id) => isUuid(id))
+    }
+    if (observability?.doNotDeleteCreatedAfter) {
+      body.doNotDeleteCreatedAfter = observability.doNotDeleteCreatedAfter
     }
 
     const base = getApiBase()

@@ -24,6 +24,7 @@ import { sheetRowsToUiCsv, type ProviderSheetUiExportLayout } from '@/lib/provid
 import BackupVersionsBar, { type BackupVersionMeta } from '@/components/BackupVersionsBar'
 import AutoBackupsBar from '@/components/AutoBackupsBar'
 import { createAutoBackup, getAutoBackup } from '@/lib/autoBackupsApi'
+import { buildSafeAutoBackupRestorePlan } from '@/lib/autoBackupRestore'
 import {
   fetchBackupCsvAsAR,
   fetchBackupCsvAsPatients,
@@ -416,6 +417,8 @@ export default function ClinicDetail() {
    *  the window doesn't lose the snapshot for the sheet that was restored. */
   type RestoreSnapshot = { providerId: string; monthKey: string; rows: SheetRow[]; restoredAt: number; expiresAt: number }
   const restoreSnapshotRef = useRef<RestoreSnapshot | null>(null)
+  /** Prevents overlapping restore clicks (admin shopping backups rapidly wiped live edits). */
+  const restoreInProgressRef = useRef(false)
   /** When viewing a backup version, override rows for the current provider (super_admin only). */
   const [backupOverrideRows, setBackupOverrideRows] = useState<SheetRow[] | null>(null)
   const [selectedBackupVersion, setSelectedBackupVersion] = useState<BackupVersionMeta | null>(null)
@@ -2554,7 +2557,14 @@ export default function ClinicDetail() {
 
 
 
-  const saveProviderSheetRows = useCallback(async (providerId: string, rowsToSave: SheetRow[], knownDeletedIds?: string[], monthKeyOverride?: string, source?: string): Promise<boolean> => {
+  const saveProviderSheetRows = useCallback(async (
+    providerId: string,
+    rowsToSave: SheetRow[],
+    knownDeletedIds?: string[],
+    monthKeyOverride?: string,
+    source?: string,
+    saveOpts?: { doNotDeleteCreatedAfter?: string },
+  ): Promise<boolean> => {
     // monthKey is captured once at call entry. The drain effect passes the ORIGINAL monthKey from when
     // the save was queued — without that, a deferred save that fires after the user navigated to a
     // different month would persist the old month's rows under the new month's sheet (the "her June
@@ -2688,6 +2698,7 @@ export default function ClinicDetail() {
         // can filter "which client trigger caused this save?" without guessing from timing.
         source: source ?? 'unknown',
         promotionsAppliedCount,
+        doNotDeleteCreatedAfter: saveOpts?.doNotDeleteCreatedAfter,
       })
       didPersist = true
       // Record the successful-save timestamp BEFORE any post-save state work so the drain effect's
@@ -2876,91 +2887,175 @@ export default function ClinicDetail() {
     }
   }, [providerSheetsByMonth, clinicId, userProfile, saveProviderSheetRows])
 
-  /** Restore the live sheet to the snapshot identified by `backupId`. Captures the current rows so
-   *  Ctrl+Z (or the dismiss button on the restore toast) can revert. Window is 30 seconds; after
-   *  that the snapshot is dropped — the restore is then permanent. */
+  /** Restore the live sheet from an auto-backup without wiping rows created after that backup.
+   *  Undo (toast button) reverts to the pre-restore snapshot within 30 seconds. */
   const handleAutoBackupRestore = useCallback(async (backupId: string) => {
     if (!providerId) throw new Error('No active provider')
-    const targetMonthKey = selectedMonthKey
-    const backup = await getAutoBackup(backupId)
-    // Snapshot CURRENT rows before applying restore so Ctrl+Z has something to revert to.
-    const currentRowsForProvider =
-      (providerSheetRowsByMonthRef.current[targetMonthKey] ?? {})[providerId] ?? []
-    const expiresAt = Date.now() + 30_000
-    restoreSnapshotRef.current = {
-      providerId,
-      monthKey: targetMonthKey,
-      rows: currentRowsForProvider,
-      restoredAt: Date.now(),
-      expiresAt,
+    if (restoreInProgressRef.current) {
+      throw new Error('A restore is already in progress. Wait for it to finish before selecting another version.')
     }
-    // Restore is now "wipe and recreate": strip UUIDs from backup rows so the server INSERTs each
-    // as a fresh row with a new UUID, and pass every current UUID as knownDeletedIds so old rows
-    // (including any duplicates that accumulated since the backup) are wiped.
-    //
-    // Why this instead of matching UUIDs to UPDATE existing rows: the server treats UUID row ids as
-    // UPDATE-only (serviceRoutes.ts:367-432) — an UPDATE that finds no row is a silent no-op, no
-    // INSERT fallback. That's fine when the DB is in a healthy state, but Spencer's June/July got
-    // knocked into partial/empty states by prior buggy restore attempts (before the current fix).
-    // Once the DB is empty for a sheet, backup rows can't repopulate it: their UUIDs don't exist to
-    // UPDATE, so the server silently does nothing, and the sheet stays blank across refreshes.
-    // Stripping UUIDs makes the server route treat every backup row as INSERT — predictable
-    // outcome regardless of DB state, sheet ends up equal to the backup no matter what.
-    //
-    // No foreign keys reference provider_sheet_rows.id from other tables (grep confirmed), so a
-    // new UUID per row does not break any cross-table references.
-    const restoredRows = padSheetRowsToBase(backup.rows as SheetRow[]).map((r) => {
-      if (!isUuid(r.id)) return r
-      // Non-UUID (empty-*, backup-*, new-*, empty string) already gets INSERTed by the server;
-      // only UUIDs need re-labeling. Random suffix so multiple restore attempts don't collide on
-      // the same `new-N` id within a single batch.
-      const newId = `new-restore-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-      return { ...r, id: newId }
-    })
-    const preExistingIds = currentRowsForProvider.map((r) => r.id).filter(isUuid)
-    await saveProviderSheetRows(providerId, restoredRows, preExistingIds, targetMonthKey, 'auto-backup-restore')
-    // Bump providerRowsVersion so HOT updateSettings runs with the merged row IDs — without this,
-    // the grid keeps showing the pre-restore data even though state changed.
-    setProviderRowsVersion((v) => v + 1)
-    setRestoreToast({
-      message: `Restored from ${new Date(backup.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}. Click Undo within 30 seconds if this was a mistake.`,
-      expiresAt,
-    })
-    setAutoBackupsRefreshKey((k) => k + 1)
-    // Expire the snapshot + toast after the window passes. Compare against the exact snapshot we
-    // just set so a newer restore (overlapping windows) doesn't get its timer prematurely cleared.
-    setTimeout(() => {
-      const snap = restoreSnapshotRef.current
-      if (snap && snap.expiresAt === expiresAt) restoreSnapshotRef.current = null
-      setRestoreToast((t) => (t && t.expiresAt === expiresAt ? null : t))
-    }, 30_000)
-  }, [providerId, selectedMonthKey, saveProviderSheetRows])
+    restoreInProgressRef.current = true
+    const targetMonthKey = selectedMonthKey
+    try {
+      const backup = await getAutoBackup(backupId)
+      // Prefer a fresh DB read so created_at is accurate for the preserve-newer-rows check.
+      // Fall back to in-memory rows if the sheet id is not available yet.
+      const sheetId =
+        currentSheet?.id ??
+        (providerSheetsByMonth[targetMonthKey] ?? {})[providerId]?.id ??
+        null
+      let currentRowsForProvider =
+        (providerSheetRowsByMonthRef.current[targetMonthKey] ?? {})[providerId] ?? []
+      if (sheetId) {
+        try {
+          const fresh = await fetchSheetRows(apiClient, sheetId)
+          const clinicPatientsList =
+            patientsRef.current.length > 0
+              ? patientsRef.current
+              : ((await apiClient.from('patients').select('*').eq('clinic_id', clinicId)).data as Patient[] | null) ?? []
+          currentRowsForProvider = enrichSheetRowsFromPatients(fresh, clinicPatientsList)
+        } catch (e) {
+          console.warn('[auto-backup] fresh fetch before restore failed; using in-memory rows', e)
+        }
+      }
 
-  /** Revert the most recent restore (Ctrl+Z or toast dismiss) by re-applying the snapshot we kept.
-   *  Same "wipe and recreate" shape as handleAutoBackupRestore: strip UUIDs from the snapshot rows
-   *  so the server INSERTs each as a fresh row (works regardless of current DB state), and delete
-   *  all current UUID rows. Turns undo into a predictable atomic swap. */
+      const expiresAt = Date.now() + 30_000
+      restoreSnapshotRef.current = {
+        providerId,
+        monthKey: targetMonthKey,
+        rows: currentRowsForProvider,
+        restoredAt: Date.now(),
+        expiresAt,
+      }
+
+      const plan = buildSafeAutoBackupRestorePlan(
+        padSheetRowsToBase(backup.rows as SheetRow[]),
+        currentRowsForProvider,
+        backup.created_at,
+        'new-restore',
+      )
+
+      // Drop stale queued typing saves so they cannot overwrite the restore a moment later.
+      const queueKey = `${providerId}|${targetMonthKey}`
+      deferredSavesRef.current.delete(queueKey)
+      delete pendingProviderSheetSaveRef.current[providerId]
+
+      await saveProviderSheetRows(
+        providerId,
+        plan.rowsToSave,
+        plan.idsToDelete,
+        targetMonthKey,
+        'auto-backup-restore',
+        { doNotDeleteCreatedAfter: backup.created_at },
+      )
+
+      // Authoritative reload so every open editor sees post-restore DB state (not a stale grid).
+      if (sheetId) {
+        try {
+          const reloaded = await fetchSheetRows(apiClient, sheetId)
+          const clinicPatientsList =
+            patientsRef.current.length > 0
+              ? patientsRef.current
+              : ((await apiClient.from('patients').select('*').eq('clinic_id', clinicId)).data as Patient[] | null) ?? []
+          const enriched = enrichSheetRowsFromPatients(reloaded, clinicPatientsList)
+          const padded = padSheetRowsToBase(enriched)
+          setProviderSheetRowsByMonth((prev) => ({
+            ...prev,
+            [targetMonthKey]: { ...(prev[targetMonthKey] ?? {}), [providerId]: padded },
+          }))
+        } catch (e) {
+          console.warn('[auto-backup] post-restore reload failed', e)
+        }
+      }
+
+      setProviderRowsVersion((v) => v + 1)
+      const preservedNote =
+        plan.preservedRows.length > 0
+          ? ` Kept ${plan.preservedRows.length} row(s) added after this backup.`
+          : ''
+      setRestoreToast({
+        message: `Restored from ${new Date(backup.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}.${preservedNote} Click Undo within 30 seconds if this was a mistake.`,
+        expiresAt,
+      })
+      setAutoBackupsRefreshKey((k) => k + 1)
+      setTimeout(() => {
+        const snap = restoreSnapshotRef.current
+        if (snap && snap.expiresAt === expiresAt) restoreSnapshotRef.current = null
+        setRestoreToast((t) => (t && t.expiresAt === expiresAt ? null : t))
+      }, 30_000)
+    } finally {
+      restoreInProgressRef.current = false
+    }
+  }, [providerId, selectedMonthKey, saveProviderSheetRows, currentSheet, providerSheetsByMonth, clinicId])
+
+  /** Revert the most recent restore by re-applying the pre-restore snapshot (full swap). */
   const handleUndoLastRestore = useCallback(async () => {
     const snap = restoreSnapshotRef.current
     if (!snap) return
     restoreSnapshotRef.current = null
     setRestoreToast(null)
     if (!snap.rows.length) return
+    if (restoreInProgressRef.current) return
+    restoreInProgressRef.current = true
     try {
-      const currentRows =
+      const sheetId =
+        (providerSheetsByMonth[snap.monthKey] ?? {})[snap.providerId]?.id ??
+        (snap.providerId === providerId ? currentSheet?.id : null) ??
+        null
+      let currentRows =
         (providerSheetRowsByMonthRef.current[snap.monthKey] ?? {})[snap.providerId] ?? []
-      const rowsForUndo = snap.rows.map((r) => {
+      if (sheetId) {
+        try {
+          currentRows = await fetchSheetRows(apiClient, sheetId)
+        } catch {
+          // keep in-memory
+        }
+      }
+      // Intentional full swap: delete every current UUID and re-insert the pre-restore snapshot.
+      // Do not use buildSafeAutoBackupRestorePlan here — that path preserves post-backup rows.
+      const rowsForUndo = padSheetRowsToBase(snap.rows).map((r) => {
         if (!isUuid(r.id)) return r
         const newId = `new-undo-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
         return { ...r, id: newId }
       })
       const idsToDelete = currentRows.map((r) => r.id).filter(isUuid)
-      await saveProviderSheetRows(snap.providerId, rowsForUndo, idsToDelete, snap.monthKey, 'auto-backup-restore-undo')
+      const queueKey = `${snap.providerId}|${snap.monthKey}`
+      deferredSavesRef.current.delete(queueKey)
+      delete pendingProviderSheetSaveRef.current[snap.providerId]
+
+      await saveProviderSheetRows(
+        snap.providerId,
+        rowsForUndo,
+        idsToDelete,
+        snap.monthKey,
+        'auto-backup-restore-undo',
+      )
+      if (sheetId) {
+        try {
+          const reloaded = await fetchSheetRows(apiClient, sheetId)
+          const clinicPatientsList =
+            patientsRef.current.length > 0
+              ? patientsRef.current
+              : ((await apiClient.from('patients').select('*').eq('clinic_id', clinicId)).data as Patient[] | null) ?? []
+          const enriched = enrichSheetRowsFromPatients(reloaded, clinicPatientsList)
+          setProviderSheetRowsByMonth((prev) => ({
+            ...prev,
+            [snap.monthKey]: {
+              ...(prev[snap.monthKey] ?? {}),
+              [snap.providerId]: padSheetRowsToBase(enriched),
+            },
+          }))
+        } catch (e) {
+          console.warn('[auto-backup] post-undo reload failed', e)
+        }
+      }
       setProviderRowsVersion((v) => v + 1)
     } catch (e) {
       console.error('[auto-backup] undo restore failed:', e)
+    } finally {
+      restoreInProgressRef.current = false
     }
-  }, [saveProviderSheetRows])
+  }, [saveProviderSheetRows, providerSheetsByMonth, providerId, currentSheet, clinicId])
 
   /** Bumped when auto-backups list needs to refresh (e.g. after a manual trigger, after restore). */
   const [autoBackupsRefreshKey, setAutoBackupsRefreshKey] = useState(0)
