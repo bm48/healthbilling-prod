@@ -196,12 +196,33 @@ export function collectTempIdPromotions(
  * Drop or merge temp `new-*` rows that duplicate a UUID row already in the same save payload.
  * Prevents stale deferred/pagehide snapshots from INSERTing a second row for the same visit.
  */
+/**
+ * Before POST: fold a temp `new-*` into an existing UUID when it is the same visit mid-race, not when
+ * the user is starting a *new* blank line for a patient who already has an older undated/in-progress row
+ * ("patient ID disappears" — Summerland / Nicole).
+ * Keep dated→undated and exact-date merges; undated collapses only within a short recent window.
+ */
 export function coalesceRedundantTempInsertsBeforeSave(rows: SheetRow[]): SheetRow[] {
   const next = rows.map((r) => ({ ...r }))
   const drop = new Set<number>()
+  /** Must stay aligned with server IDENTITY_COLLAPSE_RECENT_MS in serviceRoutes.ts */
+  const RECENT_MS = 15 * 60 * 1000
 
   const rowInProgress = (row: SheetRow): boolean =>
     !(row.claim_status?.trim()) && !(row.insurance_payment?.trim()) && !(row.collected_from_patient?.trim())
+
+  const rowIsRecent = (row: SheetRow): boolean => {
+    const u = row.updated_at ? new Date(row.updated_at).getTime() : 0
+    const c = row.created_at ? new Date(row.created_at).getTime() : 0
+    const t = Math.max(u || 0, c || 0)
+    return Number.isFinite(t) && t > 0 && Date.now() - t <= RECENT_MS
+  }
+
+  const datesEqual = (a: string | null, b: string | null): boolean => {
+    if (a == null && b == null) return true
+    if (a == null || b == null) return false
+    return a === b
+  }
 
   for (let i = 0; i < next.length; i++) {
     const row = next[i]
@@ -216,10 +237,19 @@ export function coalesceRedundantTempInsertsBeforeSave(rows: SheetRow[]): SheetR
       if (!isUuid(existing.id)) continue
       if (String(existing.patient_id ?? '').trim() !== pid) continue
       const existingAppt = existing.appointment_date?.trim() || null
-      const sameIdentity =
-        appt === existingAppt ||
-        (appt == null && existingAppt == null) ||
-        (appt == null && existingAppt != null && rowInProgress(existing))
+      const recent = rowIsRecent(existing)
+
+      let sameIdentity = false
+      if (appt != null && existingAppt != null && datesEqual(appt, existingAppt)) {
+        sameIdentity = true
+      } else if (appt == null && existingAppt == null) {
+        sameIdentity = recent
+      } else if (appt != null && existingAppt == null) {
+        sameIdentity = true
+      } else if (appt == null && existingAppt != null) {
+        sameIdentity = rowInProgress(existing) && recent
+      }
+
       if (!sameIdentity) continue
       next[j] = {
         ...existing,

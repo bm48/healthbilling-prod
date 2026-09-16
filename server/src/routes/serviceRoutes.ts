@@ -254,7 +254,15 @@ function buildPayloadDiag(
   }
 }
 
-/** Mirrors DB dedupe (exact/canonical date, dated→undated, undated→dated when recent or in-progress). */
+/**
+ * How recent an existing row must be before an undated incoming temp may collapse onto it.
+ * Pagehide/debounce races land within seconds; a user starting a *new* blank visit for the same
+ * patient (ID typed before DOS) must not merge into yesterday's unfinished line — that looked like
+ * "patient ID disappears" (Nicole / Summerland, Sep 2026).
+ */
+const IDENTITY_COLLAPSE_RECENT_MS = 15 * 60 * 1000
+
+/** Mirrors DB dedupe (exact/canonical date, dated→undated, undated→dated when recent + in-progress). */
 function providerSheetIdentityMatches(
   incomingPatientId: string,
   incomingApptDate: string | null,
@@ -264,8 +272,18 @@ function providerSheetIdentityMatches(
   existingInProgress: boolean,
 ): boolean {
   if (incomingPatientId !== existingPatientId) return false
-  if (apptDatesEqual(incomingApptDate, existingApptDate)) return true
+  // Same non-null DOS → same visit (true duplicate / race).
+  if (incomingApptDate != null && existingApptDate != null && apptDatesEqual(incomingApptDate, existingApptDate)) {
+    return true
+  }
+  // Both undated: only fold within the short race window. Always matching NULL=NULL made every
+  // "patient ID only" edit on a new blank row collapse into an older undated line for that patient.
+  if (incomingApptDate == null && existingApptDate == null) {
+    return existingIsRecent
+  }
+  // Dated incoming completes an undated in-progress row (user filled DOS after patient).
   if (incomingApptDate != null && existingApptDate == null) return true
+  // Undated incoming onto dated: only recent unfinished visits (race mid-edit), not a new blank line.
   if (incomingApptDate == null && existingApptDate != null) {
     return existingInProgress && existingIsRecent
   }
@@ -297,7 +315,9 @@ function pickBestIdentityMatch<T extends { appointmentDate: string | null; inPro
         incomingApptDate,
         row.patientId,
         row.appointmentDate,
-        existingIsRecentForAll || row.updatedAtMs > Date.now() - 24 * 60 * 60 * 1000 || row.createdAtMs > Date.now() - 24 * 60 * 60 * 1000,
+        existingIsRecentForAll ||
+          row.updatedAtMs > Date.now() - IDENTITY_COLLAPSE_RECENT_MS ||
+          row.createdAtMs > Date.now() - IDENTITY_COLLAPSE_RECENT_MS,
         row.inProgress,
       )
     ) {
@@ -1023,8 +1043,9 @@ async function saveProviderSheetRowsCore(
       // both have UUIDs, later typing only UPDATEs them (Elena ×3 on Morgan Huls Aug 2026).
       // Fallback: same patient where one side of appointment_date is empty. Incoming dated +
       // existing undated = complete the in-progress row (always). Incoming undated + existing
-      // dated = when that row was updated recently, looks in-progress (no claim/money yet), or
-      // is another undated slot for the same patient (NULL=NULL). Dates are canonicalized to
+      // dated (or another undated) = only when that existing row is recent (≤15 min) and, for
+      // dated targets, still in-progress — so typing patient ID on a *new* blank line does not
+      // vanish into an older visit (Summerland / Nicole, Sep 2026). Dates are canonicalized to
       // YYYY-MM-DD before compare so 08-28-26 matches 2026-08-28.
       const incomingPatientId = normalizePatientIdForDedupe(payload.patient_id)
       const incomingApptDate = normalizeApptDateForDedupe(payload.appointment_date)
