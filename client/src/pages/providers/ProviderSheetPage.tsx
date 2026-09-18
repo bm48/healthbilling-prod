@@ -1105,6 +1105,16 @@ export default function ProviderSheetPage() {
   )
 
   const filterRowsByMonth = (rows: SheetRow[]) => rows
+
+  const handleReorderProviderRows = useCallback((providerId: string, newRows: SheetRow[]) => {
+    if (!provider || provider.id !== providerId) return
+    setProviderSheetRows(prev => ({ ...prev, [providerId]: newRows }))
+    setProviderRowsVersion(v => v + 1)
+    saveProviderSheetRows(providerId, newRows).catch(err =>
+      console.error('Failed to persist provider row order', err)
+    )
+  }, [provider, saveProviderSheetRows])
+
   // MonthYearTabs.onChange delivers (date, payroll). The payroll comes from the user clicking the
   // 1st/2nd Half pill when clinic.payroll === 2; for monthly clinics it is always 1.
   // Flushes any pending debounced save BEFORE the month changes so the save uses the OLD selectedMonth
@@ -1281,6 +1291,7 @@ export default function ProviderSheetPage() {
           filterRowsByMonth={filterRowsByMonth}
           isLockProviders={isLockProviders}
           providerRowsVersion={providerRowsVersion}
+          onReorderProviderRows={handleReorderProviderRows}
           onRegisterFlushBeforeTabLeave={(flush) => { providersTabFlushRef.current = flush }}
         />
       )}

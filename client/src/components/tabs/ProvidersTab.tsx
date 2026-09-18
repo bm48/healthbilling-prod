@@ -30,6 +30,9 @@ function shouldBatchDeferPatientId(source: string, nonNullChangeCount: number): 
   return false
 }
 
+const PENDING_ROWS_KEY_PREFIX = 'provider_sheet_pending_'
+const PENDING_ROWS_MAX_SIZE = 1024 * 1024 // 1MB
+
 function isHandsontableUndoRedoSource(source?: string) {
   return source === 'UndoRedo.undo' || source === 'UndoRedo.redo'
 }
@@ -260,8 +263,11 @@ interface ProvidersTabProps {
   isLockProviders?: IsLockProviders | null
   onLockProviderColumn?: (columnName: string) => void
   isProviderColumnLocked?: (columnName: keyof IsLockProviders) => boolean
-  /** Called when rows are reordered by drag. Parent should update providerSheetRows for the given provider. */
-  onReorderProviderRows?: (providerId: string, movedRows: number[], finalIndex: number) => void
+  /**
+   * Called when rows are reordered by drag. Receives the full reordered row array (already applied
+   * against the tab's latest in-memory rows) so the parent does not recompute from stale React state.
+   */
+  onReorderProviderRows?: (providerId: string, newRows: SheetRow[]) => void
   /** When true (e.g. official_staff), only columns ID through Date of Service are editable; rest read-only */
   restrictEditToSchedulingColumns?: boolean
   /** When true (office_staff), show only columns ID through Appt/Note Status and Collected from PT through PT A/R Paid Date; office staff can edit Patient ID, First Name, LI, Date of Service, and payment columns. */
@@ -611,11 +617,6 @@ export default function ProvidersTab({
   const providerRowsVersionForMatrixRef = useRef(providerRowsVersion ?? 0)
   providerRowsVersionForMatrixRef.current = providerRowsVersion ?? 0
 
-  const handleProviderRowMove = useCallback((movedRows: number[], finalIndex: number) => {
-    if (!activeProvider || !onReorderProviderRows) return
-    onReorderProviderRows(activeProvider.id, movedRows, finalIndex)
-  }, [activeProvider, onReorderProviderRows])
-
   // Ref for latest table data from change handler so we don't pass stale data when parent re-renders before state updates
   const latestTableDataRef = useRef<any[][] | null>(null)
   /** Revisions under which `latestTableDataRef` was materialized; must match current revisions or matrix is stale. */
@@ -890,6 +891,125 @@ export default function ProvidersTab({
     }))
     return [...activeProviderRows, ...extras]
   }, [activeProvider, activeProviderRows, padTargetRows])
+
+  const displayActiveProviderRowsRef = useRef<SheetRow[]>([])
+  // Keep in sync every render so afterRowMove can reorder the same array HOT is showing
+  // (including trailing empty pad rows), not a stale shorter props snapshot.
+  displayActiveProviderRowsRef.current = displayActiveProviderRows
+
+  const handleProviderRowMove = useCallback((movedRows: number[], finalIndex: number) => {
+    if (!activeProvider || !onReorderProviderRows || isViewingBackup) return
+    if (!movedRows.length) return
+
+    // Prefer the tab's latest in-memory rows (includes edits not yet committed to parent state).
+    // Falling back to props alone was causing: (1) cell values to "jump" when a move saved a
+    // stale snapshot, and (2) a pending 400ms typing save to rewrite sort_order back to the old
+    // order — exactly Jenali's "rows move then snap back / data doesn't stay the same" report.
+    const latest = latestProviderRowsRef.current
+    const display = displayActiveProviderRowsRef.current
+    let base: SheetRow[]
+    if (latest?.providerId === activeProvider.id && latest.rows.length > 0) {
+      if (latest.rows.length >= display.length) {
+        base = [...latest.rows]
+      } else {
+        base = [...latest.rows, ...display.slice(latest.rows.length)]
+      }
+    } else {
+      base = [...display]
+    }
+
+    const maxIdx = Math.max(finalIndex, ...movedRows)
+    if (maxIdx >= base.length) {
+      // Grow with empty slots so a drag into the padded region still has a real row object.
+      const iso = new Date().toISOString()
+      while (base.length <= maxIdx) {
+        const emptySuffix = base.filter((r) => r.id.startsWith('empty-')).length
+        base.push({
+          id: `empty-${activeProvider.id}-${emptySuffix}`,
+          patient_id: null,
+          patient_first_name: null,
+          patient_last_name: null,
+          last_initial: null,
+          patient_insurance: null,
+          patient_copay: null,
+          patient_coinsurance: null,
+          appointment_date: null,
+          appointment_time: null,
+          visit_type: null,
+          notes: null,
+          billing_code: null,
+          billing_code_color: null,
+          appointment_status: null,
+          appointment_status_color: null,
+          claim_status: null,
+          claim_status_color: null,
+          submit_date: null,
+          insurance_payment: null,
+          insurance_adjustment: null,
+          invoice_amount: null,
+          collected_from_patient: null,
+          patient_pay_status: null,
+          patient_pay_status_color: null,
+          payment_date: null,
+          payment_date_color: null,
+          ar_type: null,
+          ar_amount: null,
+          ar_date: null,
+          ar_date_color: null,
+          ar_notes: null,
+          provider_payment_amount: null,
+          provider_payment_date: null,
+          provider_payment_notes: null,
+          highlight_color: null,
+          total: null,
+          cpt_code: null,
+          cpt_code_color: null,
+          created_at: iso,
+          updated_at: iso,
+        })
+      }
+    }
+
+    const toMove = movedRows.map((i) => base[i])
+    if (toMove.some((r) => !r)) return
+
+    const arr = [...base]
+    ;[...movedRows].sort((a, b) => b - a).forEach((i) => arr.splice(i, 1))
+    const insertAt = Math.min(Math.max(0, finalIndex), arr.length)
+    toMove.forEach((item, i) => arr.splice(insertAt + i, 0, item))
+
+    latestProviderRowsRef.current = { providerId: activeProvider.id, rows: arr }
+    // Drop any pending typing save that still holds the pre-move order; the reorder save below
+    // persists both the new order and any edits already merged into `arr`.
+    if (saveProviderSheetTimeoutRef.current) {
+      clearTimeout(saveProviderSheetTimeoutRef.current)
+      saveProviderSheetTimeoutRef.current = null
+    }
+    pendingProviderSheetSaveRef.current = null
+    latestTableDataRef.current = null
+    matrixSourceRevisionsRef.current = null
+
+    try {
+      const cid = clinicIdForPendingRef.current
+      const mk = selectedMonthKeyForPendingRef.current
+      if (cid && mk) {
+        const payload = JSON.stringify({
+          rows: arr,
+          savedAt: Date.now(),
+          clinicId: cid,
+          providerId: activeProvider.id,
+          selectedMonthKey: mk,
+        })
+        if (payload.length <= PENDING_ROWS_MAX_SIZE) {
+          localStorage.setItem(`${PENDING_ROWS_KEY_PREFIX}${cid}_${activeProvider.id}_${mk}`, payload)
+        }
+      }
+    } catch {
+      /* ignore quota / private mode */
+    }
+
+    onReorderProviderRows(activeProvider.id, arr)
+  }, [activeProvider, onReorderProviderRows, isViewingBackup])
 
   const getProviderRowsHandsontableData = useCallback(() => {
     if (!activeProvider) return []
@@ -2924,8 +3044,6 @@ export default function ProvidersTab({
   // Flush pending save when tab is left so data isn't lost on switch (prefer latest ref like PatientsTab flush).
   // On page refresh the browser aborts in-flight requests (AbortError) so we also backup to localStorage;
   // ClinicDetail restores and saves on next load.
-  const PENDING_ROWS_KEY_PREFIX = 'provider_sheet_pending_'
-  const PENDING_ROWS_MAX_SIZE = 1024 * 1024 // 1MB
 
   // Flush only when ProvidersTab actually unmounts (e.g. user switches tab). Do NOT list onSave/clinicId/monthKey as deps —
   // parent recreates save callback when providerSheets changes, which would run this cleanup while still on the tab and duplicate saves / corrupt ids.

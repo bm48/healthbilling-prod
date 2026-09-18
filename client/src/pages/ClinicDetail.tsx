@@ -3784,19 +3784,14 @@ export default function ClinicDetail() {
     await saveProviderSheetRows(providerId, rowsToSave, undefined, undefined, 'typing-debounced-or-direct')
   }, [saveProviderSheetRows])
 
-  const handleReorderProviderRows = useCallback((providerId: string, movedRows: number[], finalIndex: number) => {
-    const rows = providerSheetRows[providerId] || []
-    const arr = [...rows]
-    const toMove = movedRows.map(i => arr[i])
-    const sorted = [...movedRows].sort((a, b) => b - a)
-    sorted.forEach(i => arr.splice(i, 1))
-    const insertAt = Math.min(finalIndex, arr.length)
-    toMove.forEach((item, i) => arr.splice(insertAt + i, 0, item))
-    const newRows = arr
+  const handleReorderProviderRows = useCallback((providerId: string, newRows: SheetRow[]) => {
+    // ProvidersTab already applied the move against its latest in-memory rows (including unsaved
+    // cell edits). Persist that array as-is — recomputing from providerSheetRows here used a stale
+    // snapshot and let a later typing-debounced save rewrite sort_order back to the old order.
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: newRows } }))
     setProviderRowsVersion(v => v + 1)
     saveProviderSheetRows(providerId, newRows, undefined, undefined, 'reorder-rows').catch(err => console.error('Failed to persist provider row order', err))
-  }, [providerSheetRows, saveProviderSheetRows, selectedMonthKey])
+  }, [saveProviderSheetRows, selectedMonthKey])
 
   const handleTabChange = (tab: TabType) => {
     if (splitScreen) {

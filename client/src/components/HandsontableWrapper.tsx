@@ -1069,7 +1069,9 @@ export default function HandsontableWrapper({
     },
     // Drag row by row header to reorder
     manualRowMove: true,
-    afterRowMove: (movedRows, finalIndex) => {
+    afterRowMove: (movedRows, finalIndex, _dropIndex, movePossible, orderChanged) => {
+      // Skip no-ops / rejected moves so parent state is not rewritten with a useless save.
+      if (movePossible === false || orderChanged === false) return
       if (onAfterRowMove) onAfterRowMove(movedRows, finalIndex)
     },
     ...(afterCreateRow ? { afterCreateRow } : {}),
