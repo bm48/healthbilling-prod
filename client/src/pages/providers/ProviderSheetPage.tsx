@@ -1108,8 +1108,21 @@ export default function ProviderSheetPage() {
 
   const handleReorderProviderRows = useCallback((providerId: string, newRows: SheetRow[]) => {
     if (!provider || provider.id !== providerId) return
+    // Do not bump providerRowsVersion — HOT already shows the drag; a version-driven data push
+    // would double-apply ManualRowMove and jumble cells. ProvidersTab bakes order via loadData.
     setProviderSheetRows(prev => ({ ...prev, [providerId]: newRows }))
-    setProviderRowsVersion(v => v + 1)
+    if (saveProviderSheetInProgressRef.current.has(providerId)) {
+      const existing = pendingProviderSheetSaveRef.current[providerId]
+      if (existing) {
+        existing.rows = newRows
+      } else {
+        pendingProviderSheetSaveRef.current[providerId] = {
+          rows: newRows,
+          deletedDbIds: [],
+          resolvers: [],
+        }
+      }
+    }
     saveProviderSheetRows(providerId, newRows).catch(err =>
       console.error('Failed to persist provider row order', err)
     )

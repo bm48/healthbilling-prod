@@ -3786,10 +3786,27 @@ export default function ClinicDetail() {
 
   const handleReorderProviderRows = useCallback((providerId: string, newRows: SheetRow[]) => {
     // ProvidersTab already applied the move against its latest in-memory rows (including unsaved
-    // cell edits). Persist that array as-is — recomputing from providerSheetRows here used a stale
-    // snapshot and let a later typing-debounced save rewrite sort_order back to the old order.
+    // cell edits) and baked visual order into HOT via loadData. Persist that array as-is.
+    // Do NOT bump providerRowsVersion here: a dataVersion-driven push while ManualRowMove still
+    // held the drag map double-applied the move and jumbled cells (Jenali: order/data "didn't save").
     setProviderSheetRowsByMonth(prev => ({ ...prev, [selectedMonthKey]: { ...(prev[selectedMonthKey] ?? {}), [providerId]: newRows } }))
-    setProviderRowsVersion(v => v + 1)
+    // If another save is in flight, force the queued replay to this order so it cannot restore the
+    // pre-move snapshot after the in-flight call finishes.
+    const inFlight = saveProviderSheetInProgressRef.current.has(providerId)
+    if (inFlight) {
+      const existing = pendingProviderSheetSaveRef.current[providerId]
+      if (existing) {
+        existing.rows = newRows
+        existing.monthKey = selectedMonthKey
+      } else {
+        pendingProviderSheetSaveRef.current[providerId] = {
+          rows: newRows,
+          deletedDbIds: [],
+          resolvers: [],
+          monthKey: selectedMonthKey,
+        }
+      }
+    }
     saveProviderSheetRows(providerId, newRows, undefined, undefined, 'reorder-rows').catch(err => console.error('Failed to persist provider row order', err))
   }, [saveProviderSheetRows, selectedMonthKey])
 

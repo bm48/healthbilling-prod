@@ -33,6 +33,40 @@ function shouldBatchDeferPatientId(source: string, nonNullChangeCount: number): 
 const PENDING_ROWS_KEY_PREFIX = 'provider_sheet_pending_'
 const PENDING_ROWS_MAX_SIZE = 1024 * 1024 // 1MB
 
+const UUID_RE_SHEET = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Promote temp/empty client ids to UUIDs from props WITHOUT using array index.
+ * Index matching is wrong after row drag-reorder (props order may still be pre-move while the
+ * local ref is post-move) and was attaching the wrong UUID to the wrong row — cells looked
+ * "jumbled" and users had to paste data back in.
+ */
+function promoteTempIdsFromPropsRows(rows: SheetRow[], propsRows: SheetRow[]): { rows: SheetRow[]; anyPromoted: boolean } {
+  const propsById = new Map(propsRows.map((r) => [r.id, r]))
+  const uuidProps = propsRows.filter((r) => UUID_RE_SHEET.test(r.id))
+  let anyPromoted = false
+  const next = rows.map((row) => {
+    if (UUID_RE_SHEET.test(row.id)) {
+      const p = propsById.get(row.id)
+      return p ? { ...row, id: p.id, created_at: p.created_at, updated_at: p.updated_at } : row
+    }
+    const pid = String(row.patient_id ?? '').trim()
+    const dos = String(row.appointment_date ?? '').trim()
+    if (!pid && !dos) return row
+    const matches = uuidProps.filter(
+      (p) =>
+        String(p.patient_id ?? '').trim() === pid &&
+        String(p.appointment_date ?? '').trim() === dos,
+    )
+    if (matches.length === 1) {
+      anyPromoted = true
+      return { ...row, id: matches[0].id, created_at: matches[0].created_at, updated_at: matches[0].updated_at }
+    }
+    return row
+  })
+  return { rows: next, anyPromoted }
+}
+
 function isHandsontableUndoRedoSource(source?: string) {
   return source === 'UndoRedo.undo' || source === 'UndoRedo.redo'
 }
@@ -986,8 +1020,32 @@ export default function ProvidersTab({
       saveProviderSheetTimeoutRef.current = null
     }
     pendingProviderSheetSaveRef.current = null
-    latestTableDataRef.current = null
-    matrixSourceRevisionsRef.current = null
+    // Patient-id validation timers close over visual row indexes — after a drag those indexes
+    // point at different SheetRows, so applying the merge would write demographics onto the wrong row.
+    for (const t of patientIdEditDebounceRef.current.values()) clearTimeout(t)
+    patientIdEditDebounceRef.current.clear()
+    patientIdEditLatestPidRef.current.clear()
+    pendingPatientMergeByRowRef.current.clear()
+    patientIdDeferredQueueRef.current = []
+    patientIdFlushScheduledRef.current = false
+
+    // Bake visual order into HOT source data and clear ManualRowMove's IndexMapper.
+    // Without this, any later updateSettings/loadData of the reordered array (or a version bump)
+    // double-applies the drag and jumbles cell values across rows.
+    const matrix = getTableDataFromRows(arr)
+    latestTableDataRef.current = matrix
+    matrixSourceRevisionsRef.current = {
+      patientsRev: patientsDisplayRevisionForMatrixRef.current,
+      rowsVer: providerRowsVersionForMatrixRef.current,
+    }
+    try {
+      const hot = hotInstanceRef.current as (Handsontable & { isDestroyed?: boolean }) | null
+      if (hot && !hot.isDestroyed) {
+        hot.loadData(matrix)
+      }
+    } catch (e) {
+      console.error('[ProvidersTab] bake row move into Handsontable failed', e)
+    }
 
     try {
       const cid = clinicIdForPendingRef.current
@@ -1009,7 +1067,7 @@ export default function ProvidersTab({
     }
 
     onReorderProviderRows(activeProvider.id, arr)
-  }, [activeProvider, onReorderProviderRows, isViewingBackup])
+  }, [activeProvider, onReorderProviderRows, isViewingBackup, getTableDataFromRows])
 
   const getProviderRowsHandsontableData = useCallback(() => {
     if (!activeProvider) return []
@@ -2170,23 +2228,14 @@ export default function ProvidersTab({
     // Before using the ref, reconcile any temp ids (new-*, empty-*) that the parent has since promoted to real
     // UUIDs via save merge — otherwise stale new-* ids get re-sent as new INSERTs on every edit burst and
     // create duplicate provider_sheet_rows even after the row already has a UUID in the DB.
-    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    // Never promote by array index: after drag-reorder, ref order ≠ props order and index matching
+    // attaches the wrong UUID to the wrong row (Jenali: had to copy/paste cells back).
     let baseRows: SheetRow[]
     if (latestProviderRowsRef.current?.providerId === activeProvider.id) {
       const rawRows = latestProviderRowsRef.current.rows
-      let anyIdPromoted = false
-      // Use the ref (not the closure) so that even a stale HOT callback sees the most recently
-      // rendered activeProviderRows — critical when the user types faster than React re-renders.
       const latestPropsRows = activeProviderRowsRef.current
-      const reconciled = rawRows.map((row, i) => {
-        const propsRow = latestPropsRows[i]
-        if (propsRow && !UUID_RE.test(row.id) && UUID_RE.test(propsRow.id)) {
-          anyIdPromoted = true
-          return { ...row, id: propsRow.id, created_at: propsRow.created_at, updated_at: propsRow.updated_at }
-        }
-        return row
-      })
-      if (anyIdPromoted) {
+      const { rows: reconciled, anyPromoted } = promoteTempIdsFromPropsRows(rawRows, latestPropsRows)
+      if (anyPromoted) {
         latestProviderRowsRef.current = { providerId: activeProvider.id, rows: reconciled }
       }
       baseRows = reconciled
@@ -2863,18 +2912,10 @@ export default function ProvidersTab({
     const rowsFromRefs =
       latest?.providerId === providerIdFromRefs && latest?.rows?.length ? latest.rows : pending?.rows
     if (!providerIdFromRefs || !rowsFromRefs?.length) return null
-    // Reconcile stale temp ids: if props row i has a UUID and ref row i has a non-UUID, use the UUID.
-    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    // Reconcile stale temp ids by identity (patient_id + DOS), never by array index — index matching
+    // is wrong after drag-reorder and would re-INSERT or update the wrong DB row on tab leave.
     const propsRows = activeProviderRowsRef.current
-    let anyPromoted = false
-    const reconciled = rowsFromRefs.map((row, i) => {
-      const propsRow = propsRows[i]
-      if (propsRow && !UUID_RE.test(row.id) && UUID_RE.test(propsRow.id)) {
-        anyPromoted = true
-        return { ...row, id: propsRow.id, created_at: propsRow.created_at, updated_at: propsRow.updated_at }
-      }
-      return row
-    })
+    const { rows: reconciled, anyPromoted } = promoteTempIdsFromPropsRows(rowsFromRefs, propsRows)
     return { providerId: providerIdFromRefs, rows: anyPromoted ? reconciled : rowsFromRefs }
   }
 

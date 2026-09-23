@@ -478,9 +478,15 @@ export default function HandsontableWrapper({
 
       prevDataLengthRef.current = dataRef.current.length
       prevDataVersionRef.current = dataVersion
-      hotInstance.updateSettings({
-        data: dataRef.current
-      })
+      // Use loadData (not updateSettings({ data })) so ManualRowMove's IndexMapper is cleared.
+      // After a drag, HOT only remaps visual indexes; pushing a reordered array via updateSettings
+      // keeps that map and DOUBLE-APPLIES the move — cells look scrambled / order "snaps" wrong.
+      // Handsontable's own row-moving docs: bake visual order with loadData (or don't push back).
+      try {
+        hotInstance.loadData(dataRef.current)
+      } catch {
+        hotInstance.updateSettings({ data: dataRef.current })
+      }
       dataForSettingsRef.current = dataRef.current
 
       if (sortConfigsToRestore && sortConfigsToRestore.length > 0) {
